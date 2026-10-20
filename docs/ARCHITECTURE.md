@@ -577,4 +577,96 @@ coach insights panel, decision-quality list, calibration tab (click image points
 ## Integration (owner: integration phase)
 `courtvision/config.py`, `courtvision/config/default.yaml`, `courtvision/pipeline.py` (sources: video file,
 camera, simulation; perception thread -> asyncio; engine -> stats -> insights -> narration -> hub),
-`courtvision/cli.py` (`simulate`, `serve`, `run`, `calibrate`, `eval`), README.
+`courtvision/cli.py` (`simulate`, `serve`, `run`, `calibrate`, `render`, `eval`, `config`, `latency`), README.
+
+Implemented contracts (integration core):
+```python
+# config.py
+load_config(path: str | Path | None = None, overrides: list[str] | None = None) -> AppConfig
+    # defaults <- YAML <- "a.b=value" overrides; unknown keys -> ConfigError with the dotted path;
+    # nested sections partial, dict fields merge key by key, lists replace
+dump_config(cfg) -> dict; config_to_yaml(cfg) -> str; render_default_yaml() -> str  # = config/default.yaml
+# AppConfig sections: game, source, sim, noise, render, operator, perception, events, stats, shot_model,
+# decision_model, insights, jev, narration, director, facts, templates, candidates, tts, captions, llm,
+# server, hub, serve, pipeline, eval. game.* is authoritative over sim.league / ruleset / rule_overrides.
+
+# pipeline.py
+class FrameItem(NamedTuple): frame_idx: int; t: float; image: np.ndarray | None; state: FrameState | None
+class FrameSource:  # async iterator of FrameItem; realtime / live / speed / fps / image_size / roster / court / rules / truth
+SimSource(sim_result, mode="truth3d"|"mono"|"video", noise=None, realtime=False, speed=1.0, *, noise_seed,
+          start_s, duration_s, scoreboard="truth"|"ocr_5hz"|"none", render_config)
+VideoFileSource(path, realtime=True, speed=1.0, ...)   # cv2.VideoCapture, t = PTS
+CameraSource(index_or_url, ...)                         # live, t = wall clock since the first frame
+make_source(cfg, sim_result=None, realtime=None) -> FrameSource
+class LiveGame:
+    def __init__(self, config, source, hub=None, *, realtime=None, jev=None, llm=None, tts=None, env=None)
+    async def run(self) / start() / process(item) / finish()
+    controller: GameController          # implements server.app.Controller
+    events / transcript / insights_emitted / snapshot() / latency_report() / status()
+run_offline(cfg, source=None, out_dir=None, *, hub=None, jev=None, llm=None, write=True, env=None) -> RunResult
+    # source-time (virtual) clocks => deterministic; writes events.jsonl, truth_events.jsonl,
+    # transcript.jsonl, insights.jsonl, stats.json, report.json, report.md, config.yaml
+```
+Per frame: (perception in a worker thread for image sources in real time; inline offline) ->
+`EventEngine.process` -> enrichment (`p_three` copied from the attempt onto its result; `attrs.id_conf` /
+`attrs.jersey_conf` from `PlayerState.confidence` and the jersey vote share; always 1.0 for sim / manual /
+feed, also over values an operator correction copied from the CV event it revises) ->
+`StatsEngine.on_events` / `on_frame` -> `InsightEngine.observe_frame` (every frame) / `update` ->
+`Narrator.on_events` / `on_insights` / `tick(t, stats, engine.deadball)` -> hub (`frame` at
+`pipeline.frame_hz`, `stats` at `pipeline.stats_hz`, events / utterances / insights / captions at once).
+The hub `stats` message is `pipeline.hub_stats_msg`: `GameStats.to_dict()` with only the newest
+`pipeline.hub_decisions` decision grades, without per-option detail, plus `decisions_total` (the full list
+grows ~5 KB per graded pass / shot; `stats.json` and `RunResult.stats` keep it).
+The engine and stats see only fresh scoreboard reads; the last confirmed reading feeds the clock display,
+the narrator's frame and the hub `frame` message. One `PseudonymMap` per game
+(`narration.facts.pseudonyms_for(roster, seed)`), handed to `Narrator(pseudo=...)` wrapped in
+`pipeline.TieredPseudonyms`: same tokens and state, but `render` gives every named player a confidence
+(the cue event's own, else the latest perceived identity, else 0.0 on perception sources / 1.0 in sim
+truth), so colour lines, Claude candidates and coach cards, which carry no events, also obey the 0.95
+name tier. `director.*` settings are applied on top of the narrator's own director (`narration.cooldown_s`
+/ `min_gap_s`, the accessibility FIFO policy) rather than replacing it (`pipeline.director_overrides`).
+Operator writes (`GameController`): a corrected scorer on a make / miss also revises the shot's attempt
+(the box score credits the attempt's shooter) and moves or retracts its assist / block; a new
+SUBSTITUTION from `POST /api/events` is also a lineup entry; with no calibration, a file played in real
+time holds (status `needs_calibration`, `paused`) until `POST /api/calibration`; `speed` is refused for a
+live camera. `Insight.priority` is
+higher = more important everywhere; `pipeline.cue_priority_for_insight` is the only mapping onto the
+director's 0..3 levels. No Anthropic credentials => template-only narration; no `TYPESAFE_API_KEY` =>
+Jev mode "off" (fallbacks). Claude's cached prefix uses a 1 h TTL and is pre-warmed at start and every
+55 min (`llm.*`).
+
+Implemented contracts (CLI, `courtvision <command>` / `python -m courtvision`):
+```python
+# cli.py: main(argv=None) -> int   (0 ok, 1 runtime failure, 2 usage / config error)
+# every config-building command: --config FILE, --set section.key=value (repeatable); flags > --set > file
+simulate  --seconds --seed --league --mode truth3d|mono|video --out --jev --json   # run_offline + eval summary
+serve     --source sim|video|camera --mode --video --camera --speed --host 127.0.0.1 --port 8765
+          --jev live|stub|off --no-llm --tts none|say|avspeech --auth-token --open [--calibration --roster
+          --scoreboard-roi --detector --seconds --seed --league --insecure-no-auth]
+run       --video --calibration --detector --roster --scoreboard-roi --start --duration --out --jev --json
+calibrate POINTS | --from-sim  [--out --league --image-size W H --ransac-thresh --points-out --roi-out]
+render    --seconds --seed --start --out (.mp4 = H.264, .avi/.mkv = lossless FFV1) [--no-sidecars]
+eval      PRED(events.jsonl | run dir) [--truth --tol --kinds --no-player --json --out]
+config    [--default | --section NAME]
+latency   --configs C1..C4,J1..J5 --n --network --out --packet --pause --no-prewarm   # refuses without keys
+create_serve_app(cfg, *, source=None, env=None, auth_token=None, jev=None, llm=None, tts=None, detector=None)
+    -> ServeApp(app, game, hub)    # server.app.create_app + attach_game: LiveGame runs as a task on the
+                                   # app's own loop for its lifespan; shutdown = request_stop(drain=False)
+parse_detector("colorblob" | "rfdetr[:weights|nano|small|medium]" | "coreml:<mlpackage>" | "rnd-yolo:<weights>")
+# roster.py: load_roster(path, home_name=None, away_name=None) -> Roster; parse_roster; save_roster
+#   nested form teams: {home: {name, players: [{jersey, name, position, player_id?}]}, away: {...}}
+#   (docs/examples/roster.yaml); the flat form {"teams": {side: name}, "players": [{team, ...}]} still loads;
+#   jerseys are text ("0" != "00"); duplicate ids / (team, jersey) pairs are errors
+```
+Offline commands default Jev to "off" unless the file, `--set` or `--jev` picks a mode (source time runs
+ahead of wall time). `serve` refuses a non-loopback `--host` without a token (`$COURTVISION_TOKEN` or
+`--auth-token`) unless `--insecure-no-auth`; uvicorn's logs redact `token=` query values. It warns about
+flags the chosen source never reads (`--roster` with the simulator, perception flags outside `--mode video`,
+`--seconds` / `--seed` with a file or camera), and `gc.freeze()`s the objects that exist once the app is
+built (a pre-simulated 48 min game is 2.3 M objects; each full collection stalled the shared event loop
+~0.5 s). `render` writes
+`<stem>.calibration.json`, `<stem>.roster.yaml`, `<stem>.scoreboard_roi.json` and `<stem>.truth_events.jsonl`
+(re-timed to the file) next to the video. `--detector rnd-yolo:` prints the AGPL / R&D warning, then loads
+`tools/rnd_detectors.py` by path (a source checkout only; `tools/` is not in the package), which is the one
+bridge to `perception/rnd/`: shipped code never imports it (D9), so an installed wheel cannot reach AGPL code.
+The detector is injected with `LiveGame(detector=...)` / `run_offline(detector=...)`.

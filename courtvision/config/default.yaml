@@ -1,0 +1,726 @@
+# CourtVision default configuration -- GENERATED from the config dataclasses.
+# Do not edit by hand: run `python -m courtvision.config` after changing a default.
+# tests/test_integration_core_config.py fails when this file drifts from the code.
+#
+# Load with courtvision.config.load_config(path, overrides=["section.key=value", ...]).
+# Copy only the keys you change into your own file; missing keys keep these defaults.
+# Nested sections are partial, dict-valued keys merge key by key, lists replace.
+# game.league / game.ruleset / game.rule_overrides drive the court, the rules AND the simulator
+# (sim.league / sim.ruleset / sim.rule_overrides are overwritten from game.*).
+# Credentials never live here: ANTHROPIC_API_KEY (or an `ant auth login` profile) enables Claude,
+# TYPESAFE_API_KEY enables live Jev; without them narration is template-only and Jev falls back.
+
+# game: league, rules and roster
+game:
+  league: nba  # court geometry: "nba" | "fiba" | "ncaa_m" | "ncaa_w" | "nfhs"
+  ruleset: null  # RuleSpec id in config/rules/; None = the league's own rules
+  rule_overrides: []  # names in config/rules/overrides/ or YAML paths
+  roster_path: null  # JSON/YAML roster for video/camera sources (sim makes its own)
+  home_name: null  # team display names (None = roster file / simulator names)
+  away_name: null
+
+# source: frame source and pacing
+source:
+  kind: sim  # "sim" | "video" (file) | "camera" (index or URL)
+  sim_mode: truth3d  # sim: "truth3d" (3-D truth) | "mono" (NoiseModel, monocular) | "video" (render + perception)
+  path: null  # video file for kind="video"
+  camera: '0'  # device index ("0") or stream URL for kind="camera"
+  realtime: true  # pace frames at t / speed (run_offline always runs as fast as possible)
+  speed: 1.0  # playback speed multiplier for realtime pacing
+  start_s: 0.0  # skip source time before this (sim window / video seek)
+  duration_s: null  # stop after this many source seconds (None = whole source)
+  noise_seed: 1  # NoiseModel seed for sim_mode="mono"
+  scoreboard: truth  # sim scoreboard readings: "truth" (every frame) | "ocr_5hz" | "none"
+  drop_late_s: null  # realtime: drop frames more than this late (None = never drop)
+  fps: null  # override the container fps for video files (None = from the file)
+
+# sim: simulator (league/ruleset come from game.*)
+sim:
+  league: nba
+  seconds: 600.0  # video seconds simulated (frames = seconds * fps)
+  fps: 30.0
+  seed: 7
+  image_size: [1280, 720]
+  camera_position: [47.0, -56.0, 48.0]  # Camera: the geometry agent's verified framing (geometry.camera.RECOMMENDED_SIM_CAMERA). The ARCHITECTURE de...
+  camera_target: [47.0, 25.0, 0.0]
+  hfov_deg: 72.0
+  ruleset: null  # RuleSpec id; None = league
+  rule_overrides: []
+  period_s: null  # game-clock length of a regulation period (None = RuleSpec)
+  ot_s: null  # overtime length (None = RuleSpec)
+  timeout_video_s: 8.0  # video seconds a timeout lasts (keeps sims short); design choice
+  period_break_video_s: 6.0  # video seconds between periods; design choice
+  halftime_video_s: 10.0  # video seconds of halftime; design choice
+  roster_size: 12  # players per team (10-12 typical)
+  home_name: null
+  away_name: null
+  max_speed_fts: 22.0  # hard player speed cap (~15 mph sprint); spec, unverified
+  sprint_speed_fts: 19.0  # tuned
+  run_speed_fts: 15.0  # tuned
+  jog_speed_fts: 11.0  # tuned
+  walk_speed_fts: 6.0  # tuned
+  accel_fts2: 16.0  # player acceleration limit; unverified
+  decel_fts2: 12.0  # arrival braking used to slow down on targets; tuned
+  player_height_ft: 6.5  # bbox cylinder height; spec
+  player_radius_ft: 1.0  # bbox cylinder radius; spec
+  referee_height_ft: 6.2  # unverified
+  referee_speed_fts: 16.0  # tuned
+  separation_ft: 2.2  # players closer than this push apart; tuned
+  ball_radius_ft: 0.39  # size 7: 29.5 in circumference -> 9.39 in diameter (note §1a); sourced
+  ball_restitution: 0.77  # FIBA 1.8 m drop rebounds 1.035-1.085 m -> sqrt(1.06/1.8); derived
+  floor_friction: 0.85  # horizontal speed kept per floor bounce; tuned
+  roll_decel_fts2: 4.0  # rolling deceleration; tuned
+  roll_below_fts: 2.0  # bounces slower than this become rolling; tuned
+  dead_ball_stop_ft: 6.0  # A dead ball moving away from the court is stopped (bench, table, fans) this far beyond the boundary, so thr...
+  held_z_ft: 3.75  # held ball centre height (spec 3.5-4 ft)
+  hand_offset_ft: 1.0  # held ball ahead of the holder (spec)
+  carry_speed_fts: 30.0  # A caught / rebounded ball is carried from the catch point to the hand at this relative speed instead of sna...
+  ft_gather_s: 0.35  # the FT shooter raises the ball to the release height over this time; tuned
+  dribble_period_s: [0.45, 0.6]  # hand-floor-hand cycle, ~2 Hz (spec); tuned
+  dribble_hand_z_ft: 3.6  # dribble hand height; tuned
+  pass_speed_fts: [30.0, 45.0]  # horizontal pass speed (spec)
+  lazy_pass_speed_fts: [20.0, 26.0]  # intercepted passes; tuned
+  jumper_release_z_ft: [7.5, 9.0]  # spec
+  layup_release_z_ft: [9.0, 10.5]  # layup/dunk release (spec)
+  hook_release_z_ft: [8.5, 9.5]  # unverified
+  ft_release_z_ft: [7.3, 8.0]  # unverified
+  pass_count_weights: [0.18, 0.24, 0.22, 0.17, 0.11, 0.08]  # P(1..6 passes); tuned
+  hold_s: [0.6, 2.0]  # holding / probing time between passes; tuned
+  urgency_s: 3.0  # shot clock / game clock left that forces a shot; tuned
+  relocate_s: [2.5, 4.5]  # off-ball relocation period; tuned
+  turnover_rate: 0.135  # per segment; realises ~12-14% of possessions (spec; note §4c 0.144); tuned
+  turnover_mix: {intercept: 0.27, strip: 0.27, oob: 0.22, travel: 0.14, shot_clock: 0.1}  # steals ~54% (note §4c: 57% live-ball); tuned
+  after_oreb_scale: 0.5  # turnover / foul rates after an offensive rebound are scaled; tuned
+  foul_rate: 0.1  # pre-shot fouls -> 2 FTs per segment (spec 8-10% of possessions); tuned
+  shot_mix: {'0_3': 0.226, '3_10': 0.214, '10_16': 0.091, 16_3p: 0.048, 3p: 0.421}  # share of FGA by distance, NBA 2024-25 (note §4b); sourced
+  corner3_share: 0.243  # corner 3s / 3PA, 2024-25 (note §4b); sourced
+  putback_share: 0.02  # 0-3 ft FGA expected from putbacks, removed from the scripted mix; tuned
+  fg_pct: {'0_3': 0.696, '3_10': 0.461, '10_16': 0.443, 16_3p: 0.4, c3: 0.388, ab3: 0.351, heave: 0.027}  # FG% by bin, 2024-25 (note §4b, corner/arc 3 from §4c); sourced
+  defender_ref_ft: {'0_3': 1.8, '3_10': 2.5, '10_16': 3.3, 16_3p: 4.0, c3: 8.0, ab3: 5.6, heave: 6.0}  # Defender-distance adjustment: FG% += slope * (closest_defender_ft - ref_ft), clipped to +-0.1. Note §4d: pl...
+  defender_slope: {'0_3': 0.03, '3_10': 0.02, '10_16': 0.015, 16_3p: 0.015, c3: 0.012, ab3: 0.012, heave: 0.0}
+  block_rate: {'0_3': 0.045, '3_10': 0.045, '10_16': 0.02, 16_3p: 0.01, c3: 0.008, ab3: 0.008, heave: 0.0}  # P(block) by bin; spec ~5-6% of 2PA overall; tuned
+  block_max_defender_ft: 6.0  # no block when the closest defender is farther; tuned
+  dunk_share_0_3: 0.27  # dunks 6.1% FGA / 0-3 ft 22.6% FGA (note §4b); derived
+  ft_pct: 0.78  # NBA 2024-25 league FT% (note §4a); sourced
+  ft_pct_sd: 0.06  # per-player spread; unverified
+  oreb_rate: 0.25  # offensive rebound rate on FG misses (spec ~25%; note ORB% 25.2); sourced
+  oreb_rate_ft: 0.131  # on missed final FTs, 2024-25 (note §4c); sourced
+  oreb_rate_block: 0.4  # after blocks (note: 58% of blocks recovered by the defense); unverified
+  putback_rate: 0.4  # immediate putback after an OREB within 6 ft of the rim; tuned
+  team_rebound_rate: 0.03  # misses deflected out of bounds before control; unverified
+  assist_window_s: 5.0  # ARCHITECTURE assist rule (catch -> release)
+  assist_max_dribbles: 2  # ARCHITECTURE assist rule
+  ft_set_s: 1.5  # shooter stationary at the FT line before each FT (RESEARCH §7A.5 rule 2)
+  sub_prob: 0.3  # P(a team substitutes) at an eligible dead ball; tuned
+  min_stint_s: 120.0  # game seconds on court before a fatigue substitution; tuned
+  min_rest_s: 60.0  # game seconds on the bench before re-entry; tuned
+  timeout_prob: 0.05  # P(timeout) at a whistle dead ball; tuned
+
+# noise: observation noise for source.sim_mode="mono"
+noise:
+  pos_sigma_ft: 0.4  # player court-position jitter
+  bbox_sigma_px: 2.0  # per-edge bbox jitter
+  ball_miss_rate: 0.12  # ball not detected while in flight / loose
+  ball_miss_rate_held: 0.35  # ball not detected while held (occluded by hands/body)
+  ball_fp_rate: 0.01  # a spurious ball detection replaces the observation
+  ball_px_sigma: 1.5  # ball image-centre jitter
+  ball_radius_sigma_px: 0.3
+  drop_player_rate: 0.02  # player missing from a frame
+  id_swap_rate: 0.0  # P(start an identity swap) per frame
+  id_swap_frames: 15  # swap duration
+  id_swap_max_ft: 5.0  # only nearby same-team players swap
+  rim_px_sigma: 0.5
+  monocular: true  # ball z -> None, court_xy -> floor projection of the image point
+  held_radius_ft: 2.5  # "held" heuristic: ball within this of a player ...
+  held_max_z_ft: 6.0  # ... and below this height
+
+# render: synthetic renderer for source.sim_mode="video"
+render:
+  player_height_ft: 6.5  # must match SimConfig.player_height_ft for referee boxes
+  referee_height_ft: 6.2
+  figure_radius_ft: 1.0
+  line_thickness_px: 2
+  rim_thickness_px: 2
+  apron_ft: 6.0  # floor drawn beyond the boundary lines
+  head_frac: 0.07  # head radius / figure height
+  draw_scoreboard: true
+
+# operator: simulated operator entries
+operator:
+  entry_delay_s: 2.0  # operator lag after a true substitution (SimOperatorConfig); design choice
+  lineup_t: 0.0  # video time the starting fives are entered
+  lineup_events: true  # operator lineup entries also become manual SUBSTITUTION events
+  replay_kinds: [foul, timeout]  # truth kinds entered as manual events
+  replay_delay_s: 0.0  # delay of those manual entries after the truth event
+
+# perception: detector + PerceptionPipeline
+perception:
+  detector: auto  # "auto" (colour blobs for sim renders, RF-DETR for real video) | "color_blob" | "rfdetr"
+  color_blob:  # ColorBlobDetector (synthetic renders)
+    home_bgr: [40, 160, 40]
+    away_bgr: [150, 40, 30]
+    ref_bgr: [25, 25, 25]
+    ball_bgr: [0, 110, 255]
+    rim_bgr: [0, 0, 220]
+    skin_bgr: [120, 150, 200]
+    floor_bgr: [140, 180, 215]
+    paint_bgr: [110, 140, 190]
+    jersey_tol: 40  # nearest other palette colour is > 100 away; tuned
+    ref_tol: 20  # scoreboard background (20,20,20) is only 5 away: mask the panel; tuned
+    ball_tol: 40  # rim red is 110 away in G; tuned
+    rim_tol: 30  # lit scoreboard segments (0,0,255) are 35 away; tuned
+    skin_tol: 7  # paint (110,140,190) is only 10 away from skin; tuned
+    min_person_area_px: 25  # jersey/shirt blob pixels; tuned
+    min_person_aspect: 0.6  # jersey blob h/w; rejects wide panels and court stripes; tuned
+    min_ball_area_px: 3  # tuned
+    max_ball_area_px: 4000  # tuned
+    max_ball_aspect: 2.5  # max(w, h) / min(w, h) of a ball blob; tuned
+    min_rim_area_px: 6  # tuned
+    rim_merge_px: 5  # dilation that joins pieces of one rim ring split by net/ball; tuned
+    close_kernel_wh: [3, 7]  # bridges white number strokes across the jersey; tuned
+    head_search_frac: 0.8  # search for a head up to this x jersey height above the blob; tuned
+    leg_search_frac: 0.8  # same below the blob (legs drawn in skin colour, if any); tuned
+    touch_gap_frac: 0.08  # max gap (x jersey height) between blob and head/legs; tuned
+    fallback_head_frac: 0.25  # no head found: extend up by this x jersey height; tuned
+    full_conf_area_px: 300.0  # blobs at least this large get score 0.95; tuned
+    split_merged: true  # split a same-colour blob that carries >= 2 heads (overlapping players)
+    default_width_per_head: 3.2  # Body / head-width ratios used until learned online; measured on sim/render.py output (head radius 0.07 x he...
+    default_height_per_head: 6.7
+    proportion_samples: 200  # single-figure blobs kept for the online proportion medians; tuned
+    split_bottom_tol: 0.12  # observed feet within this x height of the predicted ones are used; tuned
+    court_tol: 6  # floor / paint pixels (feet visible below a blob); skin is 10 from paint; tuned
+    occlusion_scan_px: 8  # look this far below a blob, past white / blended pixels; tuned
+    mask_polygons: []  # image polygons to ignore
+    mask_margin_px: 4  # dilation of the ignore polygons; tuned
+    embed: true  # attach torso_feature embeddings to players and referees
+  rfdetr:  # RFDETRDetector (extra `cv`)
+    variant: small  # "nano" | "small" | "medium"; Small is the default pick (RESEARCH §2.1)
+    backend: torch  # "torch" | "coreml"
+    weights: null  # fine-tuned checkpoint (torch); None => pretrained COCO, only if allowed below
+    allow_pretrained_download: false  # rfdetr fetches its pretrained COCO checkpoint over the network when no local weights are given (~370 MB for...
+    coreml_path: null  # .mlpackage (coreml); one package per input size
+    compute_units: CPU_AND_NE  # fp16 packages reach the ANE only with CPU_AND_NE/ALL; sourced
+    device: null  # torch device; None => rfdetr's choice
+    class_names: [player, referee, ball, rim]  # Model class order (fine-tuned 0-based ids). COCO checkpoints report names in data["class_name"].
+    class_map: {player: player, referee: referee, ball: ball, rim: rim, person: player, sports ball: ball}
+    thresholds: {player: 0.5, referee: 0.5, ball: 0.3, rim: 0.5}
+    num_select: 300  # sourced (rfdetr PostProcess default)
+    background_class_id: -1  # exported final-slot background (rfdetr decode default); None for COCO
+  pipeline:  # PerceptionPipeline settings
+    tracker_backend: bytetrack  # "bytetrack" (ours, numpy) | "trackers" (TrackersAdapter)
+    tracker: {}  # TrackerConfig overrides
+    trackers_adapter: {}  # TrackersAdapterConfig overrides
+    ball: {}  # BallTrackerConfig overrides
+    team: {}  # TeamConfig overrides
+    identity: {}  # IdentityConfig overrides
+    appearance: {}  # AppearanceConfig overrides
+    compute_embeddings: true  # torso_feature for detections without an embedding; design
+    team_observe_every: 3  # frames between warm-up samples per track; tuned
+    jersey_every: 5  # read each track's number every 5 frames; sourced (Roboflow, cv_pipeline §1.1)
+    jersey_min_height_px: 20.0  # legibility gate; tuned
+    jersey_occluder_near: 0.3  # Occlusion legibility gate on the number band (bbox rows 20-60 %, optionally widened each side for number ov...
+    jersey_occluder_any: 1.0
+    jersey_band_widen: 0.0
+    smoothing_alpha: 0.6  # alpha-beta position gain; tuned
+    smoothing_beta: 0.15  # alpha-beta velocity gain; tuned
+    max_speed_ft_s: 30.0  # speed clamp (fastest sprints are ~30 ft/s); spec
+    reset_jump_ft: 8.0  # a measurement this far from the prediction restarts the filter; tuned
+    court_margin_ft: 6.0  # players farther outside the court are dropped; spec
+    foot_radius_ft: 0.0  # move the bbox-bottom point this far away from the camera (body
+    coast_confidence_decay: 0.8  # per frame for tracks reported while lost; tuned
+    duplicate_iou: 0.5  # a coasting track overlapping a matched same-team track this much ...
+    duplicate_radius_ft: 1.5  # ... or this close on the court is a stale duplicate; tuned
+    rim_source: auto  # "auto" (calibration if it has rims, else detector) | "detector" | "calibration"
+    scoreboard_roi: null  # ScoreboardROI.to_dict() form
+    scoreboard_hz: 5.0  # OCR rate; sourced (RESEARCH.md D14)
+    mask_scoreboard: true  # tell the detector to ignore the panel; design
+    fallback_dt_s: 0.03333333333333333  # when t does not advance; design
+    track_memory_frames: 300  # forget per-track team votes / filters after this; tuned
+  jersey_reader: auto  # "auto" (template reader on sim renders, none otherwise) | "template" | "none"
+  jersey:  # TemplateJerseyReader
+    candidates: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70', '71', '72', '73', '74', '75', '76', '77', '78', '79', '80', '81', '82', '83', '84', '85', '86', '87', '88', '89', '90', '91', '92', '93', '94', '95', '96', '97', '98', '99', '00']  # restrict to the roster when known
+    base_height_px: 70.0  # scale = max(min_scale, bbox_h / base_height); sourced (render convention)
+    min_scale: 0.35  # sourced (render convention)
+    thickness: 2  # sourced (render convention)
+    vertical_frac: 0.4  # text centre at 40 % of the bbox height; sourced (render convention)
+    scale_factors: [0.94, 0.97, 1.0, 1.03, 1.06]  # absorbs bbox-height error; tuned
+    search_px: 4  # extra shift search around the expected text box; tuned
+    white_min: 200  # all BGR channels >= this => white pixel; tuned
+    min_bbox_height_px: 20.0  # legibility gate (text below ~8 px is unreadable); tuned
+    min_iou: 0.45  # weaker best matches are "no read"; tuned
+    margin_norm: 0.15  # IoU margin over the runner-up that gives full confidence; tuned
+    pad_frac: 0.35  # template padding (x glyph height) that penalises unexplained white; tuned
+    template_alpha: 0.6  # OpenCV 5 anti-aliases Hershey text whatever the lineType, so templates are alpha maps; a pixel over a palet...
+    refine_top: 3  # candidates refined over all scale factors after the nominal-scale pass; tuned
+  calibration_path: null  # geometry Calibration JSON (homography + rims) for video/camera
+  scoreboard_roi_path: null  # ScoreboardROI JSON (overrides pipeline.scoreboard_roi)
+  save_calibration: false  # write POST /api/calibration and /api/scoreboard_roi results back to the paths
+  use_source_hints: true  # sim renders: take calibration, ROI, jersey candidates and foot radius from the sim
+
+# events: event engine thresholds
+events:
+  ball_min_conf: 0.2  # ignore ball detections below this confidence; tuned
+  use_interpolated_ball: false  # tracker-filled positions are not evidence of a crossing; tuned
+  ball_max_speed_fts: 60.0  # fastest plausible ball (hard passes ~40-50 ft/s) + margin; unverified
+  ball_max_speed_px_s: 1500.0  # image gate speed when no px/ft scale is known; tuned
+  ball_gate_base_ft: 3.0  # 3-D gate radius at dt = 0; tuned
+  ball_gate_base_px: 25.0  # image gate radius at dt = 0; tuned
+  ball_reacquire_frames: 3  # consecutive agreeing off-gate detections to re-acquire; tuned
+  ball_gate_reset_s: 1.0  # gate opens after this long without an accepted ball; tuned
+  player_height_ft: 6.5  # nominal player height for px/ft from bbox heights; unverified
+  nominal_px_per_ft: 10.0  # 3-D residuals -> "px" cue units; tuned (sim camera ~8-11 px/ft)
+  hands_height_ft: 5.0  # nominal hands height for release separation; unverified
+  holder_bbox_expand: 0.25  # bbox growth to acquire the ball (spec "~25%"); unverified
+  holder_keep_expand: 0.6  # wider box to keep it (spatial hysteresis, dribbles); tuned
+  holder_keep_top_frac: 0.05  # keep box reaches this fraction of bbox height above the head; tuned
+  holder_keep_bottom_frac: 0.15  # ... and this far below the feet (bounces); tuned
+  holder_head_frac: 0.15  # top fraction of the bbox treated as the head; unverified
+  holder_above_head_factor: 0.4  # score multiplier for a ball above the head; tuned
+  holder_min_score: 0.1  # minimum candidate score; tuned
+  holder_switch_margin: 0.25  # current holder's score bonus (no flicker); tuned
+  holder_radius_ft: 1.6  # 0.5 m holder radius (RESEARCH §7A.2); unverified
+  holder_keep_radius_ft: 3.0  # keep radius for dribble excursions; tuned
+  holder_max_z_ft: 7.5  # a held ball is below this height (spec); unverified
+  holder_freefall_min_z_ft: 4.5  # 3-D: above dribble height (catches and dribbles near the floor are partly ballistic) ... ; tuned
+  holder_freefall_tol_fts2: 8.0  # ... a ball with |a_z + g| below this is in free flight, nobody gains it; tuned
+  holder_acquire_max_speed_fts: 15.0  # a catch slows the ball to the catcher's speed; tuned
+  holder_rel_speed_scale_fts: 10.0  # 3-D: score -= relative ball-player speed / this; tuned
+  holder_rel_vertical_weight: 0.5  # weight of vertical motion in that speed during a pass (catch-then-dribble); tuned
+  holder_rel_vertical_weight_loose: 1.0  # ... for a loose ball (rebounds, fumbles); tuned
+  holder_rel_vertical_weight_held: 0.0  # ... for challengers of a current holder (a dribble's vertical motion belongs to whoever controls it; the ho...
+  holder_rel_speed_scale_img_fts: 25.0  # image: same, noisier velocities; tuned
+  holder_rel_speed_slack_img_fts: 10.0  # image: extra slack on the hard acquire gate (noise); tuned
+  holder_team_prior: 0.15  # score bonus for the passer's team while a pass is in the air; tuned
+  holder_switch_margin_opp: 0.25  # image: extra margin an opponent needs to take the ball from the holder; tuned
+  holder_switch_margin_opp_court: 0.0  # 3-D / court: positions are exact, relative motion decides; tuned
+  use_ray_model: true  # monocular: estimate the camera from rims + ball floor projections; tuned
+  holder_ray_max_lateral_ft: 2.5  # image: the ball's viewing ray passes this close to the holder; tuned
+  holder_ray_z_slack_ft: 1.5  # image: implied height may leave [0, holder_max_z] by this; tuned
+  holder_ray_keep_slack_ft: 1.5  # extra slack for the current holder; tuned
+  holder_ray_z_ref_ft: 2.5  # typical held / dribbled ball height; unverified
+  holder_ray_z_band_ft: 2.0  # no penalty within ref +- band; tuned
+  holder_ray_z_weight: 0.1  # score penalty per ft outside the band; tuned
+  steal_confirm_s: 0.3  # a change of team control needs this long (narration §9.3 holds 500 ms); tuned
+  holder_contest_margin: 0.02  # opponents within this score of each other: contested, no holder; tuned
+  holder_confirm_s: 0.1  # new holder after ~3 frames at 30 fps; tuned
+  holder_release_s: 0.1  # release after ~3 frames without the ball; tuned
+  holder_min_frames: 2  # floor on hysteresis frame counts at low fps; tuned
+  holder_gap_keep_s: 10.0  # keep the holder through ball gaps up to this (cv_pipeline §6.2); tuned
+  id_swap_radius_ft: 2.5  # a vanished holder replaced in place by a teammate id = id swap; tuned
+  self_regain_s: 1.5  # releaser regains within this: same control stint (dribble excursion); tuned
+  rim_zone_radius_ft: 4.5  # 3-D shot zone radius around the basket (spec); unverified
+  rim_zone_below_ft: 1.0  # zone floor = rim height - this (spec); unverified
+  rim_zone_exit_margin_ft: 0.5  # sideways exit beyond the zone radius + this; tuned
+  shot_aim_radius_ft: 3.5  # 3-D: a shot's arc comes down within this of the basket (off-glass incl.); tuned
+  ball_radius_ft: 0.39  # 9.39 in diameter / 2 (rules note §1a); sourced
+  make_tol_ft: 0.1  # made radius = rim_r - 0.5 ball_r + this (spec); tuned
+  rim_contact_dist_ft: 0.15  # ball surface within this of the ring = rim contact; tuned
+  rim_zone_side_k: 1.25  # image entry zone half-width beyond the rim box, in rim widths; tuned
+  rim_zone_up_k: 4.0  # image entry zone height above the rim top, in rim widths; tuned
+  rim_zone_down_k: 0.25  # image entry zone extension below the rim box; tuned
+  rim_zone_min_samples_img: 2  # image samples inside the zone before a shot is called; tuned
+  rim_exit_side_k: 2.5  # image miss: ball this many rim widths beside the rim; tuned
+  rim_exit_down_k: 1.0  # image miss: ball this many rim widths below the rim box; tuned
+  make_span_tol_px: 1.0  # tolerance on the shrunk rim span (px); tuned
+  made_within_k: 0.5  # "seen below the rim" must lie within the rim box +- this * width; tuned
+  made_below_k: 0.25  # "below the rim" = below the rim box by this * width; tuned
+  made_bounce_k: 0.25  # back above the top line by this * width cancels a crossing; tuned
+  drop_band: [0.1, 0.9]  # make drop band, fraction of free fall [16]; sourced
+  freefall_min_frac: 0.9  # >= this = air-ball free-fall signature [16]; sourced
+  shot_resolve_timeout_s: 4.0  # unresolved shot -> missed + needs_review; tuned
+  pass_max_flight_s: 4.0  # a "pass" flight longer than this is a loose ball; tuned
+  gather_lead_s: 0.35  # last grounded foot position ~ this before release (D8 proxy); unverified
+  tip_max_control_s: 0.35  # shorter control near the rim = tip; tuned
+  layup_max_dist_ft: 6.0  # tuned
+  dunk_min_release_z_ft: 9.5  # tuned
+  dunk_max_dist_ft: 3.0  # tuned
+  catch_shoot_min_dist_ft: 10.0  # NBA catch-and-shoot uses jumpers > 10 ft (unverified)
+  block_min_up_speed_fts: 6.0  # shot-like release rises at least this fast; tuned
+  block_min_toward_fts: 3.0  # before a block the ball moves toward the rim at least this fast; tuned
+  block_reverse_dv_fts: 8.0  # velocity change beyond ballistic for a block; tuned
+  block_reverse_dv_img_fts: 18.0  # image mode: same, above the velocity noise of ~1.5 px jitter; tuned
+  block_image_span: 2  # image mode: frames per velocity baseline around the contact; tuned
+  block_defender_radius_ft: 4.0  # defender this close to the ball at the reversal; tuned
+  block_min_z_ft: 5.0  # above shoulder height = block, below = steal [15]; unverified height
+  block_bbox_expand: 0.4  # image: defender bbox horizontal growth for the contact test; tuned
+  block_reach_frac: 0.4  # image: raised-arm reach above the head, fraction of bbox height; unverified
+  block_shoulder_frac: 0.35  # image: contact in the top fraction of the defender bbox; tuned
+  block_max_after_release_s: 1.2  # tuned
+  block_max_from_release_ft: 10.0  # tuned
+  block_max_basket_dist_ft: 35.0  # shot-like releases only within this of a basket; tuned
+  airball_radius_ft: 7.0  # 3-D: descending past rim height within this of the basket; tuned
+  airball_min_apex_above_ft: 1.0  # tuned
+  airball_min_release_dist_ft: 6.0  # tuned
+  strip_max_travel_ft: 6.0  # opponent gains within this of the release: steal, not bad pass; tuned
+  strip_max_flight_s: 0.6  # tuned
+  dribble_floor_z_ft: 1.2  # bounce minimum below this (ball centre 0.39 ft at contact); tuned
+  dribble_min_amp_ft: 0.8  # 3-D reversal amplitude of a bounce; tuned
+  dribble_radius_ft: 4.0  # bounce within this of the dribbler; tuned
+  dribble_foot_band: 0.25  # image: bounce within this fraction of bbox height of the feet; tuned
+  dribble_min_amp_h: 0.15  # image: reversal amplitude as a fraction of bbox height; tuned
+  dribble_min_interval_s: 0.2  # tuned
+  assist_window_s: 5.0  # catch -> release; sourced (project rule)
+  assist_max_dribbles: 2  # sourced (project rule)
+  assist_on_ft_trips: false  # NBA flag; FIBA counts FT trips [15]; sourced
+  ft_min_hold_s: 0.5  # formation held this long before a release counts as an FT; tuned
+  oob_margin_ft: 1.0  # ball / holder beyond the boundary by this = out of bounds; tuned
+  oob_max_z_ft: 4.0  # 3-D: the ball must be this low to count as out; tuned
+  inbound_holder_margin_ft: 0.5  # holder this far outside the lines = inbounder; tuned
+  holder_oob_frames: 3  # live holder out of bounds this many frames = stepped out; tuned
+  oob_turnover_conf: 0.6  # inferred out-of-bounds turnovers (< 1 per semantics); tuned
+  team_rebound_conf: 0.7  # inferred team rebounds; tuned
+  dead_min_s: 1.0  # fallback restarts (dribble / pass in bounds) only after this; tuned
+  dead_from_clock_stop: true  # enter a dead ball when the trusted game clock stops; tuned
+  clock_stop_min_s: 1.2  # clock unchanged this long (MM:SS display) = stopped; tuned
+  detect_shot_clock_violations: true  # shot clock read 0 while live -> team turnover; tuned
+  period_start_tol_s: 1.0  # first read within this of a full period = period start; tuned
+  toss_min_speed_fts: 5.0  # an unheld ball moving this fast at a period start = the jump-ball toss; tuned
+  possession_conf: 0.9  # confidence of POSSESSION events from control; tuned
+  pass_conf: 0.9  # tuned
+  dribble_conf: 0.8  # tuned
+  default_attacking: {home: right, away: left}  # assumption until shots are seen
+  make_confirm_wait_s: 3.0  # make-wait band (§7A.5 / narration §11.2); sourced (placeholder)
+  make_to_miss_conf: 0.7  # max confidence of a make revised to a miss for lack of a delta (needs_review); tuned
+  reconcile_match_back_s: 10.0  # delta may lag the make by up to this; unverified
+  reconcile_match_fwd_s: 3.0  # ... or lead it (engine decides late) by this; tuned
+  reconcile_flip_window_s: 15.0  # misses this old can be flipped to makes; tuned
+  reconcile_hold_s: 2.0  # unmatched delta waits this long before a SCORE_CORRECTION; tuned
+  reconcile_inflight_max_s: 5.0  # max wait for an in-flight shot of the scoring team; tuned
+  assume_calibrated: false  # simulator evaluation only: p_status "assumed_sim"
+  cue_model_path: null  # CueModelSet JSON; None = hand-set cold start
+  scoreboard: {}  # ScoreboardConfig field overrides
+  deadball: {}  # DeadBallConfig field overrides
+
+# stats: box score / tracking / lineups
+stats:
+  ft_poss_coef: 0.44  # 0.44, Kubatko et al. 2007 [40]; NBA PBP 0.42-0.43; sourced
+  ts_ft_coef: 0.44  # 0.44 in TS% [30][31]; sourced
+  pace_min_elapsed_s: 60.0  # no pace before 1 game minute (pure noise); tuned
+  paint_zones: [restricted_area, paint]  # CourtSpec.zone names (PITP [30]); sourced
+  fast_break_window_s: 7.0  # release within 7 s of the possession start; FIBA allows max 8 s [15]; tuned
+  fast_break_causes: [defensive_rebound, steal]  # transition starters (spec); tuned
+  pts_off_turnover_causes: [turnover, steal]  # possession after a TO [30]; sourced
+  steal_link_s: 1.0  # STEAL and TURNOVER this close describe one play; tuned
+  assist_requires_made_shot: true  # an assist on a known missed/pending shot is not credited; sourced [15]
+  technical_foul_types: [technical, bench_technical, coach_technical]  # FOUL attrs["type"] values kept out of PF and counted as TF [15]; sourced
+  possession_kept_ft_types: [flagrant, disruptive, unsportsmanlike]  # SHOT_ATTEMPT attrs["ft_type"] of trips after which the shooting team keeps the ball (flagrant / disruptive;...
+  xpts_include_ft: true  # xPTS includes FT attempts so it compares with PTS; design choice
+  include_roster_players: true  # list every roster player (DNP lines are zeros); design choice
+  run_window_s: 300.0  # "last N minutes" differential window (game seconds when known); tuned
+  max_speed_fts: 30.0  # step speed above this is an identity jump (ARCHITECTURE perception clamp); sourced
+  speed_window_s: 0.5  # top speed = displacement over this window / window; tuned
+  position_smoothing_tau_s: 0.0  # >0: distance on EMA-smoothed positions (off: perception smooths); tuned
+  max_track_gap_s: 0.5  # a player unseen longer than this restarts (no step, no time); tuned
+  touch_regain_gap_s: 0.5  # holder flicker shorter than this is the same touch; tuned
+  decision_buffer_s: 10.0  # frame ring buffer length (spec ~10 s); tuned
+  decision_frame_tol_s: 0.5  # nearest buffered frame must be this close to the event; tuned
+  grade_kinds: [pass, shot_attempt]  # ARCHITECTURE DecisionModel.grade; sourced
+  ocr_confirm_reads: 2  # identical consecutive OCR reads to confirm a score (D14); sourced
+  trusted_scoreboard_sources: [manual, feed, sim]  # confirm at once (ARCHITECTURE); sourced
+  clock_stale_s: 3.0  # no clock reading for this long -> fall back to live video dt; tuned
+  max_frame_dt_s: 0.5  # cap on one frame's video dt (pauses / dropped frames); tuned
+  clock_jump_tol_s: 2.0  # An untrusted (OCR) clock reading that puts elapsed game time this far ahead of the video time since the las...
+  lineup_min_possessions: 20  # below this a lineup is small_sample (narration.md §7.2 proposal); unverified
+  default_first_half_attack: {home: right, away: left}  # ---- attacking direction before any shot evidence: home attacks this basket in the first half
+  period_s_by_league: {nba: 720, fiba: 600, ncaa_m: 1200, ncaa_w: 600, nfhs: 480}  # ---- period lengths when no RuleSpec is given (config/rules/*.yaml; sourced)
+  ot_s_by_league: {nba: 300, fiba: 300, ncaa_m: 300, ncaa_w: 300, nfhs: 240}
+  n_periods_by_league: {nba: 4, fiba: 4, ncaa_m: 2, ncaa_w: 4, nfhs: 4}
+
+# shot_model: xFG model
+shot_model:
+  enabled: true
+  path: null  # ShotQualityModel.to_json() file from training/fit_shot_model.py; None = priors
+  priors:  # used when path is None
+    distance_anchors: [[1.5, 0.703], [6.5, 0.463], [13.0, 0.446], [19.5, 0.401], [26.0, 0.345], [30.0, 0.3], [40.0, 0.1], [50.0, 0.027]]  # (distance_ft, FG%) anchors for a generic NBA field-goal attempt. Interpolated linearly in log-odds, flat be...
+    corner_three_fg: 0.387  # corner-3 FG% 2025-26, pbpstats and B-Ref agree (§4b/§4c); sourced
+    corner_three_ref_ft: 22.5  # typical corner-3 distance (line at 22 ft [1]); unverified
+    defender_bucket_edges_ft: [0.0, 2.0, 4.0, 6.0, 12.0]  # Closest-defender buckets (NBA CloseDefDistRange 0-2/2-4/4-6/6+ ft; strings unverified, §4d). The open-ended...
+    defender_bucket_fg3: [0.3, 0.34, 0.365, 0.385]  # 3P% by closest defender, midpoints of the note's ranges .29-.31/.33-.35/.36-.37/.38-.39 (§4d); unverified p...
+    reference_fg3: 0.36  # NBA 3P% 2025-26, official/B-Ref headline value (§4a, §4c conflict note); sourced
+    defender_scale_two: 1.0  # the 3P-calibrated shift applied to 2s at this scale; unverified
+    defender_cap_ft: 12.0  # distances beyond this are treated as this (wide open); unverified
+    catch_shoot_fg3: 0.375  # catch-and-shoot 3P% ~.37-.38 (§4d); unverified placeholder
+    pull_up_fg3: 0.335  # pull-up 3P% ~.33-.34 (§4d); unverified placeholder
+    catch_shoot_min_ft: 10.0  # Catch/pull splits apply to jumpers from this distance: NBA GeneralRange puts "Less Than 10 ft" in its own c...
+    catch_shoot_full_ft: 22.0  # ... and ramp linearly to full strength here (the splits are 3P%). The ramp is gentler than the baseline's d...
+    shot_type_logit: {jumper: 0.0, layup: -0.25, dunk: 1.5, tip: -0.5, hook: 0.1}  # Log-odds shift by shot type relative to the generic mix at that distance. No FG%-by-type source exists in t...
+    ft_pct: {nba: 0.783, fiba: 0.75, ncaa_m: 0.71, ncaa_w: 0.71, nfhs: 0.62}  # League free-throw percentage. NBA .783 (2025-26, §4a; sourced). NCAA D1 men ~.70-.72 (§4e; unverified). FIB...
+    league_logit_offset: {nba: 0.0, fiba: -0.05, ncaa_m: -0.1, ncaa_w: -0.3, nfhs: -0.4}  # Log-odds scaling of every FG prior per league. NBA 0 (the priors are NBA). NCAA men -0.10 ~ 3P% 34% vs NBA...
+    min_prob: 0.01  # output clip (spec)
+    max_prob: 0.99
+    fit_max_iter: 100  # Newton iterations
+    fit_tol: 1.0e-08  # stop when the largest coefficient step is below this
+
+# decision_model: EPV-lite grades
+decision_model:
+  enabled: true
+  config:
+    pass_speed_fts: 35.0  # average ball speed of a pass (~24 mph); unverified, tune on tracking
+    pass_release_s: 0.15  # wind-up before the ball leaves the hands; unverified
+    lead_receiver: true  # price the catch where the receiver will be (pos + v * flight time)
+    lane_ignore_near_passer_ft: 6.0  # The lane starts this far from the passer, so the on-ball defender (who guards from 3-6 ft and is passed aro...
+    lane_ignore_near_receiver_ft: 2.0  # ... and ends this far short of the catch point, so the
+    complete_base_logit: 4.2  # logit P(complete) for a short, open pass (~.985); unverified.
+    complete_per_10ft_logit: -0.35  # longer passes fail more (40 ft ~ .94 open); unverified
+    lane_defender_logit: -3.0  # extra log-odds when a defender sits on the lane; unverified
+    lane_defender_scale_ft: 2.0  # e-folding distance of that penalty; unverified
+    closeout_speed_fts: 10.0  # receiver's defender closes this fast while the ball travels; unverified
+    turnover_value: 0.0  # offense points after a failed pass (possession lost); EPV-lite convention
+    receiver_can_reset: true  # A completed pass is worth max(receiver's shot, reset value): the receiver may also hold. Off, every pass is...
+    self_match_ft: 1.0  # a teammate this close to a holder found only by the event x/y is
+    include_miss_value: true  # add (1 - xFG) x OREB rate x putback PPP so shots compare with "hold"
+    oreb_at_rim: 0.387  # distance < 4 ft
+    oreb_short_mid: 0.32  # 2s, 4-14 ft
+    oreb_long_mid: 0.243  # 2s, >= 14 ft
+    oreb_three: 0.273  # corner and above-the-break 3s (both .273 in 2025-26)
+    putback_ppp: 1.1  # Synergy "Putbacks" placeholder PPP ~1.08-1.15 (§5); unverified
+    league_ppp: {nba: 1.16, fiba: 1.05, ncaa_m: 1.03, ncaa_w: 0.92, nfhs: 0.85}  # Hold / reset: league points per possession. NBA 1.160 (pbpstats 2025-26, §4c); sourced. Other leagues: unve...
+    hold_full_s: 12.0  # shot clock >= this: a reset is worth a full possession; unverified
+    hold_zero_s: 1.0  # shot clock <= this: a reset is worth nothing; unverified
+    hold_uses_game_clock: true  # The reset value also runs down with the game clock when it is shorter than the shot clock (end of period, o...
+    good_delta: -0.05  # >= this is "good" (jev_integration_design site 4 "best_option"; proposal)
+    poor_delta: -0.2  # < this is "poor" (spec; proposal)
+
+# insights: coach cards
+insights:
+  max_active: 3  # at most 3 cards visible (narration.md §7.3); proposal
+  max_words: 12  # <= 12 words per card (narration.md §7.3; RESEARCH §2.7); proposal
+  priorities: {foul_trouble: 90, run: 80, team_fouls: 70, turnovers: 60, shot_quality: 50, decision: 45, oreb: 40, hot_hand: 35, lineup: 30, fatigue: 30, ft_rate: 25, shot_diet: 20}  # Higher = more important. Order from jev_integration_design.md site 6 fallback: foul trouble > run >= 8-0 >...
+  default_cooldown_s: 120.0  # Same card type <= 1 per 120 s of game clock (narration.md §7.3/§9.5); proposal. Foul trouble and team fouls...
+  cooldown_per_subject: false  # The cooldown is per card TYPE ("same alert type <= 1 per 120 s", narration.md §7.3; "a card type appears at...
+  cooldown_s: {foul_trouble: 0.0, team_fouls: 0.0, run: 0.0, shot_quality: 300.0, shot_diet: 300.0, oreb: 300.0, ft_rate: 300.0, lineup: 300.0, fatigue: 300.0}
+  active_ttl_s: 600.0  # video seconds a "news" card stays active; tuned
+  state_kinds: [foul_trouble, team_fouls]  # active while true
+  league_rule_defaults: {nba: {foul_out: 6, n_periods: 4, period_s: 720, halves: false, technicals: false}, fiba: {foul_out: 5, n_periods: 4, period_s: 600, halves: false, technicals: true}, ncaa_m: {foul_out: 5, n_periods: 2, period_s: 1200, halves: true, technicals: false}, ncaa_w: {foul_out: 5, n_periods: 4, period_s: 600, halves: false, technicals: false}, nfhs: {foul_out: 5, n_periods: 4, period_s: 480, halves: false, technicals: true}}  # Rule defaults when no RuleSpec is given (rules note §3; sourced): foul-out, periods, halves. "technicals":...
+  hot_hand_window: 4  # Hot hand: makes in the last N FGAs, the latest one made; tuned (descriptive only)
+  hot_hand_makes: 3
+  run_min_points: 8  # Runs: 8-0 or 10-2, update every +4 (narration.md §9.5 run callout); proposal
+  run_alt_points: 10
+  run_alt_max_opp: 2
+  run_update_step: 4
+  run_window_rearm_s: 300.0  # a window run re-arms after this (video s) when the stats lack
+  xefg_leagues: [nba]  # RESEARCH §7A.2
+  sq_min_shots: 15
+  sq_min_gap: 0.1  # also the raw-eFG gap between teams outside xefg_leagues; tuned
+  diet_min_shots: 15  # Shot diet: midrange share of FGA; NBA long-mid pts/shot .824 vs rim 1.345 (rules note §4c)
+  diet_midrange_share: 0.3  # unverified (NBA long 2s are ~7% of FGA, §4c)
+  oreb_min_chances: 10  # tuned
+  oreb_pct_high: 0.4  # ~1.5x the NBA rate; unverified
+  tov_burst_count: 3  # tuned
+  tov_burst_possessions: 5  # tuned
+  tov_burst_window_s: 180.0  # fallback without POSSESSION events; tuned
+  lineup_min_possessions: 20  # Lineup +/-: hidden below ~20 possessions (narration.md §7.2 [59]); proposal
+  lineup_min_abs_net: 5.0  # tuned
+  fatigue_bin_s: 60.0  # Fatigue: per-player top speed per time bin (observe_frame); tuned / unverified
+  fatigue_min_bins: 6
+  fatigue_recent_bins: 3
+  fatigue_drop: 0.15  # recent top speed >= 15% below the earlier 75th percentile; unverified
+  fatigue_min_baseline_fts: 14.0  # ignore players who never ran (~9.5 mph); tuned
+  fatigue_quantile: 95.0  # robust per-bin "top speed" (percentile of samples); tuned
+  fatigue_min_coverage_s: 20.0  # a bin counts only with this much tracked time; tuned
+  fatigue_max_speed_fts: 32.0  # drop implausible samples (perception clamps at 30 ft/s)
+  decision_window: 8  # Decision quality: >= 3 "poor" grades in a player's last 8 graded decisions; tuned
+  decision_min_poor: 3
+  ft_rate_min_fga: 15  # FT rate FTA / FGA; NBA FTr .264 in 2025-26 (§4a)
+  ft_rate_high: 0.4  # ~1.5x the NBA rate; unverified
+  team_foul_excluded_types: [technical, coach_technical, bench_technical]  # Fouls that are not team fouls (coach / bench technicals per the FIBA manual, rules note §2a; player technic...
+
+# jev: TypeSafe Jev (live needs TYPESAFE_API_KEY; "stub" for demos)
+jev:
+  enabled: true
+  mode: live  # "live" | "stub" | "replay" | "off"
+  model: jev-1.13.0  # pinned text model (D2); answers from any other model are untuned
+  image_model: jev-1.14.0  # B6 only
+  deadlines_s: {B1: 1.5, B2: 1.0, B3: 1.0, B4: 0.8, B5: 0.7, B6: 5.0}  # hard wall clock per bundle
+  max_in_flight: 8  # design §2: one asyncio pool, <= 8 requests in flight
+  cache_enabled: false  # §7A.9: off until the 20-identical-requests determinism test passes
+  images_enabled: false  # B6 only when enabled; images are "dreamer-ready" (design §3 site 8)
+  cache_maxsize: 2048
+  cache_ttl_s: 120.0
+  breaker_threshold: 3  # consecutive failures that open a bundle's circuit (design §7.2 proposal)
+  breaker_cooldown_s: 30.0  # open duration before a trial call (design §7.2 proposal)
+  rate_limit_min_open_s: 1.0  # floor for a 429 trip when retry-after is missing/short
+  replay_path: null  # recorded JSONL for mode="replay" when no mapping is passed in
+  thresholds: {}  # overrides of decoders.Thresholds fields
+  fallback_rules: {}  # overrides of decoders.FallbackRules fields
+
+# narration: narrator (mode, Claude model, holds)
+narration:
+  mode: broadcast  # "broadcast" | "coach" | "accessibility"
+  llm_enabled: true
+  model: claude-opus-5-5  # RESEARCH §2.6; sourced
+  effort: low  # §7A.3; sourced
+  max_tokens: 1536  # D13; sourced
+  candidate_deadline_s: 12.0  # D6 placeholder until the latency harness measures p95; unverified
+  p95_total_s: 12.0  # measured Claude p95 total; placeholder (§7A.3); unverified
+  max_words: {play_by_play: 12, color: 35, coach: 12, accessibility: 6, correction: 12}
+  cooldown_s: {play_by_play: 0.6, color: 1.0, correction: 0.0, accessibility: 0.0, coach: 0.0}
+  min_gap_s: 0.6  # min silence between lines, live ball (narration.md §9.5; human 1.7 s [2]); sourced
+  use_jev_validator: true  # D4: LLM lines need a passing B4 verdict; sourced
+  pseudonymise: true  # D16: False disables the cloud path (names never leave the device); sourced
+  cloud_narration_ok: true  # §7A.7 consent gate (DPA, consent, under-13, region); False = template-only
+  tts: avspeech  # "avspeech" | "none" | "say" (dev-only, D5)
+  seed: 0  # pseudonym shuffle and template variety
+  hold_s: {shot_attempt: 0.0, shot_made: 0.2, shot_missed: 0.3, block: 0.3, rebound: 0.3, steal: 0.5, turnover: 0.5, foul: 0.5}  # Confirmation holds before an outcome call (RESEARCH §4.1 / narration.md §9.3; proposals); unverified
+  make_wait_s: 3.0  # wait for confirmation (§7A.5 / narration §11.2: 3.0 s until lag is measured); sourced (proposal)
+  make_wait_band: 0.8  # calibrated makes in [0.80, gate) wait; below: silence (RESEARCH §4.1); sourced (proposal)
+  colour_lines_per_window: 2  # 1-2 colour lines per dead ball (narration.md §4.2); sourced
+  two_line_window_s: 20.0  # shorter stoppages (free throws) get 1 line (narration.md §9.2); sourced (proposal)
+  colour_start_delay_s: 1.0  # first colour line 1.0-2.0 s after the stoppage call (§4.2); sourced
+  min_colour_window_s: 4.0  # a stoppage >= 4 s opens P3 colour (§4.2); sourced
+  default_dead_window_s: 8.0  # window assumed when the dead-ball source gives none; tuned
+  colour_events: 6  # recent events put in a dead-ball colour packet (their players' stats come along); tuned
+  storylines: []  # state-independent topics (season storylines, program facts)
+  storyline_refresh_s: 30.0  # min seconds between storyline candidate requests; tuned
+  storyline_cooldown_s: 300.0  # Storyline lines at least this far apart in video time: same colour topic >= 5 min, same fact never within 5...
+  coach_max_visible: 3  # at most 3 cards visible (narration.md §7.3); sourced (proposal)
+  coach_max_words: 12  # <= 12 words per card (§7.3); sourced (proposal)
+  coach_immediate_kinds: [foul_trouble, team_fouls]  # Q+1 alerts post immediately (§7.3)
+  coach_event_kinds: [foul, period_end]  # event cards in coach mode; tuned
+  staff_team: null  # "home" | "away": the staff the coach channel serves (B3 context)
+  ad_ttl_s: 4.0  # AD line TTL (AD p95 <= 2 s target, RESEARCH §7A.8); tuned
+  recent_lines: 10  # spoken lines kept for repetition checks (narration.md §3.3); sourced
+  poll_s: 0.02  # speaking-loop tick (narration.md §8: 50 Hz director tick); sourced
+  stop_grace_s: 1.0  # TTS stop() must end the line within this, else the task is cancelled; tuned
+  prosody_from_stakes: {routine: calm, notable: up, high_stakes: big, decisive: big}
+
+# director: speak-now / priority / preemption
+director:
+  ttl_release_s: 0.8  # release call (narration.md §9.1); unverified
+  ttl_p0_s: 3.0  # P0 critical (narration.md §9.1); unverified
+  ttl_correction_s: 10.0  # corrections (narration.md §3.6: <= 10 s TTL); unverified
+  ttl_p1_s: 2.0  # live calls, after confirmation (narration.md §9.1); unverified
+  ttl_p2_s: 3.0  # context lines (spec; narration.md proposes 8 s or until the next P1); unverified
+  ttl_p3_default_s: 20.0  # P3 cue without its own TTL: <= 20 s dead-ball window (§9.1); unverified
+  min_gap_s: 0.6  # min silence between lines, live ball (narration.md §9.5; human 1.7 s [2]); sourced
+  cooldown_s: {play_by_play: 0.6, color: 1.0, correction: 0.0, accessibility: 0.0, coach: 0.0}
+  kind_cooldown_s: {score_update: 60.0, run: 60.0}
+  hedge_window: 3  # hedged phrasing <= 1 in 3 consecutive utterances (narration.md §3.5); sourced
+  max_hedges_in_window: 1
+  hedge_cap_channels: [play_by_play, color]  # AD / coach state hedges plainly
+  max_queued: {0: 4, 1: 1, 2: 3, 3: 2}  # §9.4 buffer depth
+  p1_latest_wins: true  # newer P1 replaces queued P1 of the same group (narration.md §4.2); sourced
+  p1_flushes_lower: true  # a P1 offer drops queued P2/P3 (P2 lives "until the next P1", §9.1)
+  p0_ignores_gap: true  # P0 skips gap and cooldowns (it cuts in at the next word boundary)
+  speaking_timeout_s: 30.0  # forget a current line never reported spoken after this long
+  correction_storm_count: 2  # more than this many spoken corrections... (narration.md §3.6); sourced
+  correction_storm_window_s: 300.0  # ...within 5 game minutes (same); sourced (proposal)
+  gate_boost_step: 0.03  # then raise live gates by +0.03 (same); sourced (proposal)
+  hold_boost_step_s: 0.2  # and widen holds by +200 ms (same); sourced (proposal)
+
+# facts: FactPacket gates
+facts:
+  max_recent_lines: 10  # repetition is checked against the last 10 lines (narration.md §3.3); sourced
+  trusted_sources: [sim, manual]  # never hedge-only (ARCHITECTURE events/); sourced
+  calibrated_statuses: [platt, isotonic, calibrated, assumed_sim]  # §7A.2; sourced
+  apply_confidence_gates: true  # calibrated events must also pass their live gate (RESEARCH.md §4.1)
+  gates: {shot_attempt: 0.9, shot_made: 0.95, shot_missed: 0.9, rebound: 0.9, steal: 0.9, turnover: 0.9, block: 0.92, foul: 0.97, assist: 0.9, score_correction: 0.95}  # Live gates on Event.confidence for calibrated, unconfirmed events (RESEARCH.md §4.1 / narration.md §9.3; de...
+  three_gate: 0.97  # say "three" only if P(3) >= 0.97 (attrs "p_three" when present; §4.1); unverified
+  ocr_min_conf: 0.9  # a frame scoreboard OCR read below this does not confirm the score; unverified
+  streak_min: 3  # "third straight make" from 3 consecutive made FGs (design proposal); tuned
+  run_min_margin: 8  # run callout at 8-0 or 10-2 (narration.md §9.5); sourced (proposal)
+  run_max_opp: 2  # ...with the opponent held to <= 2 in that span (same); sourced (proposal)
+  milestones: [10, 20, 30, 40]  # player point milestones (narration.md §9.5); sourced (proposal)
+  shooting_line_min_fga: 4  # "{P07} is 4-for-6" derived only from 4 attempts (design proposal); tuned
+  top_half_angle_deg: 22.5  # AD zone "top": within this angle of the basket axis; tuned
+  period_format: {nba: [4, false], fiba: [4, false], ncaa_m: [2, true], ncaa_w: [4, false], nfhs: [4, false]}  # Period naming when no RuleSpec is given: (n_periods, halves) per league (rules note §3).
+
+# templates: template lines
+templates:
+  max_words: {release: 4, release3: 4, ft_attempt: 5, made2: 8, made3: 8, layup: 8, dunk: 10, ft_made: 5, ft_miss: 5, miss: 5, block: 10, steal: 8, turnover: 8, oreb: 6, dreb: 4, team_reb: 4, assist: 6, possession: 6, bring_up: 6, foul: 10, whistle: 5, timeout: 10, substitution: 10, period_start: 12, period_end: 12, score_update: 12, run: 12, hedge_shot: 8, hedge_ft: 6, hedge_loose: 6, hedge_stop: 5, hedge_rebound: 4}
+  line_cap: {play_by_play: 12, color: 35, coach: 12, accessibility: 6, correction: 12}
+  assist_extra_words: 4  # assist add-on may extend a made call by this much (design proposal)
+  streak_extra_words: 4  # streak add-on allowance (design proposal)
+  score_tail_max_margin: 6  # score tail on makes within two possessions, ties, lead changes; tuned
+  ad_names: true  # AD shot calls carry the shooter token (identity tiers apply when rendered)
+  lru_window: 3  # none of the last 3 variants of a family repeats (narration.md §3.4); sourced
+  repetition_jaccard: 0.8  # never pick a variant the validator would reject as a repeat (spec)
+
+# candidates: Claude candidate pool (None = derived from narration.*)
+candidates: null
+
+# tts: voice (engine chosen by narration.tts)
+tts:
+  words_per_s: 3.5  # macOS default voice measured 3.5-3.7 words/s (narration.md §4.1 [M]); sourced
+  min_line_s: 0.4  # shortest simulated line (one-word calls); tuned
+  rate_wpm: 210  # `say -r`: Samantha measured ~210-220 wpm (narration.md §4.1 [M]); sourced
+  voice: null  # None = system default voice (licensed stock voices only, RESEARCH §2.7)
+  prosody_rate: {calm: 0.95, up: 1.05, big: 1.12}  # Prosody multipliers (narration.md §3.4 "calm / up / big"; values are design proposals); unverified
+  prosody_pitch: {calm: 1.0, up: 1.05, big: 1.1}
+  poll_s: 0.02  # completion polling interval for engines without a completion future; tuned
+  start_timeout_s: 1.5  # AVSpeech: give up if speaking never starts (cold start 0.6-1.0 s [M]); sourced
+  stop_grace_s: 1.0  # how long stop() may take before speak() is forced to return; tuned
+
+# captions: caption / AD cue timing
+captions:
+  delay_s: 1.0  # D: overlay 0.8-1.0 s, caption/anti-wagering 30-60 s (RESEARCH §7A.8); sourced range, set per stream
+  pts_offset_s: 0.0  # source PTS (seconds) at video t = 0; set from the demuxer; tuned per source
+  words_per_s: 3.5  # cue duration from word count (narration.md §4.1 [M]); sourced
+  min_cue_s: 1.0  # shortest on-screen cue; tuned
+  max_cue_s: 7.0  # longest on-screen cue; tuned
+  video_epoch_s: null  # Unix time of video t = 0 (live sources); None = anchor at the first cue
+
+# llm: Claude client (needs Anthropic credentials)
+llm:
+  cache_ttl: 1h  # prompt-cache TTL: Claude runs rarely (timeouts, breaks), so keep the prefix 1 h
+  prewarm: true  # pre-warm the cached system prefix at start and periodically
+  prewarm_interval_s: null  # None = auto: 55 min with a 1 h TTL, 4 min with the 5 min default
+  answer_directly: false  # C2 system line (RESEARCH §7A.3); keep off until measured
+  fallbacks: default  # server-side refusal fallback (opus-class models)
+  timeout_s: 30.0  # HTTP timeout; candidate deadlines are enforced by the narrator
+  max_retries: 0  # speculative lines are never retried
+  offline: false  # allow Claude in non-realtime runs (video time races ahead of wall time)
+
+# server: FastAPI app
+server:
+  static_dir: ''  # "" -> the package's server/static directory
+  protect_reads: true  # with a token, GET /api/* needs it too (rosters of minors, D16 spirit)
+  allowed_origins: []  # extra browser origins; same-origin always ok
+  allowed_hosts: []  # Extra Host names accepted (exact or "*.suffix"; "*" disables the check). IP literals, single-label names (l...
+  max_body_bytes: 65536  # largest accepted request body (calibration/ROI payloads are < 8 KB)
+  events_limit_default: 1000  # GET /api/events default page size
+  events_limit_max: 20000  # matches HubConfig.event_log_max
+  ws_receive_max_bytes: 4096  # client->server WS messages (pings) larger than this are ignored
+  max_speed: 16.0  # largest playback speed accepted by POST /api/control
+  openapi: true  # serve /openapi.json (the CDN-based /docs UI is never served: offline)
+  telemetry: false  # FastAPI native OpenTelemetry (off: footage-adjacent data stays local)
+
+# hub: WebSocket hub
+hub:
+  queue_size: 256  # Per-client live queue capacity; on overflow the oldest superseded snapshot is dropped, else the oldest mess...
+  replay_history: 200  # Events / utterances / insights / captions replayed to a late joiner (ARCHITECTURE "server/" and task spec:...
+  max_rate_hz: {frame: 15.0, stats: 4.0}  # Per-client max delivery rate per message type, latest-wins (frame <= 15 Hz: task spec, sourced; stats 4 Hz:...
+  latest_types: [meta, status, stats, frame]  # Message types whose latest instance is kept and replayed (snapshot semantics).
+  replay_exclude_event_kinds: [dribble]  # Event kinds left out of the WS replay (high-frequency, never narrated; ARCHITECTURE "Shared event semantics...
+  event_log_max: 20000  # REST event log cap (latest revision per event id). A full game is a few thousand events including dribbles...
+  transcript_max: 5000  # REST transcript cap (utterances), tuned.
+  disconnect_on_overflow: true  # Close a client whose queue had to drop a non-superseded message, so the browser reconnects and receives a c...
+
+# serve: host / port / token env var
+serve:
+  host: 127.0.0.1  # local in-gym server by default
+  port: 8765  # dashboard port (`courtvision serve --port`)
+  auth_token_env: COURTVISION_TOKEN  # bearer token read from this env var (never from the file)
+
+# pipeline: LiveGame rates and outputs
+pipeline:
+  frame_hz: 15.0  # frame messages to the hub (video-time rate)
+  stats_hz: 1.0  # stats snapshots to the hub
+  insights_hz: 1.0  # InsightEngine.update between event batches
+  tick_hz: 10.0  # Narrator.tick (dead-ball colour scheduling)
+  sim_assume_calibrated: true  # sim sources are simulator evaluations: cue models report "assumed_sim"
+  keep_frames: true  # keep perceived frames of offline sim video runs for the tracking report
+  max_kept_frames: 36000  # cap on kept frames (20 min at 30 fps)
+  tail_s: 15.0  # source-time seconds narration may finish after the last frame
+  runs_dir: runs  # run_offline output root when no directory is given
+  jpeg_quality: 80  # GET /api/frame.jpg quality
+  captions_sidecar: true  # caption / AD cues -> hub "caption" messages
+  webvtt_path: null  # also write an HLS WebVTT caption file
+  status_hz: 1.0  # status messages (pause / speed / lag) to the hub
+  hub_decisions: 40  # newest decision grades per hub stats message, slimmed (stats.json keeps all)
+
+# eval: truth comparison (sim sources)
+eval:
+  tol_s: 1.0  # event matching tolerance (ARCHITECTURE)
+  match_player: true
+  track_match_radius_ft: 3.0  # tracking_report match radius

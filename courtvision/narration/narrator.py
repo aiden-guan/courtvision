@@ -210,7 +210,8 @@ class Narrator:
                  tts: TTS | None = None, *, rules: RuleSpec | None = None, dead_ball: DeadBallSource = None,
                  captions: CaptionEmitter | None = None, clock: Callable[[], float] = time.monotonic,
                  director_config: DirectorConfig | None = None, candidate_config: CandidateConfig | None = None,
-                 facts_config: FactsConfig | None = None, template_config: TemplateConfig | None = None) -> None:
+                 facts_config: FactsConfig | None = None, template_config: TemplateConfig | None = None,
+                 pseudo: PseudonymMap | None = None) -> None:
         cfg = self.config = config or NarrationConfig()
         if cfg.mode not in MODES:
             raise ValueError(f"NarrationConfig.mode must be one of {MODES}, got {cfg.mode!r}")
@@ -221,7 +222,10 @@ class Narrator:
         self._clock = clock
         self._dead_ball = dead_ball
         self.facts_config = facts_config or FactsConfig()
-        self.pseudo = PseudonymMap(roster, seed=cfg.seed)
+        # One map per game shared by facts, candidates and rendering (D16). The integration layer passes
+        # ``narration.facts.pseudonyms_for(roster, seed)`` so every other packet builder sees the same
+        # tokens; standalone narrators keep a private map.
+        self.pseudo = pseudo if pseudo is not None else PseudonymMap(roster, seed=cfg.seed)
         self.validator = GroundingValidator(ValidatorConfig(max_words=dict(cfg.max_words)))
         self.templates = TemplateRenderer(template_config, seed=cfg.seed)
         self.director = Director(director_config or self._director_config())

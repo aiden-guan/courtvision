@@ -13,9 +13,27 @@ video / camera / simulator ─▶ perception ─▶ event engine ─▶ stats �
 
 ## Status
 
-Work in progress. Every module below is implemented with its own test suite, written against the
-contract in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and then adversarially reviewed. The
-integration layer (`config.py`, `pipeline.py`, `cli.py`, end-to-end tests) is the next step.
+The whole chain runs end to end, from the `courtvision` command line and from Python. A simulated
+game, a video file or a camera goes through perception, the event engine, stats, insights,
+narration and the live dashboard. Every module has its own test suite, written against
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and then adversarially reviewed. On top of those,
+the integration and CLI tests (`tests/test_integration_*.py`) drive the real stack. That includes
+a serve smoke test that runs the dashboard app and a live game on one event loop. The suite has
+1 890+ tests, all deterministic and network-free.
+
+**All accuracy figures come from the seeded simulator.** No real game footage has been evaluated
+yet. On real video the system runs, but its accuracy is unmeasured (see [Limitations](#limitations)).
+Claude and Jev have not been called with live keys in this repo. Without keys, narration is
+template-only and Jev uses its deterministic fallbacks, and nothing crashes.
+
+```python
+from courtvision.config import load_config
+from courtvision.pipeline import run_offline
+
+cfg = load_config(None, ["sim.seconds=120", "source.sim_mode=mono", "narration.tts=none"])
+result = run_offline(cfg, out_dir="runs/demo")  # events.jsonl, transcript.jsonl, stats.json, report.md, ...
+print(result.summary())
+```
 
 | Package | What it does |
 |---|---|
@@ -29,6 +47,171 @@ integration layer (`config.py`, `pipeline.py`, `cli.py`, end-to-end tests) is th
 | `courtvision/eval` | Event, box-score and tracking metrics |
 | `courtvision/server` | FastAPI + WebSocket hub and the live dashboard |
 | `courtvision/training` | Play-by-play alignment, shot-model and cue-model fitting, YOLO export with a rights gate |
+| `courtvision/config.py`, `pipeline.py`, `cli.py`, `roster.py` | One `AppConfig` (defaults in `courtvision/config/default.yaml`), frame sources + `LiveGame` + offline runs, the command line, roster files |
+
+## Quickstart
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+
+# 1. Simulate a 2-minute game, run the whole stack offline and score it against the simulator's truth
+.venv/bin/courtvision simulate --seconds 120 --mode truth3d          # or --mode mono / --mode video
+
+# 2. Live dashboard: a simulated game at 2x, then open http://127.0.0.1:8765/
+.venv/bin/courtvision serve --speed 2 --tts none --open
+```
+
+`python -m courtvision ...` works the same as `.venv/bin/courtvision ...`. The dashboard shows a
+top-down court, the score and clock, the narration transcript, the event feed with corrections,
+box scores, the shot chart, coach insights and a calibration tab. The game runs as a task on the
+server's own event loop, and Ctrl-C stops both cleanly.
+
+**A video file.** `render` writes a synthetic broadcast video. Next to it go its calibration,
+roster, scoreboard ROI and truth events, so the real-video path can be exercised and scored:
+
+```bash
+.venv/bin/courtvision render --seconds 60 --out runs/demo.mkv      # .mkv / .avi: lossless FFV1; .mp4: H.264
+.venv/bin/courtvision run --video runs/demo.mkv --calibration runs/demo.calibration.json \
+    --roster runs/demo.roster.yaml --scoreboard-roi runs/demo.scoreboard_roi.json --detector colorblob --out runs/demo-run
+.venv/bin/courtvision eval runs/demo-run --truth runs/demo.truth_events.jsonl
+```
+
+**Your own footage** needs a fixed camera, a calibration and a detector:
+
+```bash
+# Click >= 4 floor landmarks in a frame and write them down (format: docs/examples/calibration_points.json)
+.venv/bin/courtvision calibrate my_points.json --out venue.json        # prints the fit RMSE in court feet
+.venv/bin/pip install -e ".[cv]"                                       # RF-DETR (Apache-2.0)
+.venv/bin/courtvision run --video game.mp4 --calibration venue.json --roster docs/examples/roster.yaml \
+    --detector rfdetr:weights/basketball.pth                           # or coreml:<model.mlpackage>
+.venv/bin/courtvision serve --source camera --camera 0 --calibration venue.json --roster roster.yaml
+```
+
+The roster format is [`docs/examples/roster.yaml`](docs/examples/roster.yaml). Quote jersey numbers:
+`"0"` and `"00"` are different numbers. You can also calibrate in the dashboard's calibration tab
+(`POST /api/calibration`): `serve --source video` without `--calibration` holds the file at its first
+frame (status `needs_calibration`) until you do. A camera keeps running while it waits.
+
+Nothing is downloaded silently. RF-DETR needs a local weights file; without one, `run` and `serve`
+stop and explain. `--allow-download` lets rfdetr fetch its pretrained COCO checkpoint (~370 MB),
+which detects people and balls but not rims or referees, so use a fine-tuned checkpoint for games.
+`--detector rnd-yolo:<weights>` uses Ultralytics, which is AGPL-3.0. It
+is for R&D only, works only from a source checkout (through `tools/rnd_detectors.py`; shipped code
+never imports it) and prints a warning (RESEARCH.md D9).
+
+**Keys** are optional and detected by name only, never printed or logged:
+
+| Variable | Enables | Without it |
+|---|---|---|
+| `ANTHROPIC_API_KEY` (or an `ant auth login` profile) | Claude colour lines in real-time `serve`, at timeouts and period breaks; the prompt cache uses a 1 h TTL, pre-warmed at start and every 55 min | template-only narration |
+| `TYPESAFE_API_KEY` | live Jev (play type, stakes, coach-card ranking, the line guard) | deterministic fallbacks. Claude lines also stay off, because D4 speaks a Claude line only after a passing Jev guard |
+| `COURTVISION_TOKEN` | bearer token for the dashboard API and WebSocket | `serve` refuses a non-loopback `--host` (the API carries rosters) unless `--insecure-no-auth` |
+
+Offline commands (`simulate`, `run`) keep Jev off unless you pass `--jev live|stub`, so their
+results are reproducible. Claude stays off in offline runs unless `--set llm.offline=true`.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `simulate` | Simulator run, evaluated against truth: `--seconds --seed --league --mode truth3d\|mono\|video --out --jev --json` |
+| `serve` | Live dashboard on uvicorn: `--source sim\|video\|camera --mode --video --camera --speed --host 127.0.0.1 --port 8765 --jev live\|stub\|off --no-llm --tts none\|say\|avspeech --auth-token --open` |
+| `run` | Offline video file: `--video --calibration --detector colorblob\|rfdetr:<weights or size>\|coreml:<mlpackage>\|rnd-yolo:<weights> --roster --scoreboard-roi --start --duration --out` |
+| `calibrate` | Calibration JSON from a points file (landmark names or court points), or `--from-sim`; prints the RMSE |
+| `render` | Synthetic demo video (`.mp4` H.264, `.avi`/`.mkv` lossless) plus calibration / roster / ROI / truth sidecars |
+| `eval` | `events.jsonl` (or a run directory) against `truth_events.jsonl`: per-kind P/R/F1, attribution, shots |
+| `config` | The effective YAML config (`--section NAME`, `--default` for the commented defaults) |
+| `latency` | `tools/latency_harness.py`: real, billed Claude / Jev calls that set every deadline from the measured p95. Refuses to run without the needed keys |
+
+Every command that builds a config takes `--config FILE` and repeatable `--set section.key=value`
+(keys as in `courtvision/config/default.yaml`). Explicit flags win over `--set`, which wins over the file.
+
+## How accuracy is measured
+
+Every simulated game has exact ground truth: positions, events and an independently tallied box
+score. The simulator and the engine follow the same event definitions
+(ARCHITECTURE "Shared event semantics"). Each run is scored by `courtvision/eval`:
+
+- **Events.** Predictions are matched to truth one-to-one, per kind, greedily by time within ±1.0 s
+  (±0.25 s for dribbles). Each kind gets precision, recall, F1, actor accuracy and an
+  "attributed" F1 that also requires the right player. The **headline** is the macro-F1 over the
+  core kinds present (shots, makes, misses, rebounds, assists, steals, turnovers, blocks, passes).
+  Dribbles are reported apart. A shot-level join adds make/miss accuracy, 2-vs-3 accuracy and
+  assist attribution.
+- **Box score.** Per-stat MAE over all truth players, the share of exactly right stat lines, and
+  the team-points error. It is computed only for whole-game runs.
+- **Tracking** (video modes). MOTA, IDF1, position RMSE in feet, ID switches and identity accuracy.
+- **Latency.** Each stage has p50 and p95: perception per frame, the frame step, event time →
+  engine emission, emission → utterance, and event time → utterance.
+
+The modes say what a number tests. `truth3d` feeds perfect 3-D observations, so it tests the event
+logic. `mono` adds the noise model: position and box noise, ball dropouts and false positives, and
+a monocular ball with no height. `video` renders frames and runs the real perception stack
+(colour-blob detector, ByteTrack, template jersey reader, scoreboard OCR, homography). Offline runs
+use source-time clocks, so they are deterministic: the same seed gives the same report.
+
+## Current end-to-end numbers
+
+Measured on 2026-10-20 on the development Mac with `courtvision simulate` / `render` + `run` +
+`eval`. All runs use seed 7 and no keys, so narration is template-only and Jev is off.
+
+| Run | Headline F1 | Notes |
+|---|---|---|
+| `simulate --mode truth3d`, 120 s | **0.967** | Every kind 1.0 except shot_missed 0.80 (one extra miss). Box score exact: per-stat MAE 0, every line exact, team points error 0 |
+| `simulate --mode truth3d`, 600 s | **0.988** | Pass 0.974, shot attempt 0.987, miss 0.971, rebound 0.970, the rest 1.0. Box MAE 0.019, player points MAE 0 |
+| `simulate --mode mono`, 120 s | **0.687** | Possession 0.77, pass 0.89, shots 1.0, assist 0.80, plus spurious steal / turnover. Box MAE 0.075, points MAE 0.42 |
+| `simulate --mode mono`, 600 s | **0.547** | Shot attempt 0.85, make 0.89, miss 0.86, rebound 0.69, steal / turnover / block 0.0. Box MAE 0.214, points MAE 0.58 |
+| `simulate --mode video`, 60 s | **0.972** | Shots 1.0, pass 0.89, possession 0.50. MOTA 0.981, IDF1 0.977, RMSE 0.75 ft. Box exact |
+| `simulate --mode video`, 300 s, seeds 7 / 11 | **0.630** / **0.648** | Longer games expose the same monocular gaps as `mono`: steal 0.0 / 0.31, turnover 0.0 / 0.27, rebound 0.71 / 0.59. MOTA 0.956 / 0.942, box MAE 0.12 / 0.16 |
+| `render` (lossless .avi) → `run`, 60 s | **0.981** | Same perception from a file, with calibration / ROI / roster files and no simulated operator |
+| `render` (H.264 .mp4) → `run`, 60 s | 0.633 | Every shot right, but compression adds false passes, a steal and turnovers |
+
+Team points error is 0 in every simulator mode, because team points follow the confirmed
+scoreboard. Substitution F1 is low (0.14 over 600 s) because the simulated operator enters subs
+2 s late, as a real one would. Fouls appear only through operator entries. Mono scores vary a lot
+by seed: earlier runs of seeds 11 and 23 at 120 s scored 0.62 and 0.30.
+
+**Latency.**
+
+| Measurement | Value |
+|---|---|
+| Event engine | 0.06 ms/frame mean (p95 0.11) |
+| Whole frame step (truth3d) | 0.12 ms mean, p95 0.3 ms |
+| Offline throughput | 120 s in about 0.5 s, about 230x real time |
+| Event time → engine emission | p50 67 ms, p95 1.1 s. Shots resolve when the ball leaves the rim zone |
+| Engine emission → utterance (offline, source time) | p50 283 ms, p95 1.6 s |
+| Real-time `serve`, truth3d at 1x, 60 s | 0 dropped frames. Emission → utterance p50 245 ms, p95 509 ms (wall). Event → utterance p50 0.22 s, p95 1.39 s |
+| Real-time `serve`, video mode at 1x, 40 s | Perception in the worker thread p50 24.5 ms, p95 46.7 ms per 1280×720 frame. Kept real time (factor 1.00, 0 dropped) |
+| Offline video runs | about 1.4x real time |
+
+## Limitations
+
+- **Simulator only.** No real footage has been scored. The colour-blob detector and the template
+  jersey reader work only on the synthetic renderer's palette and digits.
+- **Real video is largely unbuilt beyond the plumbing.**
+  - RF-DETR runs with COCO weights unless you pass fine-tuned ones. COCO has no referee or rim
+    class, so referees count as players and rims must come from the calibration file.
+  - No jersey reader for real footage ships. Players stay provisional (team + track), and
+    narration names teams, not players.
+  - Team assignment is colour k-means.
+  - One fixed camera only. A panning camera breaks the floor homography.
+- **Compression hurts.** Lossy video costs accuracy: on the same 60 s render, H.264 scores 0.63
+  against 0.98 lossless, and OpenCV's mp4v loses the free throws entirely.
+- **Monocular gaps.** With the ball's height unknown, steals, turnovers and blocks are not detected
+  (F1 0.0 over 600 s). Possession sits near 0.75 and rebound attribution near 0.69.
+- **The CV never infers some things.** Fouls, timeouts and substitutions are never inferred: they
+  come from the operator (dashboard) or a feed. Minutes, +/- and lineups exist only after operator
+  lineup entries. Without them, a whistle stoppage can turn into an inferred out-of-bounds turnover.
+- **Uncalibrated confidences.** The cue models (shot, make, three, ...) are hand-set and
+  uncalibrated outside the simulator. On real footage, narration uses hedge-only lines (no outcome,
+  no point value) for any result the scoreboard or the operator has not confirmed, until the models
+  are fitted on labelled games.
+- **Cloud paths are unmeasured.** Claude and Jev have not been called with real keys. Every cloud
+  deadline is an initial value until `courtvision latency` has been run on the venue network
+  (RESEARCH.md §7A.13). Claude only voices dead-ball colour, and only with both keys (D4).
+- **Shot-quality priors are NBA.** Other leagues show raw eFG% instead of expected eFG%.
+- **No audio.** Audio capture is off by design. AVSpeech TTS is macOS-only; `--tts none` works everywhere.
 
 ## Docs
 
@@ -36,6 +219,7 @@ integration layer (`config.py`, `pipeline.py`, `cli.py`, end-to-end tests) is th
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module contracts and shared event semantics.
 - [`docs/TRAINING.md`](docs/TRAINING.md) — data flywheel and fine-tuning.
 - [`docs/research/`](docs/research/) — the fact-checked research notes behind the report.
+- [`docs/examples/`](docs/examples/) — a roster file and a calibration points file.
 
 ## Setup
 

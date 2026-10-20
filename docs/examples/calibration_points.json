@@ -1,0 +1,20 @@
+{
+  "league": "nba",
+  "image_size": [1280, 720],
+  "points": [
+    {"image": [70, 515], "landmark": "L_corner_bottom"},
+    {"image": [282, 263], "landmark": "L_corner_top"},
+    {"image": [166, 401], "landmark": "L_lane_baseline_bottom"},
+    {"image": [357, 401], "landmark": "L_lane_ft_bottom"},
+    {"image": [396, 324], "landmark": "L_lane_ft_top"},
+    {"image": [640, 515], "landmark": "mid_bottom"},
+    {"image": [640, 263], "landmark": "mid_top"},
+    {"image": [640, 390], "landmark": "center_circle_bottom"},
+    {"image": [923, 401], "landmark": "R_lane_ft_bottom"},
+    {"image": [884, 324], "landmark": "R_lane_ft_top"},
+    {"image": [1114, 401], "landmark": "R_lane_baseline_bottom"},
+    {"image": [1210, 515], "landmark": "R_corner_bottom"},
+    {"image": [998, 263], "landmark": "R_corner_top"}
+  ],
+  "rims": {"left": [219, 271, 236, 279], "right": [1044, 271, 1061, 279]}
+}

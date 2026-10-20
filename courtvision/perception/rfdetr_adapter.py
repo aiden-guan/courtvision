@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -46,7 +47,10 @@ class RFDETRConfig:
 
     variant: str = "small"  # "nano" | "small" | "medium"; Small is the default pick (RESEARCH §2.1)
     backend: str = "torch"  # "torch" | "coreml"
-    weights: str | None = None  # fine-tuned checkpoint (torch); None => rfdetr's pretrained COCO weights
+    weights: str | None = None  # fine-tuned checkpoint (torch); None => pretrained COCO, only if allowed below
+    # rfdetr fetches its pretrained COCO checkpoint over the network when no local weights are given
+    # (~370 MB for Small). That must be an explicit choice, never a silent default.
+    allow_pretrained_download: bool = False
     coreml_path: str | None = None  # .mlpackage (coreml); one package per input size
     compute_units: str = "CPU_AND_NE"  # fp16 packages reach the ANE only with CPU_AND_NE/ALL; sourced
     device: str | None = None  # torch device; None => rfdetr's choice
@@ -61,6 +65,30 @@ class RFDETRConfig:
     })
     num_select: int = 300  # sourced (rfdetr PostProcess default)
     background_class_id: int | None = -1  # exported final-slot background (rfdetr decode default); None for COCO
+
+
+class PretrainedDownloadNotAllowed(RuntimeError):
+    """Loading would make rfdetr download pretrained weights, and the config did not allow it."""
+
+
+def check_weights_available(config: RFDETRConfig) -> None:
+    """Raise unless the torch backend has a local checkpoint or an explicit download opt-in.
+
+    Without a local file rfdetr fetches its pretrained COCO checkpoint from the network. Those
+    weights know only "person" and "sports ball" (no rim or referee), so a fine-tuned checkpoint is
+    the right input for real games anyway.
+    """
+    if config.backend != "torch" or config.allow_pretrained_download:
+        return
+    if config.weights is None:
+        raise PretrainedDownloadNotAllowed(
+            f"RF-DETR {config.variant} has no weights file, so rfdetr would download its pretrained COCO "
+            "checkpoint from the network. Set perception.rfdetr.weights to a local fine-tuned checkpoint, or "
+            "set perception.rfdetr.allow_pretrained_download=true (CLI: --allow-download) to fetch it.")
+    if not Path(config.weights).is_file():
+        raise PretrainedDownloadNotAllowed(
+            f"RF-DETR weights file not found: {config.weights} (a missing path may make rfdetr download "
+            "weights by name; pass an existing file, or allow the download explicitly)")
 
 
 def preprocess(frame_bgr: np.ndarray, size_hw: tuple[int, int]) -> np.ndarray:
@@ -178,6 +206,7 @@ class RFDETRDetector:
 
     def _torch_model(self) -> Any:
         if self._model is None:
+            check_weights_available(self.config)
             import rfdetr  # lazy: extra `cv`
 
             cls = getattr(rfdetr, _VARIANTS[self.config.variant])

@@ -61,7 +61,7 @@ courtvision = "courtvision.cli:main"
 include = ["courtvision*"]
 
 [tool.setuptools.package-data]
-courtvision = ["server/static/*", "config/*.yaml", "config/rules/*.yaml"]
+courtvision = ["server/static/*", "config/*.yaml", "config/rules/*.yaml", "config/rules/overrides/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
