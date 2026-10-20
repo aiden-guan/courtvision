@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>CourtVision Live</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23eb6834'/%3E%3Cpath d='M3 16h26M16 3v26M7 7c5 4 5 14 0 18M25 7c-5 4-5 14 0 18' stroke='%230b0b0b' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="static/app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="scorebar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">CourtVision</span>
+  </div>
+
+  <div class="scoreline" role="group" aria-label="Score and clock">
+    <div class="team team-away">
+      <span class="team-bar" aria-hidden="true"></span>
+      <span class="team-name" id="away-name">Away</span>
+      <span class="team-abbr" id="away-abbr" aria-hidden="true">AWY</span>
+      <span class="poss" id="away-poss" aria-hidden="true"></span>
+      <span class="score" id="away-score">0</span>
+    </div>
+    <div class="clockbox">
+      <span class="period" id="period">&ndash;</span>
+      <span class="game-clock" id="game-clock">--:--</span>
+      <span class="shot-clock" id="shot-clock" title="Shot clock">--</span>
+    </div>
+    <div class="team team-home">
+      <span class="score" id="home-score">0</span>
+      <span class="poss" id="home-poss" aria-hidden="true"></span>
+      <span class="team-name" id="home-name">Home</span>
+      <span class="team-abbr" id="home-abbr" aria-hidden="true">HOM</span>
+      <span class="team-bar" aria-hidden="true"></span>
+    </div>
+    <span class="sr-only" id="poss-sr"></span>
+  </div>
+
+  <div class="bar-right">
+    <span class="flag" id="paused-flag" hidden>Paused</span>
+    <span class="flag flag-muted" id="muted-flag" hidden>Muted</span>
+    <div class="conn" id="conn-status" role="status" data-state="connecting">
+      <span class="conn-dot" aria-hidden="true"></span><span id="conn-label">Connecting</span>
+    </div>
+    <button type="button" class="icon-btn" id="btn-settings" aria-label="Settings" title="Settings">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Dashboard views">
+  <button type="button" role="tab" id="tab-live" aria-controls="view-live" aria-selected="true">Live</button>
+  <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false" tabindex="-1">Box score &amp; shots</button>
+  <button type="button" role="tab" id="tab-operator" aria-controls="view-operator" aria-selected="false" tabindex="-1">Operator</button>
+  <button type="button" role="tab" id="tab-calibration" aria-controls="view-calibration" aria-selected="false" tabindex="-1">Calibration</button>
+  <button type="button" role="tab" id="tab-roi" aria-controls="view-roi" aria-selected="false" tabindex="-1">Scoreboard ROI</button>
+</nav>
+
+<main id="main" tabindex="-1">
+
+  <!-- =========================================================== LIVE -->
+  <section class="view view-live" id="view-live" role="tabpanel" aria-labelledby="tab-live">
+    <div class="col col-main">
+      <article class="card card-court">
+        <header class="card-head">
+          <h2>Live court</h2>
+          <div class="legend" aria-label="Legend">
+            <span class="chip chip-away"><span class="dot" aria-hidden="true"></span><span id="legend-away">Away</span></span>
+            <span class="chip chip-home"><span class="dot" aria-hidden="true"></span><span id="legend-home">Home</span></span>
+            <span class="chip chip-ball"><span class="dot" aria-hidden="true"></span>Ball (ring = height)</span>
+          </div>
+        </header>
+        <div class="court-wrap" id="court-wrap">
+          <canvas id="court-canvas" role="img" aria-label="Top-down court: waiting for data"></canvas>
+          <p class="court-overlay" id="court-overlay">Waiting for tracking data</p>
+        </div>
+        <div class="captions" aria-hidden="true">
+          <p class="caption-line"><span class="cc-tag">CC</span><span id="caption-line">&nbsp;</span></p>
+          <p class="caption-line caption-ad"><span class="cc-tag">AD</span><span id="ad-line">&nbsp;</span></p>
+        </div>
+        <footer class="card-foot"><span id="court-meta">&nbsp;</span></footer>
+      </article>
+
+      <article class="card">
+        <header class="card-head"><h2>Team comparison</h2><span class="muted" id="compare-meta">&nbsp;</span></header>
+        <table class="compare" aria-describedby="compare-meta">
+          <thead><tr><th scope="col">Metric</th><th scope="col" id="compare-away-name">Away</th><th scope="col" id="compare-home-name">Home</th></tr></thead>
+          <tbody id="compare-body"></tbody>
+        </table>
+      </article>
+    </div>
+
+    <div class="col col-side">
+      <article class="card card-insights">
+        <header class="card-head"><h2>Coach insights</h2><span class="muted" id="insight-more">&nbsp;</span></header>
+        <ol class="insight-list" id="insight-list"></ol>
+      </article>
+
+      <article class="card card-transcript">
+        <header class="card-head"><h2>Narration</h2><span class="muted" id="transcript-count">0 lines</span></header>
+        <ol class="transcript" id="transcript-list" aria-live="polite" aria-relevant="additions" aria-label="Narration transcript, newest first"></ol>
+      </article>
+
+      <article class="card card-feed">
+        <header class="card-head">
+          <h2>Event feed</h2>
+          <div class="head-tools">
+            <label class="sr-only" for="feed-filter">Event filter</label>
+            <select id="feed-filter">
+              <option value="key">Key plays</option>
+              <option value="all">All events</option>
+              <option value="review">Needs review</option>
+            </select>
+            <button type="button" class="btn btn-small" id="btn-add-event">Add event</button>
+          </div>
+        </header>
+        <ol class="feed" id="feed-list" aria-label="Events, newest first"></ol>
+      </article>
+    </div>
+  </section>
+
+  <!-- =========================================================== STATS -->
+  <section class="view view-stats" id="view-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
+    <article class="card card-box">
+      <header class="card-head"><h2 id="box-away-title">Away</h2><span class="muted" id="box-away-summary">&nbsp;</span></header>
+      <div class="table-scroll"><table class="box" id="box-away-table"></table></div>
+    </article>
+    <article class="card card-box">
+      <header class="card-head"><h2 id="box-home-title">Home</h2><span class="muted" id="box-home-summary">&nbsp;</span></header>
+      <div class="table-scroll"><table class="box" id="box-home-table"></table></div>
+    </article>
+    <p class="footnote"><span class="prov-mark" aria-hidden="true">P</span> provisional: the line includes events not yet confirmed by the scoreboard or an operator. Minutes and +/- come only from operator lineup entries.</p>
+
+    <div class="stats-grid">
+      <article class="card card-shots">
+        <header class="card-head">
+          <h2>Shot chart</h2>
+          <div class="seg" role="group" aria-label="Shot chart team filter">
+            <button type="button" class="seg-btn" id="shot-filter-all" aria-pressed="true">Both</button>
+            <button type="button" class="seg-btn" id="shot-filter-away" aria-pressed="false">Away</button>
+            <button type="button" class="seg-btn" id="shot-filter-home" aria-pressed="false">Home</button>
+          </div>
+        </header>
+        <div class="shot-wrap" id="shot-wrap">
+          <svg id="shot-svg" role="img" aria-labelledby="shot-summary"></svg>
+          <div class="tooltip" id="shot-tooltip" role="tooltip" hidden></div>
+        </div>
+        <div class="shot-legend" aria-hidden="true">
+          <span class="lg-item"><svg width="14" height="14"><circle cx="7" cy="7" r="5" class="lg-made"/></svg>Made</span>
+          <span class="lg-item"><svg width="14" height="14"><circle cx="7" cy="7" r="4.5" class="lg-miss"/></svg>Missed</span>
+          <span class="lg-item lg-ramp"><span>xFG 20%</span><span class="ramp" aria-hidden="true"></span><span>70%+</span></span>
+        </div>
+        <footer class="card-foot"><span id="shot-summary">No shots yet</span></footer>
+      </article>
+
+      <article class="card card-decisions">
+        <header class="card-head"><h2>Decision quality</h2><span class="muted" id="decision-meta">EPV-lite grades</span></header>
+        <ol class="decision-list" id="decision-list"></ol>
+      </article>
+    </div>
+  </section>
+
+  <!-- =========================================================== OPERATOR -->
+  <section class="view view-operator" id="view-operator" role="tabpanel" aria-labelledby="tab-operator" hidden>
+    <div class="col">
+    <article class="card">
+      <header class="card-head"><h2>Score &amp; clock override</h2><span class="muted">Sent as source = manual</span></header>
+      <form class="form-grid" id="form-score" novalidate>
+        <label><span class="lbl"><span id="op-away-label">Away</span> score</span><input type="number" inputmode="numeric" min="0" max="999" id="op-away-score"></label>
+        <label><span class="lbl"><span id="op-home-label">Home</span> score</span><input type="number" inputmode="numeric" min="0" max="999" id="op-home-score"></label>
+        <label>Period<input type="number" inputmode="numeric" min="1" max="20" id="op-period"></label>
+        <label>Game clock<input type="text" inputmode="decimal" placeholder="mm:ss" pattern="[0-9]{1,2}(:[0-9]{2}(\.[0-9])?)?" id="op-game-clock"></label>
+        <label>Shot clock<input type="number" inputmode="decimal" min="0" max="60" step="0.1" id="op-shot-clock"></label>
+        <div class="form-actions">
+          <button type="button" class="btn" id="btn-score-prefill">Use current</button>
+          <button type="submit" class="btn btn-primary" id="btn-score-submit">Apply override</button>
+        </div>
+      </form>
+    </article>
+
+    <article class="card">
+      <header class="card-head"><h2>Playback &amp; narration</h2><span class="muted" id="op-status">&nbsp;</span></header>
+      <div class="control-row">
+        <button type="button" class="btn" id="btn-pause">Pause <kbd>P</kbd></button>
+        <button type="button" class="btn" id="btn-resume">Resume</button>
+        <div class="seg" role="group" aria-label="Playback speed" id="speed-group">
+          <button type="button" class="seg-btn" data-speed="0.5" aria-pressed="false">0.5&times;</button>
+          <button type="button" class="seg-btn" data-speed="1" aria-pressed="true">1&times;</button>
+          <button type="button" class="seg-btn" data-speed="2" aria-pressed="false">2&times;</button>
+          <button type="button" class="seg-btn" data-speed="4" aria-pressed="false">4&times;</button>
+        </div>
+        <button type="button" class="btn" id="btn-mute" aria-pressed="false">Mute narration <kbd>M</kbd></button>
+        <button type="button" class="btn" id="btn-deadball">Mark dead ball <kbd>D</kbd></button>
+        <button type="button" class="btn" id="btn-op-add-event">Add event</button>
+      </div>
+      <p class="hint">Hotkeys work anywhere on the page except inside text fields.</p>
+    </article>
+    </div>
+
+    <article class="card">
+      <header class="card-head">
+        <h2>Tap to sub</h2>
+        <div class="seg" role="group" aria-label="Team">
+          <button type="button" class="seg-btn" id="sub-team-away" aria-pressed="true">Away</button>
+          <button type="button" class="seg-btn" id="sub-team-home" aria-pressed="false">Home</button>
+        </div>
+      </header>
+      <p class="hint" id="sub-hint">Tap a player on the floor, then the player coming in.</p>
+      <div class="sub-grid">
+        <div>
+          <h3 class="sub-title">On floor</h3>
+          <div class="player-grid" id="sub-floor" role="group" aria-label="Players on the floor"></div>
+        </div>
+        <div>
+          <h3 class="sub-title">Bench</h3>
+          <div class="player-grid" id="sub-bench" role="group" aria-label="Bench players"></div>
+        </div>
+      </div>
+      <div class="sub-bar">
+        <p class="sub-summary" id="sub-summary" aria-live="polite">&nbsp;</p>
+        <div class="form-actions">
+          <button type="button" class="btn" id="btn-lineup-set" aria-pressed="false">Set starting five</button>
+          <button type="button" class="btn" id="btn-sub-clear">Clear</button>
+          <button type="button" class="btn btn-primary" id="btn-sub-confirm" disabled>Confirm</button>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <!-- =========================================================== CALIBRATION -->
+  <section class="view view-tool" id="view-calibration" role="tabpanel" aria-labelledby="tab-calibration" hidden>
+    <article class="card card-tool">
+      <header class="card-head">
+        <h2>Court calibration</h2>
+        <button type="button" class="btn btn-small" id="btn-cal-load">Load latest frame</button>
+      </header>
+      <div class="frame-wrap" id="cal-wrap">
+        <canvas id="cal-canvas" tabindex="0" aria-label="Video frame. Click, or move the crosshair with the arrow keys and press Enter, to place the selected landmark."></canvas>
+        <p class="frame-empty" id="cal-empty">Load a frame to start</p>
+      </div>
+      <p class="hint">Arrow keys move the crosshair (Shift = 10 px). Enter places the point.</p>
+    </article>
+    <aside class="card tool-side">
+      <header class="card-head"><h2>Points</h2><span class="muted" id="cal-count">0 / 4 minimum</span></header>
+      <div class="field-row" id="cal-landmark-row">
+        <label for="cal-landmark">Next landmark</label>
+        <select id="cal-landmark"></select>
+      </div>
+      <div class="field-row field-pair" id="cal-manual-row" hidden>
+        <label>Court x (ft)<input type="number" step="0.01" id="cal-manual-x"></label>
+        <label>Court y (ft)<input type="number" step="0.01" id="cal-manual-y"></label>
+      </div>
+      <ol class="point-list" id="cal-points"></ol>
+      <div class="form-actions">
+        <button type="button" class="btn" id="btn-cal-undo">Undo</button>
+        <button type="button" class="btn" id="btn-cal-clear">Clear</button>
+        <button type="button" class="btn btn-primary" id="btn-cal-submit" disabled>Fit homography</button>
+      </div>
+      <div class="result" id="cal-result" role="status" aria-live="polite"></div>
+    </aside>
+  </section>
+
+  <!-- =========================================================== SCOREBOARD ROI -->
+  <section class="view view-tool" id="view-roi" role="tabpanel" aria-labelledby="tab-roi" hidden>
+    <article class="card card-tool">
+      <header class="card-head">
+        <h2>Venue scoreboard</h2>
+        <button type="button" class="btn btn-small" id="btn-roi-load">Load latest frame</button>
+      </header>
+      <div class="frame-wrap" id="roi-wrap">
+        <canvas id="roi-canvas" tabindex="0" aria-label="Video frame. Click the four scoreboard corners, then drag a box for each digit cell."></canvas>
+        <p class="frame-empty" id="roi-empty">Load a frame to start</p>
+      </div>
+      <p class="hint" id="roi-hint">Click the corners in order: top-left, top-right, bottom-right, bottom-left.</p>
+    </article>
+    <aside class="card tool-side">
+      <header class="card-head">
+        <h2>Regions</h2>
+        <div class="seg" role="group" aria-label="Mode">
+          <button type="button" class="seg-btn" id="roi-mode-corners" aria-pressed="true">Corners</button>
+          <button type="button" class="seg-btn" id="roi-mode-cells" aria-pressed="false">Digit cells</button>
+        </div>
+      </header>
+      <div class="field-row">
+        <label for="roi-cell-name">Cell name</label>
+        <input type="text" id="roi-cell-name" list="roi-cell-names" value="home_tens" autocomplete="off" spellcheck="false">
+        <datalist id="roi-cell-names">
+          <option value="home_tens"></option><option value="home_ones"></option>
+          <option value="away_tens"></option><option value="away_ones"></option>
+          <option value="period"></option>
+          <option value="clock_min_tens"></option><option value="clock_min_ones"></option>
+          <option value="clock_sec_tens"></option><option value="clock_sec_ones"></option>
+          <option value="shot_tens"></option><option value="shot_ones"></option>
+        </datalist>
+      </div>
+      <fieldset class="manual-box">
+        <legend>Add cell by coordinates (px)</legend>
+        <div class="field-quad">
+          <label>x1<input type="number" id="roi-mx1"></label>
+          <label>y1<input type="number" id="roi-my1"></label>
+          <label>x2<input type="number" id="roi-mx2"></label>
+          <label>y2<input type="number" id="roi-my2"></label>
+        </div>
+        <button type="button" class="btn btn-small" id="btn-roi-add-manual">Add cell</button>
+      </fieldset>
+      <h3 class="sub-title">Corners</h3>
+      <ol class="point-list" id="roi-corners"></ol>
+      <h3 class="sub-title">Cells</h3>
+      <ol class="point-list" id="roi-cells"></ol>
+      <div class="form-actions">
+        <button type="button" class="btn" id="btn-roi-undo">Undo</button>
+        <button type="button" class="btn" id="btn-roi-clear">Clear</button>
+        <button type="button" class="btn btn-primary" id="btn-roi-submit" disabled>Save ROI</button>
+      </div>
+      <div class="result" id="roi-result" role="status" aria-live="polite"></div>
+    </aside>
+  </section>
+</main>
+
+<!-- =========================================================== DIALOGS -->
+<dialog class="dialog" id="event-dialog" aria-labelledby="ev-title">
+  <form method="dialog" id="event-form" novalidate>
+    <h2 id="ev-title">Correct event</h2>
+    <p class="muted" id="ev-sub">&nbsp;</p>
+    <div class="form-grid form-grid-2">
+      <label>Kind<select id="ev-kind"></select></label>
+      <label>Team<select id="ev-team"><option value="">&ndash;</option><option value="away">Away</option><option value="home">Home</option></select></label>
+      <label>Player<select id="ev-player"></select></label>
+      <label>Other player<select id="ev-other"></select></label>
+      <label>Points / value<input type="number" inputmode="numeric" step="1" min="-99" max="99" id="ev-value" aria-describedby="ev-value-hint"></label>
+      <label>Status<select id="ev-status"><option value="confirmed">Confirmed</option><option value="retracted">Retract (did not happen)</option></select></label>
+      <label>Video time (s)<input type="number" step="0.1" min="0" id="ev-t"></label>
+      <label class="span-2">Note<input type="text" maxlength="200" id="ev-reason" placeholder="Why (kept with the event)"></label>
+    </div>
+    <p class="hint" id="ev-value-hint">Shots: 1 = free throw, 2 or 3. Score correction: signed points (e.g. -2). Period start/end: period number.</p>
+    <p class="form-error" id="ev-error" role="alert"></p>
+    <div class="form-actions">
+      <button type="button" class="btn" id="btn-ev-cancel">Cancel</button>
+      <button type="submit" class="btn btn-primary" id="btn-ev-submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="dialog" id="settings-dialog" aria-labelledby="settings-title">
+  <form method="dialog" id="settings-form">
+    <h2 id="settings-title">Settings</h2>
+    <label class="field">Access token
+      <input type="password" id="set-token" autocomplete="off" spellcheck="false" placeholder="Only if the server requires one">
+    </label>
+    <p class="hint">Kept for this browser tab only. You can also open the dashboard with <code>#token=&hellip;</code>.</p>
+    <label class="field">Theme
+      <select id="set-theme"><option value="auto">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select>
+    </label>
+    <div class="form-actions">
+      <button type="button" class="btn" id="btn-settings-close">Cancel</button>
+      <button type="submit" class="btn btn-primary" id="btn-settings-save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toasts" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+</body>
+</html>

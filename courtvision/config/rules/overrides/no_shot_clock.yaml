@@ -1,0 +1,4 @@
+# State associations that have not adopted the NFHS shot clock (permitted since 2022-23 [28];
+# 24 states used one in 2025-26, 6 more in 2026-27 [27]). Use: rules_for("nfhs", ["no_shot_clock"]).
+shot_clock_s: null
+shot_clock_reset_s: null

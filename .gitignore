@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+.env.*
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Run outputs, footage and model weights (never commit footage or weights: rights-cleared data only, see docs/TRAINING.md)
+runs/
+data/
+*.mp4
+*.mov
+*.pt
+*.pth
+*.onnx
+*.mlpackage/
+*.mlmodel
+
+# OS
+.DS_Store

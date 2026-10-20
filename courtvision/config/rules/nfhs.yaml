@@ -1,0 +1,40 @@
+# NFHS (US high school) -> RuleSpec. Default for AAU / adult rec (override per tournament).
+# Source: docs/research/basketball_rules_stats.md §3 and §8a. [24]/[G1] Rule 5 reproduction,
+# [G2] Rule 6, [G3] Case Book Rule 10, [G6] Case Book Rule 4, [25] 2025-26 shot-clock guidelines,
+# [49] 2023-24 rules changes. Status per value: sourced / unverified.
+ruleset: nfhs
+period_s: 480             # 4 x 8 min [24]; sourced
+n_periods: 4
+ot_s: 240                 # 4 min [24]; sourced
+halves: false
+running_clock: null       # a state "may institute a running clock" at a margin (5-5 Note) [G1]: set via override
+timeouts:
+  scope: game
+  count: 3                # three 60-s per game (5-11-1) [G1]; sourced
+  length_s: 60            # [G1]; sourced
+  short_count: 2          # two 30-s [G1]; sourced
+  short_length_s: 30      # [G1]; sourced
+  per_ot: 1               # one more 60-s per extra period [G1]; sourced
+  per_ot_length_s: 60     # [G1]; sourced
+  carry_over: true        # unused timeouts carry over [G1]; sourced
+possession: arrow         # AP arrow; Q2-Q4 start with an AP throw-in at the division line (6-4) [G2]; sourced
+bonus:
+  scope: period
+  one_and_one_from: null  # one-and-one eliminated (Rule 4-8-1, 2023-24) [49]; sourced
+  two_shots_from: 5       # 2 FTs from the 5th team foul per quarter; fouls reset each quarter [49]; sourced
+  ot_counts_toward_last_period: true  # unverified
+foul_out: 5               # personal and technical fouls counted together (Case 4.14.1) [G6]; sourced
+foul_out_counts_technicals: true    # [G6]; sourced
+tech_ft:
+  n_ft: 2                 # 2 FTs by any member of the offended team (Cases 10.5.1 B, 10.6.5) [G3]; sourced
+  shooter: any            # [G3]; sourced
+  resume: division_line   # then a division-line throw-in [G3]; sourced
+  flagrant_disqualifies: true  # Case 10.6.2 B [G3]; sourced
+shot_clock_s: 35          # by state adoption since 2022-23 [25][28]; overrides/no_shot_clock.yaml for states without one; sourced
+shot_clock_reset_s: 35    # full reset when a try strikes the ring and either team gains control; no short reset [25]; sourced
+clock_stops_after_fg: null  # never: 5-8-1 lists fouls, held balls, violations and time-outs only [G1]; sourced
+backcourt_s: 10           # [25]; sourced
+intervals:
+  between_periods_s: 60   # 1 min between quarters [24]; sourced
+  halftime_s: 600         # 10 min, extendable to 15 (5-5-1) [24][G1]; sourced
+  before_ot_s: 60         # 1-min break [24]; sourced

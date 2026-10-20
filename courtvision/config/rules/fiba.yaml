@@ -1,0 +1,40 @@
+# FIBA Official Basketball Rules 2026 v1.1 (valid from 1 Oct 2026) -> RuleSpec.
+# Source: docs/research/basketball_rules_stats.md §3 and §8a; [11] = FIBA OBR 2026.
+# Status per value: sourced (primary text in the note) / unverified (not checked in the note).
+ruleset: fiba
+period_s: 600             # 4 x 10 min [11]; sourced
+n_periods: 4
+ot_s: 300                 # 5 min [11]; sourced
+halves: false
+running_clock: null
+timeouts:
+  scope: half
+  first_half: 2           # Art. 18.2 [11]; sourced
+  second_half: 3          # [11]; sourced
+  max_late_q4: 2          # max 2 once the Q4 game clock shows <= 2:00 [11]; sourced
+  late_q4_s: 120          # [11]; sourced
+  per_ot: 1               # [11]; sourced
+  length_s: 60            # 1 min each [11]; sourced
+  carry_over: false       # no carry-over [11]; sourced
+possession: arrow         # AP arrow; the team not gaining first control gets the first AP throw-in (Art. 12.6) [11]; sourced
+bonus:
+  scope: period
+  two_shots_from: 5       # penalty after 4 team fouls per quarter [11]; sourced
+  ot_counts_toward_last_period: true  # OT team fouls count toward Q4 [11]; sourced
+foul_out: 5               # [11]; sourced
+foul_out_counts_technicals: true    # personal and technical fouls; unverified
+tech_ft:
+  n_ft: 1                 # Art. 36.3.2 [11]; sourced
+  shooter: any            # unverified
+  resume: poi             # throw-in by the team in control / entitled, where play stopped (36.3.2) [11]; sourced
+  flagrant_shooter: fouled   # disruptive / flagrant: FTs to the fouled player (37.2, 38.2) [11]; sourced
+  flagrant_resume: frontcourt  # then a frontcourt throw-in opposite the table [11]; sourced
+shot_clock_s: 24          # [11]; sourced
+shot_clock_reset_s: 14    # same team regains control after the ball touched the ring [11]; sourced
+clock_stops_after_fg:
+  q4_ot_last_s: 120       # game clock <= 2:00 in Q4 and each OT (timer duties) [11]; sourced
+backcourt_s: 8            # [11]; sourced
+intervals:
+  between_periods_s: 120  # Q1-Q2, Q3-Q4: 2 min [11]; sourced
+  halftime_s: 900         # 15 min [11]; sourced
+  before_ot_s: 120        # 2 min before each OT [11]; sourced

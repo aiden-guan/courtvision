@@ -1,0 +1,43 @@
+# NBA 2026-27 playing rules -> RuleSpec (courtvision/geometry/rules.py).
+# Source: docs/research/basketball_rules_stats.md §3 and §8a. Bracketed refs are that note's list:
+# [3] Rule 5, [4] Rule 7, [5] Rule 10, [7] Rule 12, [8] Rule 3, [10] 2026-27 PDF, [G4] Rule 5-V/VI.
+# Status per value: sourced (primary text in the note) / unverified (not checked in the note).
+ruleset: nba
+period_s: 720             # 4 x 12 min [3]; sourced
+n_periods: 4
+ot_s: 300                 # 5 min [3]; sourced
+halves: false
+running_clock: null
+timeouts:
+  scope: game
+  count: 7                # 7 per game [G4]; sourced
+  length_s: 75            # non-mandatory timeouts 1:15 [G4]; sourced
+  mandatory_length_s: 165 # mandatory 2:45 local (3:15 national TV) [G4]; sourced
+  max_in_q4: 4            # at most 4 in Q4 [G4]; sourced
+  max_late_q4: 2          # "then 2 late in Q4" [G4]; sourced
+  late_q4_s: 180          # the late-Q4 window (last 3:00); unverified
+  per_ot: 2               # [G4]; sourced
+  carry_over: false       # unverified
+possession: jump          # held balls by jump ball; unverified (not re-checked in the note)
+bonus:
+  scope: period
+  two_shots_from: 5       # 4 team fouls per regulation period before the penalty [7]; sourced
+  late_period_s: 120      # last 2:00: one "free" foul when under quota [7]; sourced
+  late_two_shots_from: 2  # 2nd team foul inside the last 2:00 when under quota [7]; sourced
+  ot_two_shots_from: 4    # 3 team fouls per OT before the penalty [7]; sourced
+foul_out: 6               # disqualification on the 6th personal foul [8]; sourced
+foul_out_counts_technicals: false  # technicals are not personal fouls; unverified
+tech_ft:
+  n_ft: 1                 # unverified (the note covers the transition take foul: 1 FT by any player [10])
+  shooter: any            # unverified
+  resume: poi             # unverified
+shot_clock_s: 24          # [4]; sourced
+shot_clock_reset_s: 14    # offense controls a miss that contacted the rim [4]; sourced
+clock_stops_after_fg:
+  q1_3_last_s: 60         # last minute of Q1-Q3 (Rule 5-V-2) [G4]; sourced
+  q4_ot_last_s: 120       # last 2:00 of Q4 and each OT [G4]; sourced
+backcourt_s: 8            # [5]; sourced
+intervals:
+  between_periods_s: 150  # Q1-Q2 and Q3-Q4: 2:30 local (3:30 national TV) [3]; sourced
+  halftime_s: 900         # 15 min [3]; sourced
+  before_ot_s: 150        # unverified

@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+# Dependency decisions: docs/RESEARCH.md §1A (D9-D12). Exact pins on the packages whose APIs
+# drifted recently (sv.ByteTrack removal, Jev SDK, Anthropic SDK). Generate a lock file from
+# these pins (e.g. `uv lock` or `pip-compile`) before Phase B.
+
+[project]
+name = "courtvision"
+version = "0.1.0"
+description = "Real-time basketball computer vision, live stats, Jev decision layer and grounded AI narration"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "pyyaml>=6.0",
+    # One OpenCV wheel only (D12): trackers 2.6.1 requires opencv-python>=4.8.0, and the
+    # headless wheel installs the same cv2 package. Do not add opencv-python-headless.
+    "opencv-python>=4.10",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.0",
+    "anthropic==1.15.0",
+    "typesafe-sdk==0.7.5",
+]
+
+[project.optional-dependencies]
+# Production CV backend (Apache-2.0 / MIT). RF-DETR exported to CoreML fp16 (D10).
+cv = [
+    "rfdetr[coreml]==1.11.2",
+    "supervision==0.31.0",
+    "trackers==2.6.1",
+    "torch>=2.4",
+]
+# Kept as an alias of `cv` so existing install commands keep working.
+rfdetr = [
+    "rfdetr[coreml]==1.11.2",
+    "supervision==0.31.0",
+    "trackers==2.6.1",
+    "torch>=2.4",
+]
+# SigLIP -> UMAP -> KMeans team classifier (D11). Imported lazily; core keeps the numpy k-means.
+team = [
+    "transformers>=5.1,<6",
+    "torch>=2.4",
+    "umap-learn",
+    "scikit-learn",
+]
+# Production TTS on macOS (D5): AVSpeechSynthesizer via PyObjC.
+tts = ["pyobjc-framework-AVFoundation==12.2.2"]
+# R&D ONLY (D9). Ultralytics is AGPL-3.0; AGPL section 13 covers network use. Never import it
+# from shipped code paths, and never ship weights trained with it without an Enterprise licence.
+rnd-agpl = ["ultralytics==8.4.183", "torch>=2.4"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+courtvision = "courtvision.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["courtvision*"]
+
+[tool.setuptools.package-data]
+courtvision = ["server/static/*", "config/*.yaml", "config/rules/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

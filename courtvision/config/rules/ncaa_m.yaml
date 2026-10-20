@@ -1,0 +1,45 @@
+# NCAA men's basketball (2024-25 book + 2025-26/2026-27 changes) -> RuleSpec.
+# Source: docs/research/basketball_rules_stats.md §3 and §8a; [16] = NCAA men's rules PDF.
+# Status per value: sourced (primary text in the note) / unverified (not checked in the note).
+ruleset: ncaa_m
+period_s: 1200            # 2 x 20 min halves [16]; sourced
+n_periods: 2
+ot_s: 300                 # 5 min [16]; sourced
+halves: true
+running_clock: null
+timeouts:
+  scope: game
+  count: 4                # non-media format: four 75-s ... [16]; sourced
+  length_s: 75            # [16]; sourced
+  short_count: 2          # ... and two 30-s [16]; sourced
+  short_length_s: 30      # [16]; sourced
+  per_ot: 1               # one more per extra period [16]; sourced
+  media:                  # >= 3 electronic-media timeouts per half [16]; sourced
+    count: 1              # one 60-s
+    length_s: 60
+    short_count: 3        # three 30-s
+    short_length_s: 30
+    carry_to_second_half_max: 2  # up to two 30-s carry into the second half
+possession: arrow         # AP procedure [16]; sourced
+bonus:
+  scope: half
+  one_and_one_from: 7     # 1-and-1 from the 7th team foul per half [16]; sourced
+  two_shots_from: 10      # 2 FTs from the 10th [16]; sourced
+  ot_counts_toward_last_period: true  # extra periods extend the second half; unverified
+foul_out: 5               # [16]; sourced
+foul_out_counts_technicals: false   # unverified
+tech_ft:
+  n_ft: 2                 # not extracted in the note; unverified
+  shooter: any            # unverified
+  resume: poi             # unverified
+  flagrant_n_ft: 2        # flagrant 1 and flagrant 2: two FTs plus possession [16]; sourced
+  flagrant_shooter: fouled  # unverified
+  flagrant_resume: spot   # "possession"; throw-in spot unverified
+shot_clock_s: 30          # [16]; sourced
+shot_clock_reset_s: 20    # offensive rebound after ring/flange contact [16]; sourced
+clock_stops_after_fg:
+  q4_ot_last_s: 59.9      # <= 59.9 s left in the game or any extra period (Rule 2-10 Art. 12) [16]; sourced
+backcourt_s: 10           # [16]; 2026-27: called at shot clock 19 [19]; sourced
+intervals:
+  halftime_s: 900         # 15 min [16]; sourced
+  before_ot_s: 60         # 1-min break [16]; sourced

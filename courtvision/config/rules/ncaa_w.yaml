@@ -1,0 +1,40 @@
+# NCAA women's basketball (2025-26 & 2026-27 Rules Book, updated 1 Sep 2026) -> RuleSpec.
+# Source: docs/research/basketball_rules_stats.md §3 and §8a; [20] = NCAA women's rules book.
+# Status per value: sourced (primary text in the note) / unverified (not checked in the note).
+ruleset: ncaa_w
+period_s: 600             # 4 x 10 min [20]; sourced
+n_periods: 4
+ot_s: 300                 # 5 min; OT is an extension of Q4 [20]; sourced
+halves: false
+running_clock: null
+timeouts:
+  scope: game
+  count: 2                # two full timeouts in the non-media format [20]; sourced
+  length_s: 60            # length of a full timeout not extracted; unverified
+  short_count: 3          # three 30-s [20]; sourced
+  short_length_s: 30      # [20]; sourced
+  per_ot: 1               # unverified
+  media:
+    count: 1              # one full timeout in the media format [20]; sourced
+    short_count: 3
+    short_length_s: 30
+possession: arrow         # AP procedure [20]; sourced
+bonus:
+  scope: period
+  two_shots_from: 5       # 2 FTs from the 5th team foul per quarter [20]; sourced
+  ot_counts_toward_last_period: true  # OT is an extension of Q4 [20]; sourced
+foul_out: 5               # [20]; sourced
+foul_out_counts_technicals: false   # unverified
+tech_ft:
+  n_ft: 2                 # not extracted in the note; unverified
+  shooter: any            # unverified
+  resume: poi             # unverified
+shot_clock_s: 30          # [20]; sourced
+shot_clock_reset_s: 20    # offensive rebound after ring/flange contact [20]; sourced
+clock_stops_after_fg:
+  q4_ot_last_s: 59.9      # last 59.9 s of Q4 and extra periods [20]; sourced
+backcourt_s: 10           # [20]; sourced
+intervals:
+  between_periods_s: 75   # Q1-Q2 and Q3-Q4: 75 s non-media (else the media timeout length) [20]; sourced
+  halftime_s: 900         # 15 min [20]; sourced
+  before_ot_s: 60         # 1-min break [20]; sourced
