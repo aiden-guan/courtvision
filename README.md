@@ -19,7 +19,7 @@ narration and the live dashboard. Every module has its own test suite, written a
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and then adversarially reviewed. On top of those,
 the integration and CLI tests (`tests/test_integration_*.py`) drive the real stack. That includes
 a serve smoke test that runs the dashboard app and a live game on one event loop. The suite has
-1 890+ tests, all deterministic and network-free.
+2 009 tests (6 more skip when optional extras are missing), all deterministic and network-free.
 
 **All accuracy figures come from the seeded simulator.** No real game footage has been evaluated
 yet. On real video the system runs, but its accuracy is unmeasured (see [Limitations](#limitations)).
@@ -38,15 +38,16 @@ print(result.summary())
 | Package | What it does |
 |---|---|
 | `courtvision/geometry` | Court specs for NBA / FIBA / NCAA / NFHS, rule sets (`RuleSpec` + YAML), homography (DLT + RANSAC), pinhole camera |
-| `courtvision/perception` | Detectors (synthetic colour-blob, RF-DETR PyTorch/CoreML; Ultralytics R&D-only), ByteTrack, ball Kalman, team clustering, jersey voting, identity, scoreboard reader |
+| `courtvision/perception` | Detectors (synthetic colour-blob, RF-DETR PyTorch/CoreML; Ultralytics R&D-only), ByteTrack, ball Kalman, team clustering, jersey voting, identity, scoreboard reader; broadcast footage: court tracking of a panning / zooming camera, cut and replay gating, scorebug OCR |
 | `courtvision/events` | Deterministic event engine (3-D and monocular modes), cue-model confidences, scoreboard reconciliation, dead-ball detection |
 | `courtvision/stats` | Box score, tracking stats, advanced metrics, operator lineups, shot-quality model, EPV-lite decision grades, coach insights |
 | `courtvision/decision` | TypeSafe Jev client (per-bundle deadlines, breakers, stub/replay/off modes) and the advisor façade with deterministic fallbacks |
 | `courtvision/narration` | Fact packets with pseudonymised players, templates, grounding validator, director, Claude candidates, TTS, captions |
-| `courtvision/sim` | Seeded game simulator with ground truth, noise model, synthetic renderer, simulated operator |
+| `courtvision/sim` | Seeded game simulator with ground truth, noise model, synthetic renderer (venue camera or TV-style broadcast), simulated operator |
 | `courtvision/eval` | Event, box-score and tracking metrics |
 | `courtvision/server` | FastAPI + WebSocket hub and the live dashboard |
 | `courtvision/training` | Play-by-play alignment, shot-model and cue-model fitting, YOLO export with a rights gate |
+| `courtvision/learning` | The learning loop: `ingest` games (video + play-by-play), `train` candidate model bundles, `promote` only what beats the current bundle on frozen gold games |
 | `courtvision/config.py`, `pipeline.py`, `cli.py`, `roster.py` | One `AppConfig` (defaults in `courtvision/config/default.yaml`), frame sources + `LiveGame` + offline runs, the command line, roster files |
 
 ## Quickstart
@@ -111,16 +112,33 @@ never imports it) and prints a warning (RESEARCH.md D9).
 Offline commands (`simulate`, `run`) keep Jev off unless you pass `--jev live|stub`, so their
 results are reproducible. Claude stays off in offline runs unless `--set llm.offline=true`.
 
+**The learning loop** ([`docs/TRAINING.md`](docs/TRAINING.md) §7). Every ingested game makes the next model
+better, and only a measured improvement is promoted:
+
+```bash
+.venv/bin/courtvision ingest --sim-seed 1 --seconds 1200 --out datasets/train   # or --video game.mp4 --pbp pbp.json ...
+.venv/bin/courtvision ingest --sim-seed 101 --seconds 1200 --gold --out datasets/gold
+.venv/bin/courtvision train datasets/train --out models/candidates/c1
+.venv/bin/courtvision promote models/candidates/c1 --gold datasets/gold --models models
+.venv/bin/courtvision serve --set pipeline.model_bundle=models/current
+```
+
+NBA footage and play-by-play are R&D only: they ingest as `research_only` (the default), and a bundle
+trained on any such game can never be promoted to the `ship` channel.
+
 ### Commands
 
 | Command | What it does |
 |---|---|
-| `simulate` | Simulator run, evaluated against truth: `--seconds --seed --league --mode truth3d\|mono\|video --out --jev --json` |
+| `simulate` | Simulator run, evaluated against truth: `--seconds --seed --league --mode truth3d\|mono\|video\|broadcast --out --jev --json` |
 | `serve` | Live dashboard on uvicorn: `--source sim\|video\|camera --mode --video --camera --speed --host 127.0.0.1 --port 8765 --jev live\|stub\|off --no-llm --tts none\|say\|avspeech --auth-token --open` |
 | `run` | Offline video file: `--video --calibration --detector colorblob\|rfdetr:<weights or size>\|coreml:<mlpackage>\|rnd-yolo:<weights> --roster --scoreboard-roi --start --duration --out` |
 | `calibrate` | Calibration JSON from a points file (landmark names or court points), or `--from-sim`; prints the RMSE |
 | `render` | Synthetic demo video (`.mp4` H.264, `.avi`/`.mkv` lossless) plus calibration / roster / ROI / truth sidecars |
 | `eval` | `events.jsonl` (or a run directory) against `truth_events.jsonl`: per-kind P/R/F1, attribution, shots |
+| `ingest` | One game (`--video --pbp --calibration [--broadcast --scorebug-layout]`, or `--sim-seed N`) to a labelled game dataset: cached tracks, PBP-aligned labels, clips, cue and shot rows, a manifest with `--rights own\|licensed\|research_only`, `--training-allowed`, `--gold` |
+| `train` | Game datasets to a candidate model bundle: engine settings tuned against the PBP labels, cue and shot models refit (`--base --params --rounds --out`) |
+| `promote` | Candidate vs `<models>/current` on gold datasets; promoted only with a gain and no per-kind regression (`--channel ship` also needs shippable rights) |
 | `config` | The effective YAML config (`--section NAME`, `--default` for the commented defaults) |
 | `latency` | `tools/latency_harness.py`: real, billed Claude / Jev calls that set every deadline from the measured p95. Refuses to run without the needed keys |
 
@@ -195,7 +213,41 @@ Re-measured train numbers (`--modes truth3d,mono`, 300 s, seeds 1-6; `runs/bench
 | truth3d | **0.953** [0.869, 0.997] | 0.988 | 1.000 (n=83) | 1.000 / 0.945 | 0.976 / 1.000 | 0.015 |
 | mono | **0.553** [0.536, 0.573] | 0.814 | 0.987 (n=78) | 0.642 / 0.600 | 0.800 / 0.655 | 0.113 |
 
-The end-to-end table below predates that pass.
+**Round 3 (branch `accuracy-round3-wip-pj7sk6`, 2026-10-21).** Simulator realism:
+- bank and rim shot paths;
+- tracker-like track fragmentation in the noise model;
+- rebounds caught high and ripped overhead;
+- tip-ins;
+- a rebounder touching the ball out of bounds puts it out.
+
+Engine changes, tuned on train seeds only:
+- 3-D lifted catches, straddled-contact blocks and tips;
+- monocular hidden-ball rebounds and re-timed re-credits;
+- a raised ball kept with its shooter;
+- a reachability veto on implausible steals;
+- contest-aware steal backdating;
+- retro-blocks retried during the flight and committed on dead balls.
+
+| Split (seeds, s/game) | Mode | Session start | Round 3 | Delta (95% seed-bootstrap verdict) |
+|---|---|---|---|---|
+| train (1-6, 1200 s) | truth3d | 0.949 | **0.967** | +0.018 (inside CI) |
+| train (1-6, 1200 s) | mono | 0.738 | **0.751** | +0.013 (inside CI) |
+| held-out (101-104, 1200 s) | truth3d | 0.916 | **0.941** | +0.025 (inside CI) |
+| held-out (101-104, 1200 s) | mono | 0.697 | **0.708** | +0.010 (inside CI) |
+
+Both splits move the same way, but no headline change is outside its interval. The "session start" column is
+the code at the start of round 3 on that commit's own simulator, so it predates the out-of-bounds rebound
+fix. At 300 s the held-out numbers are truth3d 0.956 and mono 0.697 (session start: 0.962 and 0.737). Those
+games have only 3-5 steals and blocks in total, so one block more or less moves the mono headline by 0.04.
+
+Video (render + perception, 180 s) scores 0.740 on train seeds 1-6 (seed mean 0.796) and 0.636 on held-out
+seeds 101-104 (seed mean 0.704, MOTA 0.971, identity accuracy 0.976). The held-out pooled number counts one
+steal and two blocks, both missed, as two of its nine kinds.
+
+The round-3 targets of mono and video >= 0.85 are **not met**. The remaining monocular gaps are steals
+(held-out 1200 s mono F1 0.47), turnovers (0.57), blocks (0.18), rebounds (0.70) and possession (0.77).
+
+The end-to-end table below predates rounds 1-3.
 
 ## Current end-to-end numbers
 
@@ -241,14 +293,24 @@ by seed: earlier runs of seeds 11 and 23 at 120 s scored 0.62 and 0.30.
   - No jersey reader for real footage ships. Players stay provisional (team + track), and
     narration names teams, not players.
   - Team assignment is colour k-means.
-  - One fixed camera only. A panning camera breaks the floor homography.
+  - Broadcast footage (`--broadcast`) is handled only as far as the simulator can test it: the court tracker
+    follows a camera that pans / zooms about a fixed centre and needs one calibration of it; replays are gated by
+    the hidden scorebug; the scorebug needs a per-broadcast layout and glyphs learned from labelled frames. Real
+    broadcasts (other camera angles that are not replays, graphics over the court, lens distortion) are untested.
+    In simulated broadcasts the event headline is lower than with the fixed venue camera (seed 3, 180 s:
+    0.66 vs 0.76).
 - **Compression hurts.** Lossy video costs accuracy: on the same 60 s render, H.264 scores 0.63
   against 0.98 lossless, and OpenCV's mp4v loses the free throws entirely.
-- **Monocular gaps.** With the ball's height unknown, steals, turnovers and blocks are not detected
-  (F1 0.0 over 600 s). Possession sits near 0.75 and rebound attribution near 0.69.
+- **Monocular gaps.** With the ball's height unknown, steals, turnovers and blocks stay weak. On held-out 1200 s
+  mono games (seeds 101-104) the F1 is 0.47 for steals, 0.57 for turnovers and 0.18 for blocks. Rebounds sit
+  near 0.70 and possession near 0.77 (round 3).
 - **The CV never infers some things.** Fouls, timeouts and substitutions are never inferred: they
   come from the operator (dashboard) or a feed. Minutes, +/- and lineups exist only after operator
   lineup entries. Without them, a whistle stoppage can turn into an inferred out-of-bounds turnover.
+- **The learning loop learns engine settings and calibrations, not detectors.** `train` tunes event-engine
+  thresholds against play-by-play labels and refits the cue and shot models; detector, jersey and court-keypoint
+  models are not retrained by it (detector data export and the RF-DETR recipe are manual, TRAINING.md §5-6).
+  Play-by-play has no passes, possessions or dribbles, so those are not trained or gated by it.
 - **Uncalibrated confidences.** The cue models (shot, make, three, ...) are hand-set and
   uncalibrated outside the simulator. On real footage, narration uses hedge-only lines (no outcome,
   no point value) for any result the scoreboard or the operator has not confirmed, until the models
