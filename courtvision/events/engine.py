@@ -223,7 +223,7 @@ class EventEngineConfig:
     retro_block_stand_lead_s: float = 0.6  # the shooter's standing box (head line) this long before the release; tuned on sim train seeds
     retro_block_min_base_s: float = 0.06  # ... over baselines of at least this (+-1.5 px jitter); tuned on sim train seeds
     retro_block_max_gap_s: float = 0.35  # velocities only between observations this close (the ball is often hidden at the touch); tuned on sim train seeds
-    retro_block_turn_rise_frac: float = 0.5  # a ball turned back from the rim has at least this much less rise after the touch than before (a swat from the side or behind keeps some of its upward speed: the ball was turned, not stopped); tuned on sim train seeds
+    retro_block_turn_rise_frac: float = 1.0  # a ball turned back from the rim has at least this much less rise after the touch than before (a swat from the side or behind keeps some of its upward speed: the ball was turned, not stopped); tuned on sim train seeds
     # Blocks of shots already inside the rim zone (layups, dunks: they enter it at the release; shots.Flight.
     # _check_rim_block). 3-D: a reversal clear of the ring (rim_contact_dist_ft) and the board is a defender's.
     backboard_half_width_ft: float = 3.0  # 72 in board (NBA rule 1 sec. II); sourced
@@ -535,6 +535,10 @@ class EventEngine:
         self._note_live_ball(obs)
         if self._flight is not None:
             self._step_flight(self._flight, obs, frame.t, frame.frame_idx)
+            fl = self._flight
+            if fl is not None and self._mono and fl.state == "air" and fl.context == "live" and fl.retro_block is None \
+                    and not fl.is_ft and frame.t - fl.release.t <= self.config.block_max_after_release_s:
+                self._retro_block(fl)  # a release recognised early: the touch after it is buffered only now
         confirm_n, release_n = self._hysteresis_frames()
         f = self._flight
         prefer = f.release.team if f is not None and f.state == "air" and f.context == "live" else None
@@ -1062,13 +1066,7 @@ class EventEngine:
             self._flight = None
             log.info("holder id %s -> %s treated as an identity swap", prev.player_id, pid)
             return
-        if flight is not None and flight.retro_block is not None and flight.state == "air" \
-                and flight.context == "live" and self._phase == LIVE:
-            data = flight.retro_block[4]
-            r = flight.release
-            if data["rise_t"] < r.t:  # the attempt is the rise the release was recognised after
-                r.t, r.frame_idx = data["rise_t"], data["rise_frame"]
-            self._on_block(flight, flight.mark_blocked(*flight.retro_block))  # the ball never reached the rim
+        self._commit_retro_block(flight)  # the ball never reached the rim
         if flight is not None:
             for sig in flight.on_control(ch.t, ch.frame_idx):
                 self._on_signal(flight, sig)
@@ -1080,8 +1078,21 @@ class EventEngine:
         else:
             self._gain_live(pid, team, ch, flight)
 
+    def _commit_retro_block(self, flight: Flight | None) -> None:
+        """A monocular block candidate (``_retro_block``) becomes the block once the ball's next owner is known:
+        someone gains it, or it goes dead (a blocked ball knocked out of bounds) before reaching a rim zone."""
+        if flight is None or flight.retro_block is None or flight.state != "air" or flight.context != "live" \
+                or self._phase != LIVE:
+            return
+        data = flight.retro_block[4]
+        r = flight.release
+        if data["rise_t"] < r.t:  # the attempt is the rise the release was recognised after
+            r.t, r.frame_idx = data["rise_t"], data["rise_frame"]
+        self._on_block(flight, flight.mark_blocked(*flight.retro_block))
+
     def _enter_dead_from_live(self, cause: str, t: float, f: int, flight: Flight | None, out: bool = True,
                               before: float | None = None) -> None:
+        self._commit_retro_block(flight)
         last_holder = flight.release.player_id if flight is not None else (self._holder.holder or None)
         last_team = flight.release.team if flight is not None else self._poss_team
         if flight is None and self._control is not None:
@@ -1645,6 +1656,15 @@ class EventEngine:
                 best = boxes[pid][0]
         return best
 
+    def _first_box(self, pid: str, t0: float, t1: float) -> BBox | None:
+        """``pid``'s first image box in ``[t0, t1]`` from the short box history."""
+        for bt, boxes in self._boxes:
+            if bt > t1 + 1e-6:
+                break
+            if bt >= t0 - 1e-6 and pid in boxes:
+                return boxes[pid][0]
+        return None
+
     def _detect_tip(self) -> list[ControlChange]:
         """3-D: a loose ball after a miss tipped back up (``tip_*``). The contact is inside the step between the
         two middle of the last four observations (the ball was falling into the hand, then rises): compare the
@@ -1703,7 +1723,8 @@ class EventEngine:
         side = court.nearest_basket(*r.xy)
         if court.distance_to_basket(r.xy[0], r.xy[1], side) > cfg.block_max_basket_dist_ft:
             return False
-        stand = self._box_at(r.player_id, r.t - cfg.retro_block_stand_lead_s)
+        stand = self._box_at(r.player_id, r.t - cfg.retro_block_stand_lead_s) or self._first_box(
+            r.player_id, r.t - cfg.retro_block_stand_lead_s, r.t) or r.bbox  # (a track renamed since: his first box)
         if stand is None:
             return False
         ppf = max(stand.h / cfg.player_height_ft, 1e-6)
