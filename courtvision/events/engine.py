@@ -100,6 +100,7 @@ class EventEngineConfig:
     holder_keep_bottom_frac: float = 0.15  # ... and this far below the feet (bounces); tuned
     holder_head_frac: float = 0.15  # top fraction of the bbox treated as the head; unverified
     holder_above_head_factor: float = 0.4  # score multiplier for a ball above the head; tuned
+    holder_img_raised_keep: bool = True  # image: the holder keeps a ball raised overhead while the ray model puts it within holder_reach_z_ft at him (a rising shooter's ball used to go to a farther player on the same viewing ray); tuned on sim train seeds
     holder_min_score: float = 0.1  # minimum candidate score; tuned
     holder_switch_margin: float = 0.25  # current holder's score bonus (no flicker); tuned
     holder_radius_ft: float = 1.6  # 0.5 m holder radius (RESEARCH §7A.2); unverified
@@ -139,6 +140,9 @@ class EventEngineConfig:
     holder_acquire_loose_img_fts: float = 16.0  # image: a loose ball after a miss is acquired only below this ball-player relative speed (vertical included); tuned on sim train seeds
     holder_vote_loose_k: int = 5  # image, loose ball after a miss: the rebounder wins this many ...; tuned on sim train seeds
     rebound_backdate_max_s: float = 1.0  # image, loose ball: the rebounder's gain is dated back over his valid candidacy (during the loose ball) at most this before his first counted win; tuned on sim train seeds
+    holder_hidden_confirm_s: float = 0.4  # image, loose ball: a clear winner whose ball is then hidden this long (a rebound secured at the chest in traffic, covered by bodies) while he stays in view holds it; 0 disables; tuned on sim train seeds
+    holder_hidden_share: float = 0.6  # ... the ball hidden on at least this share of the frames since his first win ...; tuned on sim train seeds
+    holder_hidden_window_s: float = 1.0  # ... looking back this far for other winners; tuned on sim train seeds
     holder_vote_loose_n: int = 6  # ... of the last this many observed frames (RESEARCH §2.4 holds a rebound 300 ms); tuned on sim train seeds
     steal_confirm_img_s: float = 0.5  # image: a change of team control must last this long (steal hold 500 ms, RESEARCH §2.4 / §4.1); sourced
     steal_vote_window_s: float = 0.8  # image: votes for a change of team control are counted over this window ...; tuned on sim train seeds
@@ -154,6 +158,11 @@ class EventEngineConfig:
     # crossing a lone defender's box, are as unambiguous.)
     steal_sustain_s: float = 0.9  # 0 disables (immediate steals); tuned on sim train seeds
     steal_corroborate_s: float = 1.5  # ... counted from the confirmation of the gain; tuned on sim train seeds
+    # Monocular physical check on a change of team control (engine._reachable): the ball goes from the releaser
+    # to the gainer either within a strip's reach or in flight, at most steal_max_ball_speed_fts. A gain dated
+    # (backdated) before the release or farther than the ball can fly in the time is a wrong-body holder.
+    steal_reach_ft: float = 6.0  # stripping hand reach (~2.3 ft, sim) + both players' monocular position error; design choice, unverified
+    steal_max_ball_speed_fts: float = 50.0  # a hard pass; design choice, unverified
     holder_clear_margin: float = 0.3  # image: a frame is unambiguous when no other candidate scores within this of the pick (keep bonus left out); tuned on sim train seeds
     holder_clear_frames: int = 6  # image: unambiguous observed frames that corroborate a releaser's control (victim_min_hold_s); tuned on sim train seeds
     victim_min_hold_s: float = 1.5  # monocular: a releaser without a dribble held the ball at least this long, or his "loss" to an opponent is a wrong-body correction, not a steal; tuned on sim train seeds
@@ -235,6 +244,7 @@ class EventEngineConfig:
     # intercepted is completed) or the rebound re-credited, instead of a second change of possession.
     team_change_revert_s: float = 2.5  # tuned on sim train seeds
     rebound_retime_ft: float = 4.0  # 3-D: a re-credited rebound moves to the new holder's gain when the wrong body stood farther than this from him (monocular: kept, positions too noisy); tuned on sim train seeds
+    rebound_retime_mono_ft: float = 6.0  # monocular: the same, from the (noisier) floor positions; tuned on sim train seeds
     strip_max_travel_ft: float = 6.0  # opponent gains within this of the release: steal, not bad pass; tuned
     strip_max_flight_s: float = 0.6  # tuned
     # --- dribbles
@@ -346,6 +356,7 @@ class _PendingSteal:
     created_t: float = 0.0  # when the gain was confirmed (its onset can be dated back up to ~1.5 s)
     chain: list[str] = field(default_factory=list)  # completed passes inside the new team since
     evidence: bool = False  # a dribble / shot / foul on the new team since the onset
+    implausible: bool = False  # the ball could not have reached him in time (``_reachable``): never a steal
 
 
 @dataclass(slots=True)
@@ -1202,12 +1213,21 @@ class EventEngine:
             strip = travel <= cfg.strip_max_travel_ft and ch.t - r.t <= cfg.strip_max_flight_s
             kind = "steal" if strip else "bad_pass"
             if self._mono and cfg.steal_sustain_s > 0.0:
-                self._pend = _PendingSteal(pid, team, ch, flight, kind, self._prev_control, created_t=self._now)
+                self._pend = _PendingSteal(pid, team, ch, flight, kind, self._prev_control, created_t=self._now,
+                                           implausible=not self._reachable(travel, ch.t - r.t))
                 self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="steal")
                 return
             self._steal(pid, team, ch, flight, kind)
             return
         self._control = _Control(pid, team, ch.t, ch.frame_idx)
+
+    def _reachable(self, travel: float, flight_s: float) -> bool:
+        """Could the ball have gone ``travel`` ft from the releaser to the gainer in ``flight_s`` (negative: the
+        gain is dated before the release, a strip)? Within ``steal_reach_ft`` always; beyond it only in a flight
+        of at most ``steal_max_ball_speed_fts``."""
+        cfg = self.config
+        extra = travel - cfg.steal_reach_ft
+        return extra <= 0.0 or flight_s * cfg.steal_max_ball_speed_fts >= extra
 
     def _flicker(self, r: Release, pid: str, ch: ControlChange) -> bool:
         """Monocular: a same-team "pass" whose flight was shorter than ``pass_min_flight_s`` between players
@@ -1258,8 +1278,10 @@ class EventEngine:
         cues = self._control_cues(pid, ch)
         p, status = self._p("steal", cues)
         pos = self._pos(pid, ch.t)
+        travel = math.dist(r.xy, pos) if r.xy is not None and pos is not None else None
         ids.append(self._emit(EventKind.STEAL, ch.t, ch.frame_idx, team=team, player_id=pid, other=r.player_id, xy=pos,
-                              confidence=p, attrs={"p_status": status, "cues": cues,
+                              confidence=p, attrs={"p_status": status, "cues": cues, "travel_ft": travel,
+                                                   "flight_s": ch.t - r.t,
                                                    "reason": f"opponent gained control ({kind})"}).event_id)
         ids.append(self._emit(EventKind.TURNOVER, ch.t, ch.frame_idx, team=r.team, player_id=r.player_id, xy=pos,
                               confidence=p, attrs={"type": kind, "p_status": status,
@@ -1328,7 +1350,7 @@ class EventEngine:
         held = t - pend.ch.t
         holder = self._holder.holder
         mine = holder is None or self._team_of(holder) is pend.team
-        if pend.evidence and held >= cfg.steal_sustain_s and mine:
+        if pend.evidence and held >= cfg.steal_sustain_s and mine and not pend.implausible:
             self._confirm_pending()
         elif t - pend.created_t > cfg.steal_corroborate_s:
             self._settle_pending()
@@ -1348,7 +1370,7 @@ class EventEngine:
         holder = self._holder.holder
         held = self._now - pend.ch.t >= self.config.steal_confirm_img_s and holder is not None \
             and self._team_of(holder) is pend.team
-        if pend.evidence or (end and held):
+        if (pend.evidence or (end and held)) and not pend.implausible:
             self._confirm_pending()
             return
         self._pend = None
@@ -1453,9 +1475,10 @@ class EventEngine:
         # (the right moment, the wrong body), else the new holder's gain is the rebound
         old = self._store.get(miss.rebound_id or "")
         retime = {}
-        if old is not None and old.player_id is not None and not self._mono:  # (monocular positions: kept)
+        if old is not None and old.player_id is not None:
             p_old, p_new = self._pos(old.player_id, old.t), self._pos(pid, ch.t)
-            if p_old is not None and p_new is not None and math.dist(p_old, p_new) > self.config.rebound_retime_ft:
+            far = self.config.rebound_retime_mono_ft if self._mono else self.config.rebound_retime_ft
+            if p_old is not None and p_new is not None and math.dist(p_old, p_new) > far:
                 retime = {"t": ch.t, "frame_idx": ch.frame_idx}
         self._revise(miss.rebound_id, team=team, player_id=pid,
                      x=(self._pos(pid, ch.t) or (None, None))[0], y=(self._pos(pid, ch.t) or (None, None))[1],

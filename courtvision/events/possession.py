@@ -258,6 +258,10 @@ class HolderTracker:
                     self._after_seen = (t, fi)
                 if self._seen_t is not None and t - self._seen_t > self.cfg.holder_gap_keep_s:
                     changes.append(self._release())
+            elif loose:
+                won = self._hidden_gain(frame, t)
+                if won is not None:
+                    changes.append(won)
             self._remember_centres(frame)
             return changes
         image = _image_mode(frame.players, obs)
@@ -318,6 +322,35 @@ class HolderTracker:
         else:
             self._cand, self._cand_n = None, 0
         return changes
+
+    def _hidden_gain(self, frame: FrameState, t: float) -> ControlChange | None:
+        """Image, loose ball: since his first win, one player has been the only winner, for at least
+        ``holder_hidden_confirm_s``, and the ball was hidden on at least ``holder_hidden_share`` of those frames
+        while he stays in view: he secured it (a rebound held at the chest in traffic is covered by bodies, so
+        the k-of-n vote never completes). Dated back over his candidacy."""
+        cfg = self.cfg
+        if cfg.holder_hidden_confirm_s <= 0.0 or not self._votes:
+            return None
+        votes = [v for v in self._votes if t - v[0] <= cfg.holder_hidden_window_s]
+        winners = [v for v in votes if v[2] is not None]
+        if not winners or len({v[2] for v in winners}) != 1:
+            return None
+        first = winners[0]
+        pid = first[2]
+        since = [v for v in votes if v[1] >= first[1]]
+        frames = frame.frame_idx - first[1] + 1
+        if t - first[0] < cfg.holder_hidden_confirm_s or not all(v[6] for v in since) \
+                or 1.0 - len(since) / max(frames, 1) < cfg.holder_hidden_share:
+            return None
+        if not any(p.player_id == pid for p in frame.players):
+            return None
+        allv = list(self._votes)
+        self._cand_onset = self._walk_onset(allv, first, lambda v: pid in v[5] and v[6], cfg.rebound_backdate_max_s)
+        last = winners[-1]
+        self._votes.clear()
+        change = self._gain(pid, t)
+        self._seen_t, self._seen_f = last[0], last[1]
+        return change
 
     def _vote_gain(self, raw: str, ref_team: Team | None, t: float, confirm_n: int,
                    loose: bool = False) -> tuple[str, tuple[float, int]] | None:
@@ -502,16 +535,23 @@ class HolderTracker:
             if p.bbox is None:
                 continue
             is_h = p.player_id == self.holder
-            score = _body_score(p.bbox, u, v, cfg, keep=is_h)
-            if score is None:
-                continue
+            lateral = z = None
             if ray is not None and obs.xy is not None:
                 lateral, z = ray.at_player(obs.xy, p.x, p.y)
+            # the holder raising the ball overhead (a shot / pass gather) keeps it while the ray puts it within
+            # his reach (3-D: holder_reach_z_ft): no above-head discount, no height penalty above the band
+            raised = is_h and cfg.holder_img_raised_keep and z is not None and z <= cfg.holder_reach_z_ft
+            score = _body_score(p.bbox, u, v, cfg, keep=is_h, raised=raised)
+            if score is None:
+                continue
+            if lateral is not None and z is not None:
                 slack = cfg.holder_ray_keep_slack_ft if is_h else 0.0
+                z_hi = cfg.holder_reach_z_ft if raised else cfg.holder_max_z_ft + cfg.holder_ray_z_slack_ft + slack
                 if abs(lateral) > cfg.holder_ray_max_lateral_ft + slack or not \
-                        (-cfg.holder_ray_z_slack_ft - slack <= z <= cfg.holder_max_z_ft + cfg.holder_ray_z_slack_ft + slack):
+                        (-cfg.holder_ray_z_slack_ft - slack <= z <= z_hi):
                     continue  # the ball is at another depth than this player
-                score -= cfg.holder_ray_z_weight * max(0.0, abs(z - cfg.holder_ray_z_ref_ft) - cfg.holder_ray_z_band_ft)
+                dz = cfg.holder_ray_z_ref_ft - z if raised else abs(z - cfg.holder_ray_z_ref_ft)
+                score -= cfg.holder_ray_z_weight * max(0.0, dz - cfg.holder_ray_z_band_ft)
                 score -= cfg.holder_ray_lateral_weight * max(0.0, abs(lateral) - cfg.holder_ray_lateral_free_ft)
             if is_h:
                 out.append((score + cfg.holder_switch_margin, p.player_id, p.team))
@@ -623,7 +663,8 @@ def _image_mode(players: Sequence[PlayerState], obs: BallObs) -> bool:
     return not obs.is3d and obs.uv is not None and any(p.bbox is not None for p in players)
 
 
-def _body_score(bbox: BBox, u: float, v: float, cfg: EventEngineConfig, keep: bool) -> float | None:
+def _body_score(bbox: BBox, u: float, v: float, cfg: EventEngineConfig, keep: bool,
+                raised: bool = False) -> float | None:
     """Image control score of a ball at (u, v) for the player in ``bbox``, or None (out of reach).
 
     A held or dribbled ball sits anywhere across the body's image span (the hands reach the sides,
@@ -632,7 +673,7 @@ def _body_score(bbox: BBox, u: float, v: float, cfg: EventEngineConfig, keep: bo
     score falls to 0 at ``holder_img_reach_ft`` (``holder_img_keep_reach_ft`` for the current holder)
     beyond the span. Vertically the ball must lie between just above the box top (the person box
     includes raised hands) and the dribble band below the feet; above the head line it is scaled by
-    ``holder_above_head_factor``."""
+    ``holder_above_head_factor`` (not for ``raised``: the holder's ball raised within his reach)."""
     h = max(bbox.h, 1.0)
     ppf = h / cfg.player_height_ft
     half = max(bbox.w / 2.0, 1e-6)
@@ -648,7 +689,7 @@ def _body_score(bbox: BBox, u: float, v: float, cfg: EventEngineConfig, keep: bo
         score = (1.0 - cfg.holder_img_centre_pref) * (1.0 - (excess / reach) ** 2)
     else:
         score = 1.0 - cfg.holder_img_centre_pref * (off / half) ** 2
-    return score * (1.0 if v >= bbox.y1 + cfg.holder_head_frac * h else cfg.holder_above_head_factor)
+    return score * (1.0 if raised or v >= bbox.y1 + cfg.holder_head_frac * h else cfg.holder_above_head_factor)
 
 
 def _vertical_weight(cfg: EventEngineConfig, prefer_team: Team | None) -> float:
