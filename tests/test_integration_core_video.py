@@ -2,7 +2,10 @@
 sim renders) with operator calibration + scoreboard ROI, and CameraSource on a stream URL.
 
 Measured (seed 7, 8 s window around two made free throws, this machine): MOTA 0.99, perception
-~19 ms/frame, both makes confirmed by the OCR scoreboard and named in the transcript.
+~19 ms/frame, both makes confirmed by the OCR scoreboard and named in the transcript. Re-pinned to seed 13
+when the simulator's flow changed (round 2; seed 7's first make is now a free throw whose operator-lagged
+board change falls after the window): an 8 s window ending 1.5 s after a made 2, MOTA 0.93, the make
+confirmed by the OCR scoreboard. (Seeds 8-12 fail the same window rule; 13 is the first that fits it.)
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from courtvision.sim import render
 from courtvision.sim.simulator import GameSimulator
 from courtvision.types import EventKind, EventStatus
 
-SEED, SIM_S, WINDOW_S = 7, 40.0, 8.0
+SEED, SIM_S, WINDOW_S = 13, 40.0, 8.0
 NO_KEYS: dict[str, str] = {}
 
 

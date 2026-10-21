@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import cv2
@@ -155,6 +155,23 @@ class RenderConfig:
     apron_ft: float = 6.0  # floor drawn beyond the boundary lines
     head_frac: float = 0.07  # head radius / figure height
     draw_scoreboard: bool = True
+    # The ball is drawn in depth order with the people, so a nearer body hides it (RESEARCH §2.1 /
+    # cv_pipeline §6.2: a ball behind a player, or held, vanishes); it is never hidden by a hoop it is in
+    # front of. False = the old "ball on top of everything" drawing.
+    ball_depth_order: bool = True
+    # ... but only the upper body (head, torso, shorts: the top ``ball_hide_frac`` of a figure's box) hides
+    # it; legs leave gaps, so a ball behind the lower body still shows. Design choice, unverified.
+    ball_hide_frac: float = 0.55
+    # Share of a held ball's disc covered by the holder's hand (skin), drawn on the holder's side
+    # (cv_pipeline §6.2: a held ball vanishes into the hands); design choice, unverified; 0 = off.
+    ball_hand_cover: float = 0.0
+    # Motion blur: the ball is smeared along its image motion over this fraction of the frame interval
+    # (a 1/60 s shutter at 30 fps = 0.5; cv_pipeline §6.1 reports ~18 px of blur per frame at 1080p for a
+    # ~16 px ball); unverified; 0 = off.
+    motion_blur_exposure: float = 0.5
+    # Spare balls (a rack by the bench): court points (x, y, z) drawn as orange discs, a detector
+    # distractor (RESEARCH §2.1: spare balls are detected as the ball); unverified; [] = none.
+    spare_balls: list[tuple[float, float, float]] = field(default_factory=list)
 
 
 class SyntheticRenderer:
@@ -168,6 +185,7 @@ class SyntheticRenderer:
         self.roi = scoreboard_roi(camera.image_size)
         self._background = self._draw_background()
         self._hoops = self._hoop_items()
+        self._prev_ball: tuple[int, tuple[float, float]] | None = None  # (frame_idx, image point) for blur
 
     # ------------------------------------------------------------------ static scene
 
@@ -250,30 +268,61 @@ class SyntheticRenderer:
 
     # ------------------------------------------------------------------ frame
 
-    def render(self, frame: FrameState, referees: list[tuple[float, float]] | None = None) -> np.ndarray:
-        """BGR image (H, W, 3) uint8 of one frame."""
+    def render(self, frame: FrameState, referees: list[tuple[float, float]] | None = None,
+               extras: list[tuple[Team, float, float, str | None]] | None = None,
+               hands: list[tuple[str, float, float, float]] | None = None) -> np.ndarray:
+        """BGR image (H, W, 3) uint8 of one frame. ``extras``: other people standing off the court
+        (substitutes waiting at the table: team, x, y, jersey), drawn like players. ``hands``: players reaching
+        for the ball (player_id, hand x, y, z; ``SimResult.hands``): the body is drawn in its own cylinder's width
+        and an arm (a jersey-coloured sleeve) out to the hand, which together span the player's box."""
+        reach = {pid: (x, y, z) for pid, x, y, z in hands or []}
         img = self._background.copy()
         drawables: list[tuple[float, int, Any]] = []
         for depth, board, ring in self._hoops:
             drawables.append((depth, 0, ("hoop", board, ring)))
+        for team, x, y, number in extras or []:
+            box = self.camera.bbox_of_cylinder(x, y, self.config.player_height_ft, self.config.figure_radius_ft)
+            if _finite(box):
+                depth = float(self.camera.depth([x, y, self.config.player_height_ft / 2.0]))
+                drawables.append((depth, 1, ("figure", box, _TEAM_BGR.get(team, (128, 128, 128)), number)))
+        for sx, sy, sz in self.config.spare_balls:
+            uv = self.camera.project(np.array([sx, sy, sz], dtype=float))
+            box = self.camera.bbox_of_sphere(sx, sy, sz, 0.39)
+            if np.all(np.isfinite(uv)) and _finite(box):
+                drawables.append((float(self.camera.depth([sx, sy, sz])), 2,
+                                  ("disc", (float(uv[0]), float(uv[1])), max(2.0, box.w / 2.0))))
         for p in frame.players:
             if p.bbox is None or not _finite(p.bbox):
                 continue
             color = _TEAM_BGR.get(p.team, (128, 128, 128))
             depth = float(self.camera.depth([p.x, p.y, self.config.player_height_ft / 2.0]))
+            if p.player_id in reach:
+                drawables.append((depth, 1, ("reach", p, color, reach[p.player_id])))
+                continue
             drawables.append((depth, 1, ("figure", p.bbox, color, p.jersey)))
         for x, y in referees or []:
             box = self.camera.bbox_of_cylinder(x, y, self.config.referee_height_ft, self.config.figure_radius_ft)
             if _finite(box):
                 depth = float(self.camera.depth([x, y, self.config.referee_height_ft / 2.0]))
                 drawables.append((depth, 1, ("figure", box, palette.REF_BGR, None)))
+        ball = self._ball_item(frame)
+        if ball is not None and self.config.ball_depth_order:
+            drawables.append(ball)
         drawables.sort(key=lambda d: (-d[0], d[1]))
         for _, _, item in drawables:
             if item[0] == "hoop":
                 self._draw_hoop(img, item[1], item[2])
-            else:
+            elif item[0] == "figure":
                 self._draw_figure(img, item[1], item[2], item[3])
-        self._draw_ball(img, frame)
+            elif item[0] == "reach":
+                self._draw_reaching(img, item[1], item[2], item[3])
+            elif item[0] == "disc":
+                cv2.circle(img, (int(round(item[1][0])), int(round(item[1][1]))), int(round(item[2])),
+                           palette.BALL_BGR, -1)
+            else:
+                self._draw_ball(img, frame, item)
+        if ball is not None and (not self.config.ball_depth_order or self._between_legs(ball, drawables)):
+            self._draw_ball(img, frame, ball[2])
         if self.config.draw_scoreboard:
             self._draw_scoreboard(img, frame.scoreboard)
         return img
@@ -299,15 +348,90 @@ class SyntheticRenderer:
             org = (int(round((box.x1 + box.x2) / 2.0 - tw / 2.0)), int(round(box.y1 + 0.4 * box.h + th / 2.0)))
             cv2.putText(img, number, org, cv2.FONT_HERSHEY_SIMPLEX, scale, TEXT_BGR, thickness=2)
 
-    def _draw_ball(self, img: np.ndarray, frame: FrameState) -> None:
+    def _draw_reaching(self, img: np.ndarray, p: Any, color: tuple[int, int, int],
+                       hand: tuple[float, float, float]) -> None:
+        """A player reaching for the ball: the body in its cylinder's width, the arm from the shoulder (a fifth
+        of the way down the body) to the hand."""
+        box = p.bbox
+        cyl = self.camera.bbox_of_cylinder(p.x, p.y, self.config.player_height_ft, self.config.figure_radius_ft)
+        body = BBox(max(box.x1, cyl.x1), box.y1, min(box.x2, cyl.x2), box.y2) if _finite(cyl) else box
+        if body.x2 <= body.x1:
+            body = box
+        self._draw_figure(img, body, color, p.jersey)
+        uv = self.camera.project(np.array(hand, dtype=float))
+        hb = self.camera.bbox_of_sphere(hand[0], hand[1], hand[2], 0.35)
+        if not (np.all(np.isfinite(uv)) and _finite(hb)):
+            return
+        shoulder = (int(round((body.x1 + body.x2) / 2.0)), int(round(body.y1 + 0.2 * body.h)))
+        tip = (int(round(float(uv[0]))), int(round(float(uv[1]))))
+        thick = max(2, int(round(hb.w)))
+        cv2.line(img, shoulder, tip, color, thick, lineType=cv2.LINE_8)
+        cv2.circle(img, tip, max(1, thick // 2), color, -1)
+
+    def _ball_item(self, frame: FrameState) -> tuple[float, int, Any] | None:
+        """The ball as a depth-sorted drawable (depth, order, ("ball", streak_end_points, holder_uv))."""
         b = frame.ball
         if b is None or not b.visible or b.image_xy is None:
-            return
+            self._prev_ball = None
+            return None
         u, v = b.image_xy
         if not (math.isfinite(u) and math.isfinite(v)):
-            return
-        r = max(2, int(round(b.radius_px or 3.0)))
-        cv2.circle(img, (int(round(u)), int(round(v))), r, palette.BALL_BGR, -1)
+            self._prev_ball = None
+            return None
+        prev = self._prev_ball
+        self._prev_ball = (frame.frame_idx, (u, v))
+        half = (0.0, 0.0)
+        exp = self.config.motion_blur_exposure
+        if exp > 0.0 and prev is not None and prev[0] == frame.frame_idx - 1:
+            half = (0.5 * exp * (u - prev[1][0]), 0.5 * exp * (v - prev[1][1]))  # blur centred on the ball
+        depth = math.inf
+        holder_uv = None
+        if b.court_xy is not None and b.z is not None:
+            depth = float(self.camera.depth([b.court_xy[0], b.court_xy[1], b.z]))
+            for hd, _, _ in self._hoops:  # in front of a hoop it is passing through: drawn after it
+                if self._near_hoop(b.court_xy, b.z):
+                    depth = min(depth, hd - 1e-3)
+            holder = _holder(frame)
+            if holder is not None and holder.bbox is not None:
+                holder_uv = ((holder.bbox.x1 + holder.bbox.x2) / 2.0, (holder.bbox.y1 + holder.bbox.y2) / 2.0)
+        return (depth, 3, ("ball", (u, v), half, holder_uv))
+
+    def _between_legs(self, ball: tuple[float, int, Any], drawables: list[tuple[float, int, Any]]) -> bool:
+        """The ball is behind nearer figures only at their legs (seen between them): draw it on top."""
+        depth, _, (_, (u, v), _, _) = ball
+        covering = [item for d, _, item in drawables if item[0] == "figure" and d < depth
+                    and item[1].x1 <= u <= item[1].x2 and item[1].y1 <= v <= item[1].y2]
+        frac = self.config.ball_hide_frac
+        return bool(covering) and all(v > box.y1 + frac * box.h for _, box, _, _ in covering)
+
+    def _near_hoop(self, xy: tuple[float, float], z: float) -> bool:
+        for side in ("left", "right"):
+            bx, by = self.court.basket_xy(side)
+            board_x = self.court.backboard_offset if side == "left" else self.court.length - self.court.backboard_offset
+            in_front = xy[0] > board_x if side == "left" else xy[0] < board_x
+            if in_front and math.hypot(xy[0] - bx, xy[1] - by) < 6.0 and z > self.court.rim_height - 3.0:
+                return True
+        return False
+
+    def _draw_ball(self, img: np.ndarray, frame: FrameState, item: Any) -> None:
+        b = frame.ball
+        _, (u, v), (hx, hy), holder_uv = item
+        r = max(2, int(round((b.radius_px if b is not None else None) or 3.0)))
+        p0 = (int(round(u - hx)), int(round(v - hy)))
+        p1 = (int(round(u + hx)), int(round(v + hy)))
+        if p0 == p1:
+            cv2.circle(img, p0, r, palette.BALL_BGR, -1)
+        else:  # motion-blurred streak: a capsule of the ball's width along its image motion
+            cv2.line(img, p0, p1, palette.BALL_BGR, 2 * r, lineType=cv2.LINE_8)
+            cv2.circle(img, p0, r, palette.BALL_BGR, -1)
+            cv2.circle(img, p1, r, palette.BALL_BGR, -1)
+        cover = self.config.ball_hand_cover
+        if cover > 0.0 and holder_uv is not None:  # the holder's hand over part of the ball
+            d = np.array([holder_uv[0] - u, holder_uv[1] - v])
+            n = float(np.hypot(*d))
+            d = d / n if n > 1e-6 else np.array([0.0, 1.0])
+            c = (int(round(u + d[0] * r * (1.0 - cover))), int(round(v + d[1] * r * (1.0 - cover))))
+            cv2.circle(img, c, max(1, int(round(r * cover * 1.2))), palette.SKIN_BGR, -1)
 
     def _draw_scoreboard(self, img: np.ndarray, reading: ScoreboardReading | None) -> None:
         (x0, y0), _, (x1, y1), _ = self.roi["corners"]
@@ -321,6 +445,19 @@ class SyntheticRenderer:
         if any(digits["clock"]):  # colon (not a cell; the reader ignores it)
             for cy in (y0 + _CELL_Y + _CELL_H // 3, y0 + _CELL_Y + 2 * _CELL_H // 3):
                 cv2.rectangle(img, (x0 + _COLON_X, cy - 2), (x0 + _COLON_X + 3, cy + 1), SEGMENT_ON_BGR, -1)
+
+
+def _holder(frame: FrameState, radius_ft: float = 2.5, max_z_ft: float = 6.0) -> Any:
+    """The player holding the ball (nearest within ``radius_ft`` of a ball below ``max_z_ft``), or None."""
+    b = frame.ball
+    if b is None or b.court_xy is None or b.z is None or b.z > max_z_ft:
+        return None
+    best, best_d = None, radius_ft
+    for p in frame.players:
+        d = math.hypot(p.x - b.court_xy[0], p.y - b.court_xy[1])
+        if d <= best_d:
+            best, best_d = p, d
+    return best
 
 
 def _finite(box: BBox) -> bool:

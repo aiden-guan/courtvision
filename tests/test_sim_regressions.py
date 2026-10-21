@@ -75,7 +75,7 @@ def test_every_attempt_resolves_at_low_fps(fps: float) -> None:
 def test_tip_putbacks_are_reachable() -> None:
     """``_phase_putback`` read the ball height after ``_hold`` had already snapped it to 3.75 ft, so a
     tip (shot_type "tip") could never happen."""
-    r = GameSimulator(SimConfig(seconds=300.0, fps=10.0, seed=2, putback_rate=1.0, oreb_rate=0.7)).run()
+    r = GameSimulator(SimConfig(seconds=600.0, fps=10.0, seed=2, putback_rate=1.0, oreb_rate=0.7)).run()
     tips = [e for e in r.events if e.kind is K.SHOT_ATTEMPT and e.attrs["shot_type"] == "tip"]
     assert tips
     for a in tips:
@@ -142,8 +142,10 @@ def test_dead_balls_stay_near_the_court() -> None:
 
 
 def test_overtime_jump_ball_does_not_teleport_the_ball() -> None:
-    """The jump ball put the ball at centre court in one frame (16 ft jumps at an NBA overtime)."""
-    r = GameSimulator(SimConfig(seconds=200.0, fps=30.0, seed=8, period_s=15.0, ot_s=10.0)).run()
+    """The jump ball put the ball at centre court in one frame (16 ft jumps at an NBA overtime).
+    The seed is the first from 8 whose short-period game reaches overtime (re-pinned when the simulator's
+    game flow changes)."""
+    r = GameSimulator(SimConfig(seconds=200.0, fps=30.0, seed=17, period_s=15.0, ot_s=10.0)).run()
     ot = [e for e in r.events if e.kind is K.PERIOD_START and e.attrs["period"] > r.rules.n_periods]
     assert ot and r.rules.possession == "jump"
     ball = np.array([[*f.ball.court_xy, f.ball.z] for f in r.frames])
@@ -217,3 +219,32 @@ def test_renderer_clips_geometry_behind_the_camera() -> None:
     for _, polys, ring in r._hoops:
         for p in polys + ring:
             assert np.abs(p).max() < 1e6
+
+
+def test_low_fps_catches_happen_where_the_hands_meet_the_ball() -> None:
+    """At 10 fps a caught pass used to be held where it had flown on to by the end of the frame (up to
+    ~4 ft past the catch point, out of bounds near a sideline): the catch is at its exact flight time."""
+    r = GameSimulator(SimConfig(seconds=600.0, fps=10.0, seed=5, period_s=240.0)).run()
+    checked = 0
+    for p in (e for e in r.events if e.kind is K.PASS and e.attrs["completed"]):
+        i = int(round(p.attrs["catch_t"] * r.config.fps))
+        f = r.frames[i]
+        recv = f.player(p.other_player_id)
+        if recv is None or not r.court.in_bounds(recv.x, recv.y):
+            continue
+        bx, by = f.ball.court_xy
+        assert r.court.in_bounds(bx, by), (p.t, bx, by)
+        assert math.hypot(bx - recv.x, by - recv.y) <= 4.0
+        checked += 1
+    assert checked > 50
+
+
+def test_tip_putbacks_go_straight_back_up() -> None:
+    """A tip is released from the catch, not carried overhead to a release spot (it was held at ~9.5 ft
+    for up to 0.7 s)."""
+    r = GameSimulator(SimConfig(seconds=600.0, fps=30.0, seed=12, putback_rate=1.0, oreb_rate=0.7)).run()
+    tips = [a for a in r.events if a.kind is K.SHOT_ATTEMPT and a.attrs.get("shot_type") == "tip"]
+    assert tips
+    for a in tips:
+        reb = max((e for e in r.events if e.kind is K.REBOUND and e.t <= a.t), key=lambda e: e.t)
+        assert reb.player_id == a.player_id and a.t - reb.t <= 0.35, (reb.t, a.t)

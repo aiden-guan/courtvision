@@ -531,3 +531,208 @@ def test_offensive_foul_on_a_rebound_is_a_loose_ball_foul_not_a_turnover() -> No
     assert not live(eng.events, EventKind.TURNOVER)
     reb = one(eng.events, EventKind.REBOUND)
     assert reb.player_id is None and reb.team is Team.AWAY and reb.attrs["offensive"] is False
+
+
+# ---------------------------------------------------------------------------- round 2: blocks at the rim, raised
+# balls and dead balls dated by the clock (sim train seeds, truth3d)
+
+
+def _flight(s: Scene, v: tuple[float, float, float], duration: float) -> Scene:
+    """Free flight from the current ball position with initial velocity ``v`` (ft/s)."""
+    p0 = s.ball
+    assert p0 is not None
+    return s.run(duration, lambda a, pos: (p0[0] + v[0] * a * duration, p0[1] + v[1] * a * duration,
+                                           p0[2] + v[2] * a * duration - 0.5 * G * (a * duration) ** 2))
+
+
+def _layup_scene(blocked: bool = True, ring: bool = False) -> Scene:
+    """home-1 drives to the left rim, raises the ball over his head (z 10.4) and carries it 0.3 s before
+    releasing it toward the rim; away-1 (help defender, 3 ft away) swats it 0.1 s after the release (or the
+    ball hits the front of the ring and bounces out)."""
+    s = two_team_scene()
+    s.add("home-1", 12.0, 25.0).add("away-1", 8.0, 27.5)
+    s.start("home-1").hold("home-1", 0.5, move=(8.0, 25.0))
+    top = (7.2, 24.3, 10.4)
+    start = s.ball
+    s.run(0.25, lambda a, pos: (start[0] + a * (top[0] - start[0]), start[1] + a * (top[1] - start[1]),
+                                start[2] + a * (top[2] - start[2])), {"home-1": (7.6, 25.0)})
+    s.run(0.3, lambda a, pos: (top[0] - 0.6 * a, top[1], top[2]), {"home-1": (7.2, 25.0)})  # carried overhead
+    s.mark("release")
+    if ring:
+        _flight(s, (-7.0, 1.0, 1.5), 0.08)  # on to the front of the ring
+        s.mark("ring")
+        _flight(s, (6.0, 2.0, 7.0), 0.6)
+    else:
+        _flight(s, (-4.0, 1.0, 6.0), 0.1)
+        s.mark("block")
+        if blocked:
+            _flight(s, (12.0, 5.0, -2.0), 0.5)
+        else:
+            _flight(s, (-4.0, 1.0, 2.8), 0.4)
+    end = s.ball
+    s.run(0.3, lambda a, pos: tuple(end[i] + a * (s.hands("away-1", pos)[i] - end[i]) for i in range(3)))
+    s.hold("away-1", 1.0)
+    return s
+
+
+def test_layup_blocked_at_the_rim_is_a_block_3d() -> None:
+    """Defect (truth3d 1200 s: block 8 of 25): a layup / dunk enters the rim zone at its release, and blocks
+    were only looked for before the rim zone; the hold also ended when the raised ball passed 7.5 ft, so the
+    attempt was dated ~0.5 s before the release and the carry over the ring was taken for rim contact."""
+    s = _layup_scene()
+    eng = run_engine(s.frames_3d())
+    ev = live(eng.events)
+    att = one(ev, EventKind.SHOT_ATTEMPT)
+    assert att.player_id == "home-1" and abs(att.t - s.marks["release"]) <= 0.07
+    blk = one(ev, EventKind.BLOCK)
+    assert blk.player_id == "away-1" and blk.other_player_id == "home-1" and abs(blk.t - s.marks["block"]) <= 0.1
+    miss = one(ev, EventKind.SHOT_MISSED)
+    assert miss.attrs.get("blocked") is True and not live(ev, EventKind.SHOT_MADE)
+
+
+def test_ring_bounce_next_to_a_defender_is_not_a_block_3d() -> None:
+    s = _layup_scene(ring=True)
+    eng = run_engine(s.frames_3d())
+    ev = live(eng.events)
+    assert not live(ev, EventKind.BLOCK)
+    assert one(ev, EventKind.SHOT_ATTEMPT).player_id == "home-1"
+    assert len(live(ev, EventKind.SHOT_MISSED)) == 1
+
+
+def test_raised_ball_release_is_the_start_of_free_flight_3d() -> None:
+    s = _layup_scene(blocked=False)
+    eng = run_engine(s.frames_3d())
+    att = one(live(eng.events), EventKind.SHOT_ATTEMPT)
+    assert abs(att.t - s.marks["release"]) <= 0.07
+    assert att.attrs["shot_type"] in ("layup", "dunk")
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_step_out_of_bounds_is_dated_by_the_clock_stop(mode: str) -> None:
+    """Defect (truth3d 1200 s: 5 of 8 turnover FNs, e.g. train seed 1 at 944.4 s): a dribbler steps on the
+    sideline (out by less than the holder margin) and the clock stops; he bounces the ball away, so it is a
+    flight in the air when the stop is recognised, which the engine ignored, and the TURNOVER was inferred
+    at the other team's inbound ~2 s later. A ball released after the stoppage is dead from it on; and a
+    bounce right after the (back-dated) dead ball was recognised no longer restarts play."""
+    s = two_team_scene(clock=600.0)
+    s.add("home-1", 30.0, 45.0).add("away-2", 24.0, 51.5)
+    s.start("home-1").dribble("home-1", 1.2, 2, move=(31.0, 50.6))
+    s.mark("out")
+    s.clock_running = False
+    s.hold("home-1", 0.4)
+    start = s.ball
+    s.run(1.4, lambda a, pos: (start[0] + a * (24.0 - start[0]), start[1] + a * (49.0 - start[1]),
+                               0.39 + 3.0 * abs(math.cos(1.5 * math.pi * a))))  # bounces it away after the whistle
+    s.run(0.3, lambda a, pos: s.hands("away-2", pos))  # the inbounder picks it up out of bounds
+    s.hold("away-2", 0.8)
+    s.clock_running = True
+    s.pass_to("away-1").hold("away-1", 1.0)
+    eng = run_engine(s.frames(mode))
+    to = one(live(eng.events), EventKind.TURNOVER)
+    assert to.team is Team.HOME and to.player_id == "home-1"
+    assert to.attrs["type"] in ("out_of_bounds", "other")  # the stoppage's cause is not seen
+    assert abs(to.t - s.marks["out"]) <= 0.35
+    poss = [e for e in live(eng.events, EventKind.POSSESSION) if e.team is Team.AWAY]
+    assert len(poss) == 1 and poss[0].attrs["cause"] == "turnover"
+
+
+def _dunk_through_the_rim() -> Scene:
+    """home-1 carries the ball overhead to the left rim and slams it through without letting go until it
+    is below the ring; away-1 takes it out of bounds and inbounds. The board shows +2 ~0.4 s after the dunk."""
+    s = two_team_scene()
+    s.add("home-1", 14.0, 25.0).add("away-1", 9.0, 30.0).add("away-2", 20.0, 20.0)
+    s.start("home-1").dribble("home-1", 1.0, 2, move=(9.0, 25.0))
+    top, st = (8.0, 24.6, 10.4), s.ball
+    s.run(0.25, lambda a, pos: tuple(st[i] + a * (top[i] - st[i]) for i in range(3)), {"home-1": (7.6, 25.0)})
+    s.run(0.35, lambda a, pos: (top[0] - 2.75 * a, 24.6 + 0.4 * a, 10.4), {"home-1": (6.4, 25.0)})
+    s.mark("dunk")
+    rim = s.basket("left")
+    s.run(0.15, lambda a, pos: (rim[0], rim[1], 10.4 - 3.0 * a))
+    s.mark("through")
+    b = s.ball
+    s.run(0.35, lambda a, pos: (b[0] + 1.0 * a, b[1], b[2] - (b[2] - BALL_R) * a * a))
+    s.set_score(2, 0)
+    s.run(0.6, lambda a, pos: (b[0] + 1.0 + 1.5 * a, b[1] + 3.0 * a, BALL_R + 1.5 * abs(math.sin(math.pi * a))),
+          {"away-1": (2.0, 28.0)})
+    s.run(0.3, lambda a, pos: s.hands("away-1", pos), {"away-1": (-1.5, 28.0)})
+    s.hold("away-1", 1.0)
+    s.pass_to("away-2").hold("away-2", 2.5)
+    return s
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_unseen_make_from_the_scoreboard_is_an_attempt_and_a_make(mode: str) -> None:
+    """Defect (mono 1200 s: 19 SCORE_CORRECTIONs, 24 SHOT_MADE FNs; 12 of 18 non-steal turnover FPs): a
+    make the engine never saw released (a dunk / layup carried through the rim, an and-one whose shooter
+    was never the holder) left only a SCORE_CORRECTION, and the other team's inbound then looked like an
+    out-of-bounds turnover. An unmatched +2 / +3 is now an inferred attempt + make by the last releaser near
+    the basket (or the fouled shooter), and what followed is the dead ball after a score. (The 3-D engine
+    holds a raised ball until it is in free flight, so a slam carried through the ring is one of these.)"""
+    s = _dunk_through_the_rim()
+    eng = run_engine(s.frames(mode))
+    ev = live(eng.events)
+    att, made = one(ev, EventKind.SHOT_ATTEMPT), one(ev, EventKind.SHOT_MADE)
+    assert att.player_id == made.player_id == "home-1" and made.value == 2
+    assert abs(att.t - s.marks["dunk"]) <= 1.0 and abs(made.t - s.marks["through"]) <= 1.0
+    assert not live(ev, EventKind.SCORE_CORRECTION) and not live(ev, EventKind.TURNOVER)
+    poss = [e for e in live(ev, EventKind.POSSESSION) if e.team is Team.AWAY]
+    assert len(poss) == 1 and poss[0].attrs["cause"] == "made_shot"
+
+
+def _loose_ball_past_a_bystander() -> Scene:
+    """A missed jumper falls off the rim, hits the floor and arcs (top 4.2 ft) right past home-3's chest
+    at 9 ft/s without him touching it; away-1 takes it."""
+    s = two_team_scene()
+    s.add("home-1", 22.0, 25.0).add("home-3", 9.6, 21.6).add("away-1", 16.0, 19.0).add("away-3", 4.0, 34.0)
+    s.start("home-1").hold("home-1", 0.8).shoot("left", made=False)
+    p0, land = s.ball, (5.0, 21.0, BALL_R)
+    s.run(0.5, lambda a, pos: tuple(p0[i] + a * (land[i] - p0[i]) for i in range(3)))
+    vx, vz, T = 9.4, 15.6, 0.98
+    s.run(T, lambda a, pos: (land[0] + vx * a * T, land[1], BALL_R + vz * a * T - 0.5 * G * (a * T) ** 2))
+    b = s.ball
+    s.run(0.4, lambda a, pos: (b[0] + a * (s.hands("away-1", pos)[0] - b[0]), b[1] + a * (s.hands("away-1", pos)[1] - b[1]),
+                               BALL_R + a * (HANDS_Z - BALL_R)))
+    s.mark("catch")
+    s.dribble("away-1", 1.5, 3, move=(22.0, 18.0))
+    return s
+
+
+def test_loose_ball_in_free_flight_past_a_bystander_is_not_his_rebound_3d() -> None:
+    """Defect (truth3d 1200 s: the 3 steal FPs and 4 of the turnover FPs): after a miss or a block, a loose
+    ball bouncing past a player below holder_freefall_min_z_ft (4.5 ft, kept low so a dribble's ballistic
+    part is still a hold) was his rebound, and the real rebounder's catch a steal. With nobody dribbling a
+    loose ball, free flight above about waist height is nobody's."""
+    s = _loose_ball_past_a_bystander()
+    ev = live(run_engine(s.frames_3d()).events)
+    reb = one(ev, EventKind.REBOUND)
+    assert reb.player_id == "away-1" and reb.attrs["offensive"] is False and abs(reb.t - s.marks["catch"]) <= 0.35
+    assert not live(ev, EventKind.STEAL) and not live(ev, EventKind.TURNOVER)
+
+
+def _loose_ball_rolling_past_a_bystander() -> Scene:
+    """A missed jumper falls off the rim and rolls through home-3's feet for half a second, on to away-1,
+    6 ft away, who picks it up."""
+    s = two_team_scene()
+    s.add("home-1", 22.0, 25.0).add("home-3", 9.6, 21.6).add("away-1", 15.0, 17.5).add("away-3", 4.0, 34.0)
+    s.start("home-1").hold("home-1", 0.8).shoot("left", made=False)
+    p0, land = s.ball, (8.6, 21.4, BALL_R)
+    s.run(0.5, lambda a, pos: tuple(p0[i] + a * (land[i] - p0[i]) for i in range(3)))
+    end = (13.8, 18.4, BALL_R)
+    s.run(1.4, lambda a, pos: tuple(land[i] + a * (end[i] - land[i]) for i in range(3)))  # rolling: no dribble
+    s.run(0.3, lambda a, pos: tuple(end[i] + a * (s.hands("away-1", pos)[i] - end[i]) for i in range(3)))
+    s.mark("pickup")
+    s.dribble("away-1", 1.5, 3, move=(22.0, 17.0))
+    return s
+
+
+def test_loose_ball_rolling_through_a_bystander_is_a_rebound_for_the_one_who_picks_it_up_3d() -> None:
+    """Defect (truth3d 300 s: both steal FPs): a loose ball rolling through a player's feet was his rebound
+    (below the free-flight check) and the actual recovery a steal. A rebound stint without a dribble or a
+    real hold that ends with the other team holding the ball is now a wrong-body rebound: re-credited to the
+    one who picked it up, at his pickup (the bystander stood well away from him), no steal."""
+    s = _loose_ball_rolling_past_a_bystander()
+    ev = live(run_engine(s.frames_3d()).events)
+    reb = one(ev, EventKind.REBOUND)
+    assert reb.player_id == "away-1" and reb.attrs["offensive"] is False and abs(reb.t - s.marks["pickup"]) <= 1.0
+    assert not live(ev, EventKind.STEAL) and not live(ev, EventKind.TURNOVER)
+    assert [e.team for e in live(ev, EventKind.POSSESSION)] == [Team.HOME, Team.AWAY]

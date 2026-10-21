@@ -20,6 +20,14 @@ Pipeline per frame
 6. Dead balls for narration: ``DeadBallDetector`` (§7A.5).
 7. Reconciliation against the confirmed scoreboard (``reconcile.py``).
 
+Monocular evidence rules (one camera: boxes overlap, the ball hides in the hands): a change of team
+control is a STEAL only once the new team's control is corroborated (``_PendingSteal``) and the releaser
+had shown control himself (``_corroborated``); a releaser who never did is a wrong body, spliced out
+(``_correct_phantom``). A track whose label falls back to a provisional id keeps its roster identity
+(``_canonical_ids``). A blocked shot recognised late is found in the buffered image track
+(``_retro_block``), and a score delta matching no seen shot becomes an inferred attempt + make
+(``_unseen_make``). Dead balls recognised from a clock stop are dated at the stop.
+
 Event semantics follow ARCHITECTURE "Shared event semantics" and the FIBA Statisticians' Manual
 rules in docs/research/basketball_rules_stats.md §2a. Every tunable constant is a field of
 ``EventEngineConfig`` with its source and status (sourced / unverified / tuned).
@@ -30,6 +38,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
+import re
 import statistics
 from collections import deque
 from collections.abc import Sequence
@@ -52,7 +61,7 @@ from courtvision.types import (
 
 from .calibration import CueModelSet
 from .deadball import DeadBallConfig, DeadBallDetector, ft_formation
-from .possession import BallGate, BallObs, ControlChange, HolderTracker, PlayerHistory, RayModel, ball_obs, keep_box
+from .possession import G_FTS2, BallGate, BallObs, ControlChange, HolderTracker, PlayerHistory, RayModel, ball_obs, keep_box
 from .reconcile import Action, Reconciler, ShotEntry
 from .scoreboard import ClockZeroWatch, PeriodChange, ScoreboardConfig, ScoreboardConfirmer, ScoreChange
 from .shots import Flight, FlightSample, FlightSignal, Release, shot_type_for, three_margin_ft
@@ -96,7 +105,9 @@ class EventEngineConfig:
     holder_radius_ft: float = 1.6  # 0.5 m holder radius (RESEARCH §7A.2); unverified
     holder_keep_radius_ft: float = 3.0  # keep radius for dribble excursions; tuned
     holder_max_z_ft: float = 7.5  # a held ball is below this height (spec); unverified
+    holder_reach_z_ft: float = 12.0  # 3-D: above holder_max_z_ft the holder keeps a raised ball up to this height until it is first in free flight (standing reach ~1.33 x stature + a jump, sim anthropometrics); unverified
     holder_freefall_min_z_ft: float = 4.5  # 3-D: above dribble height (catches and dribbles near the floor are partly ballistic) ... ; tuned
+    holder_loose_free_min_z_ft: float = 3.5  # 3-D, loose ball after a miss / block (nobody dribbles it): free flight above about waist height (~0.53 x stature) is nobody's yet; tuned on sim train seeds
     holder_freefall_tol_fts2: float = 8.0  # ... a ball with |a_z + g| below this is in free flight, nobody gains it; tuned
     holder_acquire_max_speed_fts: float = 15.0  # a catch slows the ball to the catcher's speed; tuned
     holder_rel_speed_scale_fts: float = 10.0  # 3-D: score -= relative ball-player speed / this; tuned
@@ -106,7 +117,7 @@ class EventEngineConfig:
     holder_rel_speed_scale_img_fts: float = 25.0  # image: same, noisier velocities; tuned
     holder_rel_speed_slack_img_fts: float = 10.0  # image: extra slack on the hard acquire gate (noise); tuned
     holder_team_prior: float = 0.15  # score bonus for the passer's team while a pass is in the air; tuned
-    holder_switch_margin_opp: float = 0.25  # image: extra margin an opponent needs to take the ball from the holder; tuned
+    holder_switch_margin_opp: float = 0.1  # image: extra margin an opponent needs to take the ball from the holder; tuned
     holder_switch_margin_opp_court: float = 0.0  # 3-D / court: positions are exact, relative motion decides; tuned
     use_ray_model: bool = True  # monocular: estimate the camera from rims + ball floor projections; tuned
     holder_ray_max_lateral_ft: float = 2.5  # image: the ball's viewing ray passes this close to the holder; tuned
@@ -115,13 +126,44 @@ class EventEngineConfig:
     holder_ray_z_ref_ft: float = 2.5  # typical held / dribbled ball height; unverified
     holder_ray_z_band_ft: float = 2.0  # no penalty within ref +- band; tuned
     holder_ray_z_weight: float = 0.1  # score penalty per ft outside the band; tuned
-    steal_confirm_s: float = 0.3  # a change of team control needs this long (narration §9.3 holds 500 ms); tuned
+    holder_ray_lateral_free_ft: float = 1.0  # image: no penalty while the viewing ray passes within this of the player ...; tuned on sim train seeds
+    holder_ray_lateral_weight: float = 0.15  # ... then this score penalty per ft (depth disambiguation of overlapping boxes); tuned on sim train seeds
+    # Monocular body-span holder score (possession._body_score); 3-D / court mode does not use these.
+    holder_img_reach_ft: float = 0.4  # image acquire: ball centre at most this far beyond the body's image span (hands); tuned on sim train seeds
+    holder_img_keep_reach_ft: float = 0.6  # image: the holder keeps it this far beyond the span (crossovers, side dribbles); tuned on sim train seeds
+    holder_img_bottom_frac: float = 0.12  # image acquire: down to this fraction of bbox height below the feet (floor contact in front of the body); tuned on sim train seeds
+    holder_img_centre_pref: float = 0.3  # image: score drop from the centre line to the span edge (tie-break between overlapping boxes); tuned on sim train seeds
+    # Monocular leaky k-of-n confirmation (possession.HolderTracker._vote_gain); 3-D keeps consecutive frames.
+    holder_vote_slack: int = 1  # image: a new holder wins confirm_n of the last confirm_n + this observed frames; tuned on sim train seeds
+    holder_acquire_loose_img_fts: float = 16.0  # image: a loose ball after a miss is acquired only below this ball-player relative speed (vertical included); tuned on sim train seeds
+    holder_vote_loose_k: int = 5  # image, loose ball after a miss: the rebounder wins this many ...; tuned on sim train seeds
+    rebound_backdate_max_s: float = 1.0  # image, loose ball: the rebounder's gain is dated back over his valid candidacy (during the loose ball) at most this before his first counted win; tuned on sim train seeds
+    holder_vote_loose_n: int = 6  # ... of the last this many observed frames (RESEARCH §2.4 holds a rebound 300 ms); tuned on sim train seeds
+    steal_confirm_img_s: float = 0.5  # image: a change of team control must last this long (steal hold 500 ms, RESEARCH §2.4 / §4.1); sourced
+    steal_vote_window_s: float = 0.8  # image: votes for a change of team control are counted over this window ...; tuned on sim train seeds
+    steal_vote_frac: float = 0.6  # ... the other team must win this share of the observed frames since its first win ...; tuned on sim train seeds
+    steal_min_votes: int = 5  # ... and at least this many of them; tuned on sim train seeds
+    steal_backdate_slack: int = 2  # ... observed frames in a row without a candidate of that team that do not end its contest; tuned on sim train seeds
+    steal_backdate_max_s: float = 0.7  # image: such a change is dated back to the start of the new team's contest for the ball (its valid candidacy), at most this before its first win (possession._contest_onset); tuned on sim train seeds
+    steal_confirm_s: float = 0.3  # 3-D / court: a change of team control needs this long (exact positions); tuned
+    # Monocular steal corroboration (engine._PendingSteal): STEAL / TURNOVER / POSSESSION of an opponent's gain
+    # are emitted (dated at the gain) once the new team has held the ball steal_sustain_s and dribbled, shot or
+    # been fouled within steal_corroborate_s of the gain; the old team holding it again first means no change.
+    # (Unambiguous holding is no evidence here: on sim train seeds wrong-body gains in the open, e.g. a pass
+    # crossing a lone defender's box, are as unambiguous.)
+    steal_sustain_s: float = 0.9  # 0 disables (immediate steals); tuned on sim train seeds
+    steal_corroborate_s: float = 1.5  # ... counted from the confirmation of the gain; tuned on sim train seeds
+    holder_clear_margin: float = 0.3  # image: a frame is unambiguous when no other candidate scores within this of the pick (keep bonus left out); tuned on sim train seeds
+    holder_clear_frames: int = 6  # image: unambiguous observed frames that corroborate a releaser's control (victim_min_hold_s); tuned on sim train seeds
+    victim_min_hold_s: float = 1.5  # monocular: a releaser without a dribble held the ball at least this long, or his "loss" to an opponent is a wrong-body correction, not a steal; tuned on sim train seeds
     holder_contest_margin: float = 0.02  # opponents within this score of each other: contested, no holder; tuned
     holder_confirm_s: float = 0.1  # new holder after ~3 frames at 30 fps; tuned
     holder_release_s: float = 0.1  # release after ~3 frames without the ball; tuned
+    release_gap_backdate_s: float = 0.3  # image: a ball reappearing in flight after a gap this long was released when its flight left the holder's box (back-extrapolated), not at the gap start; tuned on sim train seeds
     holder_min_frames: int = 2  # floor on hysteresis frame counts at low fps; tuned
     holder_gap_keep_s: float = 10.0  # keep the holder through ball gaps up to this (cv_pipeline §6.2); tuned
     id_swap_radius_ft: float = 2.5  # a vanished holder replaced in place by a teammate id = id swap; tuned
+    track_identity_memory_s: float = 3.0  # a track shown with a provisional id within this of its last roster id keeps that id (team-vote flips last ~0.3-1.5 s); design, unverified
     self_regain_s: float = 1.5  # releaser regains within this: same control stint (dribble excursion); tuned
     # --- flights, shots and make / miss (shots.py)
     rim_zone_radius_ft: float = 4.5  # 3-D shot zone radius around the basket (spec); unverified
@@ -145,6 +187,8 @@ class EventEngineConfig:
     freefall_min_frac: float = 0.9  # >= this = air-ball free-fall signature [16]; sourced
     shot_resolve_timeout_s: float = 4.0  # unresolved shot -> missed + needs_review; tuned
     pass_max_flight_s: float = 4.0  # a "pass" flight longer than this is a loose ball; tuned
+    pass_min_flight_s: float = 0.2  # monocular: a same-team change faster than this ... (engine._flicker); tuned on sim train seeds
+    pass_min_dist_ft: float = 6.0  # ... between players this close, the ball moving less than a body width in the image, is no pass (2% of sim passes are under 6 ft); tuned on sim train seeds
     gather_lead_s: float = 0.35  # last grounded foot position ~ this before release (D8 proxy); unverified
     tip_max_control_s: float = 0.35  # shorter control near the rim = tip; tuned
     layup_max_dist_ft: float = 6.0  # tuned
@@ -164,18 +208,33 @@ class EventEngineConfig:
     block_max_after_release_s: float = 1.2  # tuned
     block_max_from_release_ft: float = 10.0  # tuned
     block_max_basket_dist_ft: float = 35.0  # shot-like releases only within this of a basket; tuned
+    # Monocular retro-block (engine._retro_block): the buffered image track around a release
+    retro_block_lookback_s: float = 1.5  # look back this far before the (often late) release, not before his control began; tuned on sim train seeds
+    retro_block_stand_lead_s: float = 0.6  # the shooter's standing box (head line) this long before the release; tuned on sim train seeds
+    retro_block_min_base_s: float = 0.06  # ... over baselines of at least this (+-1.5 px jitter); tuned on sim train seeds
+    retro_block_max_gap_s: float = 0.35  # velocities only between observations this close (the ball is often hidden at the touch); tuned on sim train seeds
+    # Blocks of shots already inside the rim zone (layups, dunks: they enter it at the release; shots.Flight.
+    # _check_rim_block). 3-D: a reversal clear of the ring (rim_contact_dist_ft) and the board is a defender's.
+    backboard_half_width_ft: float = 3.0  # 72 in board (NBA rule 1 sec. II); sourced
+    backboard_above_rim_ft: float = 3.5  # board top ~ 42 in board, rim ~ 6 in above its bottom edge; sourced (approx.)
     airball_radius_ft: float = 7.0  # 3-D: descending past rim height within this of the basket; tuned
     airball_min_apex_above_ft: float = 1.0  # tuned
     airball_min_release_dist_ft: float = 6.0  # tuned
+    # Monocular: a steal or rebound followed this quickly by the other team holding the ball, with no
+    # completed pass or shot in between, was a wrong-body holder: the steal is retracted (the pass it
+    # intercepted is completed) or the rebound re-credited, instead of a second change of possession.
+    team_change_revert_s: float = 2.5  # tuned on sim train seeds
+    rebound_retime_ft: float = 4.0  # 3-D: a re-credited rebound moves to the new holder's gain when the wrong body stood farther than this from him (monocular: kept, positions too noisy); tuned on sim train seeds
     strip_max_travel_ft: float = 6.0  # opponent gains within this of the release: steal, not bad pass; tuned
     strip_max_flight_s: float = 0.6  # tuned
     # --- dribbles
     dribble_floor_z_ft: float = 1.2  # bounce minimum below this (ball centre 0.39 ft at contact); tuned
     dribble_min_amp_ft: float = 0.8  # 3-D reversal amplitude of a bounce; tuned
     dribble_radius_ft: float = 4.0  # bounce within this of the dribbler; tuned
-    dribble_foot_band: float = 0.25  # image: bounce within this fraction of bbox height of the feet; tuned
+    dribble_foot_band: float = 0.35  # image: lowest observed point of a bounce within this fraction of bbox height of the feet (the floor-contact frames are often missed: the ball is hidden by the legs); tuned on sim train seeds
     dribble_min_amp_h: float = 0.15  # image: reversal amplitude as a fraction of bbox height; tuned
     dribble_min_interval_s: float = 0.2  # tuned
+    dribble_max_rise_s: float = 0.6  # a bounce is back up by the reversal amplitude within this of its low point (floor to hand ~0.2-0.3 s); unverified
     # --- assists (ARCHITECTURE shared semantics)
     assist_window_s: float = 5.0  # catch -> release; sourced (project rule)
     assist_max_dribbles: int = 2  # sourced (project rule)
@@ -188,12 +247,24 @@ class EventEngineConfig:
     holder_oob_frames: int = 3  # live holder out of bounds this many frames = stepped out; tuned
     oob_turnover_conf: float = 0.6  # inferred out-of-bounds turnovers (< 1 per semantics); tuned
     team_rebound_conf: float = 0.7  # inferred team rebounds; tuned
-    dead_min_s: float = 1.0  # fallback restarts (dribble / pass in bounds) only after this; tuned
+    dead_min_s: float = 1.0  # fallback restarts (dribble / pass in bounds) only this long after the dead ball was recognised; tuned
     dead_from_clock_stop: bool = True  # enter a dead ball when the trusted game clock stops; tuned
     clock_stop_min_s: float = 1.2  # clock unchanged this long (MM:SS display) = stopped; tuned
     detect_shot_clock_violations: bool = True  # shot clock read 0 while live -> team turnover; tuned
     period_start_tol_s: float = 1.0  # first read within this of a full period = period start; tuned
-    toss_min_speed_fts: float = 5.0  # an unheld ball moving this fast at a period start = the jump-ball toss; tuned
+    continuation_s: float = 0.8  # a shooter fouled in the act releases (or released) within this of the whistle: the shot plays out (and-one if made); tuned on sim train seeds
+    continuation_miss_wait_s: float = 5.0  # such a shot called missed is retracted (no FGA) unless the scoreboard shows it made by then (make_confirm_wait_s + reconcile_hold_s); tuned
+    toss_min_speed_fts: float = 5.0  # 3-D: an unheld ball moving this fast at a period start = the jump-ball toss; tuned
+    # Monocular jump ball (period 1 / jump-ball overtimes per RuleSpec): the referee holds the ball among the
+    # jumpers, and referees are not in the player list, so nobody has control until the toss. The toss is
+    # the ball rising steadily in the image (over a long baseline: +-1.5 px jitter must not trigger it).
+    toss_min_rise_ft: float = 2.0  # image: rise (in px at the players' px/ft) over toss_window_s that marks the toss (it peaks ~7 ft above the hand); tuned on sim train seeds
+    toss_window_s: float = 0.6  # tuned on sim train seeds
+    toss_min_frames: int = 4  # observed frames in that window, the last three rising; tuned on sim train seeds
+    toss_fallback_move_ft: float = 8.0  # image: the ball carried this far from the referee's spot = play began (no toss seen); tuned
+    toss_wait_max_s: float = 12.0  # image: no toss seen this long after the period start -> normal holder logic; unverified
+    jump_ball_radius_ft: float = 12.0  # image: the ball's floor projection this close to centre court = the referee's jump-ball spot (6 ft circle + the projection offset of a hand-held ball); unverified
+    jump_control_s: float = 0.45  # image: a gain after the toss counts once held this long (the jumpers' tap is a touch, not control); tuned on sim train seeds
     possession_conf: float = 0.9  # confidence of POSSESSION events from control; tuned
     pass_conf: float = 0.9  # tuned
     dribble_conf: float = 0.8  # tuned
@@ -207,6 +278,13 @@ class EventEngineConfig:
     reconcile_flip_window_s: float = 15.0  # misses this old can be flipped to makes; tuned
     reconcile_hold_s: float = 2.0  # unmatched delta waits this long before a SCORE_CORRECTION; tuned
     reconcile_inflight_max_s: float = 5.0  # max wait for an in-flight shot of the scoring team; tuned
+    # A confirmed +2 / +3 matching no seen shot becomes an inferred attempt + make (engine._unseen_make)
+    infer_unseen_makes: bool = True  # design
+    unseen_make_window_s: float = 6.0  # the shooter's release / shooting foul at most this before the delta's first read (make -> board lag 0.4-2 s + OCR + the reconcile hold); tuned on sim train seeds
+    unseen_make_max_dist_ft: float = 10.0  # a releaser this close to his basket (layups, dunks, close shots: the ones the image misses); tuned on sim train seeds
+    unseen_make_release_lag_s: float = 1.0  # ... or released at most this after the delta (a ball carried through the rim leaves the shooter's box late); tuned on sim train seeds
+    unseen_make_flight_s: float = 0.4  # release -> rim when the ball is not seen at the rim; unverified
+    unseen_make_conf: float = 0.5  # confidence of inferred attempts / makes; design
     # --- calibration
     assume_calibrated: bool = False  # simulator evaluation only: p_status "assumed_sim"
     cue_model_path: str | None = None  # CueModelSet JSON; None = hand-set cold start
@@ -227,6 +305,40 @@ class _PassRec:
 
 
 @dataclass(slots=True)
+class _TeamChange:
+    """A change of team control (steal, rebound) that the next moments may still contradict: with one
+    camera the first holder after a loose ball or a catch in traffic can be the wrong body, and the
+    true holder taking the ball a moment later is not a second change of possession."""
+
+    kind: str  # "steal" | "rebound"
+    t: float
+    team: Team | None  # the team that gained control
+    poss_before: Team | None  # possession team before the change
+    ids: list[str] = field(default_factory=list)  # steal: the events a reversal retracts
+    miss: ShotEntry | None = None  # rebound: the missed shot
+    release: Release | None = None  # bad pass: the intercepted pass
+    chain: list[str] = field(default_factory=list)  # completed passes inside the gaining team since (retracted too)
+
+
+@dataclass(slots=True)
+class _PendingSteal:
+    """Monocular: an opponent of the releaser gained the ball. STEAL / TURNOVER / POSSESSION wait until his
+    team's control is corroborated: it lasts ``steal_sustain_s`` and that team dribbles, shoots or is fouled
+    within ``steal_corroborate_s``. With one camera a defender's box over the ball handler, or a pass crossing
+    a defender's box, wins the image votes for a moment far more often than a real steal happens."""
+
+    stealer: str
+    team: Team
+    ch: ControlChange  # the stealer's gain (onset)
+    flight: Flight  # the flight he took the ball from (its release is the victim's)
+    kind: str  # "steal" (strip) | "bad_pass"
+    victim_ctrl: _Control | None  # the victim's stint (resumed if he gets the ball straight back)
+    created_t: float = 0.0  # when the gain was confirmed (its onset can be dated back up to ~1.5 s)
+    chain: list[str] = field(default_factory=list)  # completed passes inside the new team since
+    evidence: bool = False  # a dribble / shot / foul on the new team since the onset
+
+
+@dataclass(slots=True)
 class _Control:
     """One holding stint of one player."""
 
@@ -237,6 +349,12 @@ class _Control:
     origin: str = "other"  # "pass" | "rebound" | "steal" | "inbound" | "self" | "other"
     via_pass: _PassRec | None = None
     dribbles: int = 0
+    change: _TeamChange | None = None  # monocular: provisional change of team control that started this stint
+    via_flight: Flight | None = None  # the pass flight that started it (monocular: spliced out if a wrong body)
+    clear: int = 0  # monocular: observed frames on which the ball was unambiguously his (HolderTracker.clear_n)
+    doubtful: bool = False  # monocular: began with a change of team control that was never corroborated
+    miss: ShotEntry | None = None  # the missed shot a rebound stint followed
+    prev_ctrl: _Control | None = None  # the passer's stint (one level only)
 
 
 @dataclass(slots=True)
@@ -254,6 +372,9 @@ class _Dead:
     first_control: dict[Team, tuple[float, int, str]] = field(default_factory=dict)
     first_pickup: tuple[float, int, str] | None = None
     toss_seen: bool = False  # period start: the ball moved while nobody held it (jump-ball toss)
+    toss_uv: list[tuple[float, float, float]] = field(default_factory=list)  # image: (t, u, v) before the toss
+    jump_pending: tuple[str, Team | None, float, int] | None = None  # image: first control after the toss, not yet held
+    entered_t: float = -math.inf  # stream time the engine entered this dead ball (since_t can be back-dated)
 
 
 @dataclass(slots=True)
@@ -354,8 +475,19 @@ class EventEngine:
         self._gc_watch = ClockZeroWatch(self.scoreboard.config)  # game clock expiry (PERIOD_END)
         self._sc_watch = ClockZeroWatch(self.scoreboard.config)  # shot clock expiry (violation)
         self._fouls: dict[str, int] = {}
+        self._continuation: tuple[str, float] | None = None  # (shooter, foul t): fouled in the act, not released yet
+        self._cont_misses: list[ShotEntry] = []  # continuation shots called missed, awaiting the scoreboard
+        self._post_make: tuple[str, tuple[float, int, str], str | None] | None = None  # (shot, pickup, POSSESSION id)
         self.fouled_out: set[str] = set()
         self._ppf: float | None = None
+        self._mono = False  # the last accepted ball observation was image-only (monocular)
+        self._now = -math.inf  # time of the frame being processed
+        self._track_bound: dict[int, tuple[str, Team | None, float]] = {}  # track -> (roster id, team, last seen)
+        self._pend: _PendingSteal | None = None  # monocular change of team control awaiting corroboration
+        self._last_poss: tuple[str, Team | None, float] | None = None  # (POSSESSION id, team before, t)
+        self._release_log: deque[tuple[Release, _Control | None]] = deque(maxlen=24)  # live releases
+        self._boxes: deque[tuple[float, dict[str, tuple[BBox, Team | None]]]] = deque(maxlen=45)  # image boxes
+        self._shoot_fouls: deque[tuple[float, int, str]] = deque(maxlen=8)  # (t, frame, fouled shooter)
         self.ray_model = RayModel(court.rim_height, {s: court.basket_xy(s) for s in ("left", "right")})
 
     # ------------------------------------------------------------------ public API
@@ -363,10 +495,13 @@ class EventEngine:
     def process(self, frame: FrameState) -> list[Event]:
         """New events and revisions produced at this frame."""
         self._out = []
-        frame = _sanitized(frame)
+        frame = self._canonical_ids(_sanitized(frame))
+        self._now = frame.t
         self._tick(frame)
         self._hist.update(frame)
         self._players = {p.player_id: p for p in frame.players}
+        if any(p.bbox is not None for p in frame.players):
+            self._boxes.append((frame.t, {p.player_id: (p.bbox, p.team) for p in frame.players if p.bbox is not None}))
         for rim in frame.rims:
             self._rims[rim.side] = rim.bbox
         self._ppf = _px_per_ft(frame.players, self.config.player_height_ft)
@@ -383,15 +518,27 @@ class EventEngine:
         f = self._flight
         prefer = f.release.team if f is not None and f.state == "air" and f.context == "live" else None
         opp_n = max(confirm_n, round(self.config.steal_confirm_s / max(self._dt, 1e-3))) if self._phase == LIVE else None
-        changes = self._holder.update(frame, obs, self._gate.velocity(), self._ppf, confirm_n, release_n, prefer, opp_n,
-                                      self.ray_model.ray, self._gate.vertical_accel())
+        if obs is not None:
+            self._mono = not obs.is3d and obs.uv is not None
+        if self._await_toss(obs, frame.t):
+            changes: list[ControlChange] = []
+            self._holder.reset()  # the referee holds the ball between the jumpers: nobody has control yet
+        else:
+            changes = self._holder.update(frame, obs, self._gate.velocity(), self._ppf, confirm_n, release_n, prefer,
+                                          opp_n, self.ray_model.ray, self._gate.vertical_accel(),
+                                          loose=self._pending_miss is not None)
         self._note_toss(obs)
         for ch in changes:
             if ch.kind == "release":
                 self._on_release(ch)
             else:
                 self._on_gain(ch)
+        self._check_jump_pending(frame.t)
         self._detect_dribble(obs)
+        ctrl = self._control
+        if ctrl is not None and ctrl.player_id == self._holder.holder:
+            ctrl.clear = self._holder.clear_n
+        self._check_pending(frame.t)
         self._check_holder_oob(frame)
         self._update_deadball(frame, obs)
         self._reconcile(frame.t)
@@ -406,6 +553,7 @@ class EventEngine:
         if self._flight is not None:
             for sig in self._flight.finish(t, f):
                 self._on_signal(self._flight, sig)
+        self._resolve_pending(end=True)
         self._reconcile(t, force=True)
         return self._out
 
@@ -506,6 +654,34 @@ class EventEngine:
 
     # ------------------------------------------------------------------ helpers
 
+    def _canonical_ids(self, frame: FrameState) -> FrameState:
+        """Identity continuity by track: a track whose label falls back to a provisional id
+        ("<team>-t<track>", ARCHITECTURE PlayerState: e.g. a short team-vote flip) is still the roster
+        player it was bound to moments ago, unless that player is seen elsewhere in the frame. Without
+        this a holder whose team label flips for a second becomes a steal and a steal back."""
+        mem = self.config.track_identity_memory_s
+        if mem <= 0.0:
+            return frame
+        bound = self._track_bound
+        present = {p.player_id for p in frame.players}
+        changed = False
+        players = []
+        for p in frame.players:
+            if p.track_id is not None and not _PROVISIONAL.match(p.player_id):
+                bound[p.track_id] = (p.player_id, p.team, frame.t)
+            players.append(p)
+        for i, p in enumerate(players):
+            if p.track_id is None or not _PROVISIONAL.match(p.player_id):
+                continue
+            hit = bound.get(p.track_id)
+            if hit is not None and frame.t - hit[2] <= mem and hit[0] not in present:
+                players[i] = dataclasses.replace(p, player_id=hit[0], team=hit[1])
+                present.add(hit[0])
+                changed = True
+        if len(bound) > 256:  # forget stale tracks
+            self._track_bound = {k: v for k, v in bound.items() if frame.t - v[2] <= mem}
+        return dataclasses.replace(frame, players=players) if changed else frame
+
     def _tick(self, frame: FrameState) -> None:
         if self._last_t is not None:
             dt = frame.t - self._last_t
@@ -563,10 +739,61 @@ class EventEngine:
                 return t, f
         return None
 
+    def _jump_expected(self) -> bool:
+        """The period opens with a jump ball (period 1; overtimes in jump-ball leagues), not a throw-in."""
+        p = self._period
+        return p is None or p == 1 or (self.rules.is_overtime(p) and self.rules.possession == "jump")
+
+    def _await_toss(self, obs: BallObs | None, t: float) -> bool:
+        """Monocular jump ball: True while the referee still holds the ball (no toss seen yet)."""
+        d = self._dead
+        if d is None or d.cause != "period" or d.toss_seen or not self._mono or not self._jump_expected():
+            return False
+        cfg = self.config
+        if t - d.since_t > cfg.toss_wait_max_s:
+            d.toss_seen = True
+            return False
+        if obs is None or obs.uv is None:
+            return True
+        if obs.xy is not None and math.hypot(obs.xy[0] - self.court.length / 2.0,
+                                             obs.xy[1] - self.court.basket_y) > cfg.jump_ball_radius_ft:
+            d.toss_seen = True  # the ball is not at centre court: no jump ball to wait for (e.g. a free throw)
+            return False
+        ppf = self._ppf or cfg.nominal_px_per_ft
+        hist = d.toss_uv
+        hist.append((obs.t, obs.uv[0], obs.uv[1]))
+        if math.hypot(obs.uv[0] - hist[0][1], obs.uv[1] - hist[0][2]) >= cfg.toss_fallback_move_ft * ppf:
+            d.toss_seen = True  # the ball was carried away from the referee's spot: play began without a toss seen
+            return False
+        recent = [s for s in hist if obs.t - s[0] <= cfg.toss_window_s]
+        del hist[1:max(1, len(hist) - 64)]  # keep the first (the referee's spot) and the recent samples
+        if len(recent) >= cfg.toss_min_frames and recent[0][2] - recent[-1][2] >= cfg.toss_min_rise_ft * ppf \
+                and recent[-3][2] > recent[-2][2] > recent[-1][2]:
+            d.toss_seen = True  # image v decreases: the ball rises steadily (the toss)
+            return False
+        return True
+
+    def _check_jump_pending(self, t: float) -> None:
+        """Monocular jump ball: the first player still holding the ball ``jump_control_s`` after gaining
+        it after the toss starts the period (a jumper's tap is a touch: the ball leaves him at once)."""
+        d = self._dead
+        if d is None or d.cause != "period" or d.jump_pending is None:
+            return
+        pid, team, t0, f0 = d.jump_pending
+        if self._holder.holder != pid:
+            d.jump_pending = None
+            return
+        if t - t0 >= self.config.jump_control_s:
+            if team is not None:
+                d.first_control[team] = (t0, f0, pid)
+            self._restart(team, t0, f0, pid, "jump")
+
     def _note_toss(self, obs: BallObs | None) -> None:
         d = self._dead
         if d is None or d.cause != "period" or d.toss_seen or obs is None or self._holder.holder is not None:
             return
+        if self._mono and self._jump_expected():
+            return  # image mode: see _await_toss
         vel = self._gate.velocity()
         if vel is None:
             return
@@ -664,9 +891,15 @@ class EventEngine:
     # ------------------------------------------------------------------ phases
 
     def _enter_dead(self, cause: str, t: float, f: int, **kw: Any) -> _Dead:
+        self._resolve_pending()
         self._phase = DEAD
-        self._dead = _Dead(cause=cause, since_t=t, since_frame=f, **kw)
+        self._dead = _Dead(cause=cause, since_t=t, since_frame=f, entered_t=max(t, self._now), **kw)
         return self._dead
+
+    def _dead_for(self, d: _Dead, t: float) -> float:
+        """How long the dead ball has lasted at ``t`` for the fallback restarts: counted from when it was
+        recognised, as one dated back to the clock stop is often recognised over a second later."""
+        return t - max(d.since_t, d.entered_t)
 
     def _go_live(self, t: float) -> None:
         self._phase = LIVE
@@ -688,8 +921,12 @@ class EventEngine:
             cause = "jump_ball" if how == "jump" else "period_start"
             self._set_possession(team, ft, ff, fp, cause, force=True)
         elif d.cause in ("made_fg", "made_ft"):
+            pev = None
             if team is not None and d.scoring_team is not None and team is not d.scoring_team:
-                self._set_possession(team, ft, ff, fp, "made_shot" if d.cause == "made_fg" else "free_throw")
+                pev = self._set_possession(team, ft, ff, fp, "made_shot" if d.cause == "made_fg" else "free_throw")
+            if d.cause == "made_fg" and d.shot_id is not None:
+                # kept until the make is confirmed: a make revised to a miss turns this pickup into the rebound
+                self._post_make = (d.shot_id, d.first_pickup or (ft, ff, fp), pev.event_id if pev is not None else None)
         elif d.miss is not None:
             self._team_rebound(d, team, ft, ff, fp)
         elif d.cause in ("oob", "unknown"):
@@ -741,10 +978,14 @@ class EventEngine:
                         conf: float | None = None, force: bool = False) -> Event | None:
         if team is None or (team is self._poss_team and not force):
             return None
-        self._poss_team = team
-        return self._emit(EventKind.POSSESSION, t, f, team=team, player_id=pid, xy=self._pos(pid, t) if pid else None,
-                          confidence=self.config.possession_conf if conf is None else conf,
-                          attrs={"cause": cause, "reason": f"{team.value} gains control ({cause})"})
+        if self._pend is not None and team is self._pend.team and cause != "steal":
+            return None  # decided when the pending change of control is corroborated or settled
+        before, self._poss_team = self._poss_team, team
+        ev = self._emit(EventKind.POSSESSION, t, f, team=team, player_id=pid, xy=self._pos(pid, t) if pid else None,
+                        confidence=self.config.possession_conf if conf is None else conf,
+                        attrs={"cause": cause, "reason": f"{team.value} gains control ({cause})"})
+        self._last_poss = (ev.event_id, before, t)
+        return ev
 
     # ------------------------------------------------------------------ releases and gains
 
@@ -769,13 +1010,22 @@ class EventEngine:
         else:
             if self._phase == DEAD and pos is not None and not self.court.in_bounds(*pos, margin=cfg.inbound_holder_margin_ft):
                 self._restart(team, ch.t, ch.frame_idx, pid, "inbound")
-            flight = Flight(rel, self.court, cfg, context="live" if self._phase == LIVE else "dead")
+            cont = self._continuation
+            continuation = cont is not None and cont[0] == pid and ch.t - cont[1] <= cfg.continuation_s
+            flight = Flight(rel, self.court, cfg, context="live" if self._phase == LIVE or continuation else "dead")
+            flight.continuation = continuation
+            if continuation:
+                self._continuation = None
         self._flight, self._flight_ctrl = flight, ctrl
         self._prev_control, self._control = ctrl, None
+        if flight.context == "live" and not flight.is_ft:
+            self._release_log.append((rel, ctrl))
         if ft_side is not None:
             self._start_free_throw(flight)
+        elif flight.context == "live" and self._mono:
+            self._retro_block(flight)
         for t, fi, o in list(self._buffer):
-            if fi >= ch.frame_idx and self._flight is flight:
+            if fi >= ch.frame_idx and self._flight is flight and not flight.resolved:
                 self._step_flight(flight, o, t, fi)
 
     def _on_gain(self, ch: ControlChange) -> None:
@@ -789,6 +1039,13 @@ class EventEngine:
             self._flight = None
             log.info("holder id %s -> %s treated as an identity swap", prev.player_id, pid)
             return
+        if flight is not None and flight.retro_block is not None and flight.state == "air" \
+                and flight.context == "live" and self._phase == LIVE:
+            data = flight.retro_block[4]
+            r = flight.release
+            if data["rise_t"] < r.t:  # the attempt is the rise the release was recognised after
+                r.t, r.frame_idx = data["rise_t"], data["rise_frame"]
+            self._on_block(flight, flight.mark_blocked(*flight.retro_block))  # the ball never reached the rim
         if flight is not None:
             for sig in flight.on_control(ch.t, ch.frame_idx):
                 self._on_signal(flight, sig)
@@ -806,7 +1063,12 @@ class EventEngine:
         last_team = flight.release.team if flight is not None else self._poss_team
         if flight is None and self._control is not None:
             last_holder, last_team = self._control.player_id, self._control.team
+        elif flight is None and last_holder is not None:
+            last_team = self._team_of(last_holder) or last_team  # the TURNOVER's player and team must agree
         seen = self._last_live_ball(t if before is None else before) if out else None
+        stop = self._clock_stop_before(t) if out else None
+        if stop is not None and (seen is None or stop < seen[0]):
+            seen = (stop, self._frame_near(stop))  # the whistle (clock stop) came before the last in-bounds sighting
         since = seen if seen is not None else (t, f)
         d = self._enter_dead(cause, since[0], since[1], last_team=last_team, last_holder=last_holder,
                              miss=self._pending_miss)
@@ -828,6 +1090,10 @@ class EventEngine:
         if d.first_pickup is None:
             d.first_pickup = (ch.t, ch.frame_idx, pid)
         if d.cause == "period" and not oob:
+            if self._mono and self._jump_expected():
+                if d.toss_seen:
+                    d.jump_pending = (pid, team, ch.t, ch.frame_idx)  # confirmed once held (_check_jump_pending)
+                return
             if d.toss_seen or flight is not None:  # control after the toss, not a ball resting by the jumpers
                 self._restart(team, ch.t, ch.frame_idx, pid, "jump")
             return
@@ -846,11 +1112,15 @@ class EventEngine:
         r = flight.release
         if r.team is not team or r.player_id == pid or r.xy is None or not self.court.in_bounds(*r.xy):
             return False
-        return r.t - d.since_t >= self.config.dead_min_s
+        return self._dead_for(d, r.t) >= self.config.dead_min_s
 
     def _gain_live(self, pid: str, team: Team | None, ch: ControlChange, flight: Flight | None) -> None:
         cfg = self.config
         self._flight = None
+        pend = self._pend
+        if pend is not None and team is not None and team is not pend.team:
+            self._drop_pending(pid, team, ch)  # the other team holds the ball again: it never changed hands
+            return
         miss = self._pending_miss
         if miss is not None and (flight is None or flight.is_shot or flight.state == "loose"):
             if miss.is_ft and miss.extra.get("ft_total_unknown") and self._ft_retrieval(miss):
@@ -858,10 +1128,12 @@ class EventEngine:
                 self._pending_miss = None
                 self._control = _Control(pid, team, ch.t, ch.frame_idx)
                 return
+            poss_before = self._poss_team
             self._rebound(pid, team, ch, miss)
             if miss.is_ft:
                 self._ft = None
-            self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="rebound")
+            self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="rebound",
+                                     change=self._provisional("rebound", ch.t, team, poss_before, miss=miss), miss=miss)
             return
         if flight is None or flight.is_shot or flight.state == "loose":
             self._set_possession(team, ch.t, ch.frame_idx, pid, "other")
@@ -881,18 +1153,65 @@ class EventEngine:
             self._set_possession(team, ch.t, ch.frame_idx, pid, "other")
             self._control = _Control(pid, team, ch.t, ch.frame_idx)
             return
+        if team is not None and team is r.team and self._mono and self._flicker(r, pid, ch):
+            # the ball never left the area: a neighbouring teammate's box won it for a moment (no pass)
+            prev = self._prev_control
+            self._control = dataclasses.replace(prev, player_id=pid) if prev is not None and prev.player_id == r.player_id \
+                else _Control(pid, team, ch.t, ch.frame_idx)
+            return
         if team is not None and team is r.team:
             ev = self._pass(flight, pid, ch, completed=True)
+            chg = self._carried_change(r.player_id, ch.t)
+            if chg is not None:
+                chg.chain.append(ev.event_id)  # a pass inside a team whose control is still provisional
+            if pend is not None:
+                pend.chain.append(ev.event_id)
+            pc = self._prev_control if self._prev_control is not None and self._prev_control.player_id == r.player_id \
+                else None
+            if pc is not None:
+                pc.prev_ctrl = None  # keep one level
             self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="pass",
-                                     via_pass=_PassRec(r.player_id, r.team, r.t, ev.event_id))
+                                     via_pass=_PassRec(r.player_id, r.team, r.t, ev.event_id), change=chg,
+                                     via_flight=flight, prev_ctrl=pc)
             self._set_possession(team, ch.t, ch.frame_idx, pid, "other")
             return
         if team is not None and r.team is not None:
+            chg = self._carried_change(r.player_id, ch.t)
+            if chg is not None and team is not chg.team:
+                self._revert_change(chg, pid, team, ch)
+                return
+            vc = self._prev_control if self._prev_control is not None and self._prev_control.player_id == r.player_id \
+                else None
+            # (3-D too for a rebound stint: a loose ball bouncing past a player is not always free flight)
+            if (self._mono or (vc is not None and vc.origin == "rebound")) and not self._corroborated(vc, r.t):
+                self._correct_phantom(vc, pid, team, ch)
+                return
             travel = math.dist(r.xy, self._pos(pid, ch.t) or r.xy) if r.xy is not None else 0.0
             strip = travel <= cfg.strip_max_travel_ft and ch.t - r.t <= cfg.strip_max_flight_s
-            self._steal(pid, team, ch, flight, "steal" if strip else "bad_pass")
+            kind = "steal" if strip else "bad_pass"
+            if self._mono and cfg.steal_sustain_s > 0.0:
+                self._pend = _PendingSteal(pid, team, ch, flight, kind, self._prev_control, created_t=self._now)
+                self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="steal")
+                return
+            self._steal(pid, team, ch, flight, kind)
             return
         self._control = _Control(pid, team, ch.t, ch.frame_idx)
+
+    def _flicker(self, r: Release, pid: str, ch: ControlChange) -> bool:
+        """Monocular: a same-team "pass" whose flight was shorter than ``pass_min_flight_s`` between players
+        closer than ``pass_min_dist_ft`` while the ball moved less than one body width in the image is the
+        holder flickering between overlapping teammates' boxes, not a pass (real hand-offs exist, but a pass
+        moves the ball). Kept to clear cases: every observed ball sample of the flight must be close."""
+        cfg = self.config
+        if ch.t - r.t >= cfg.pass_min_flight_s or r.xy is None or r.bbox is None:
+            return False
+        pos = self._pos(pid, ch.t)
+        if pos is None or math.dist(r.xy, pos) >= cfg.pass_min_dist_ft:
+            return False
+        pts = [o.uv for t, _, o in self._buffer if o is not None and o.uv is not None and r.t - 0.05 <= t <= ch.t + 0.05]
+        if len(pts) < 2:
+            return False
+        return max(math.dist(pts[0], q) for q in pts[1:]) < r.bbox.w
 
     def _is_id_swap(self, pid: str, team: Team | None, pos: tuple[float, float] | None) -> bool:
         prev = self._prev_control
@@ -907,7 +1226,9 @@ class EventEngine:
     # ------------------------------------------------------------------ event builders
 
     def _pass(self, flight: Flight, receiver: str | None, ch: ControlChange, completed: bool) -> Event:
-        r = flight.release
+        return self._pass_from(flight.release, receiver, ch, completed)
+
+    def _pass_from(self, r: Release, receiver: str | None, ch: ControlChange, completed: bool) -> Event:
         rpos = self._pos(receiver, ch.t) if receiver else None
         dist = math.dist(r.xy, rpos) if r.xy is not None and rpos is not None else None
         return self._emit(EventKind.PASS, r.t, r.frame_idx, team=r.team, player_id=r.player_id, other=receiver,
@@ -915,19 +1236,230 @@ class EventEngine:
                           attrs={"completed": completed, "distance_ft": dist,
                                  "reason": "teammate gained control" if completed else "intercepted"})
 
-    def _steal(self, pid: str, team: Team, ch: ControlChange, flight: Flight, kind: str) -> None:
+    def _steal(self, pid: str, team: Team, ch: ControlChange, flight: Flight, kind: str,
+               control: bool = True) -> _TeamChange | None:
         r = flight.release
+        poss_before = self._poss_team
+        ids = []
         if kind == "bad_pass":
-            self._pass(flight, self._intended_receiver(r, ch.t, pid), ch, completed=False)
+            ids.append(self._pass(flight, self._intended_receiver(r, ch.t, pid), ch, completed=False).event_id)
         cues = self._control_cues(pid, ch)
         p, status = self._p("steal", cues)
         pos = self._pos(pid, ch.t)
-        self._emit(EventKind.STEAL, ch.t, ch.frame_idx, team=team, player_id=pid, other=r.player_id, xy=pos,
-                   confidence=p, attrs={"p_status": status, "cues": cues, "reason": f"opponent gained control ({kind})"})
-        self._emit(EventKind.TURNOVER, ch.t, ch.frame_idx, team=r.team, player_id=r.player_id, xy=pos, confidence=p,
-                   attrs={"type": kind, "p_status": status, "reason": "lost the ball to the stealer"})
-        self._set_possession(team, ch.t, ch.frame_idx, pid, "steal", conf=p)
-        self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="steal")
+        ids.append(self._emit(EventKind.STEAL, ch.t, ch.frame_idx, team=team, player_id=pid, other=r.player_id, xy=pos,
+                              confidence=p, attrs={"p_status": status, "cues": cues,
+                                                   "reason": f"opponent gained control ({kind})"}).event_id)
+        ids.append(self._emit(EventKind.TURNOVER, ch.t, ch.frame_idx, team=r.team, player_id=r.player_id, xy=pos,
+                              confidence=p, attrs={"type": kind, "p_status": status,
+                                                   "reason": "lost the ball to the stealer"}).event_id)
+        pev = self._set_possession(team, ch.t, ch.frame_idx, pid, "steal", conf=p)
+        if pev is not None:
+            ids.append(pev.event_id)
+        chg = self._provisional("steal", ch.t, team, poss_before, ids=ids, release=r if kind == "bad_pass" else None)
+        if control:
+            self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="steal", change=chg)
+        return chg
+
+    # ------------------------------------------------------------------ monocular wrong-body stints
+
+    def _corroborated(self, ctrl: _Control | None, release_t: float) -> bool:
+        """Monocular: did this stint show control: a dribble, ``holder_clear_frames`` unambiguous frames (the
+        ball in his box only), or ``victim_min_hold_s`` of holding? A short, ambiguous, dribble-less stint is
+        often the ball crossing a bystander's box (a pass in flight, a loose ball, a defender's box over the
+        handler)."""
+        if ctrl is None:
+            return False
+        if ctrl.dribbles > 0:
+            return True
+        cfg = self.config
+        if ctrl.doubtful:
+            return False  # his team's control was never corroborated: only a dribble shows it
+        return ctrl.clear >= cfg.holder_clear_frames or release_t - ctrl.onset_t >= cfg.victim_min_hold_s
+
+    def _correct_phantom(self, vc: _Control | None, pid: str, team: Team, ch: ControlChange) -> None:
+        """An opponent gained the ball from a releaser who never showed control: not a steal, the releaser's
+        stint was a wrong body. Splice it out: a pass to him is retracted and the gain is judged against
+        the passer's release; a rebound / steal that started it is re-credited / retracted; a change of
+        possession it made is undone."""
+        reason = "the releaser never showed control (no dribble, short stint): wrong-body holder (monocular)"
+        if vc is not None and vc.origin == "pass" and vc.via_flight is not None and vc.via_pass is not None \
+                and vc.via_pass.team is not team:
+            self._retract(vc.via_pass.event_id, reason)
+            self._prev_control = vc.prev_ctrl
+            vc.via_flight.state = "air"
+            self._gain_live(pid, team, ch, vc.via_flight)
+            return
+        if vc is not None and vc.change is not None and vc.change.team is not team:
+            self._revert_change(vc.change, pid, team, ch)
+            return
+        if vc is not None and vc.change is None and vc.origin == "rebound" and vc.miss is not None \
+                and vc.miss.rebound_id is not None:
+            poss_before = self._last_poss[1] if self._last_poss is not None else None
+            self._revert_change(_TeamChange("rebound", vc.onset_t, vc.team, poss_before, miss=vc.miss), pid, team, ch)
+            return
+        lp = self._last_poss
+        if vc is not None and lp is not None and lp[2] >= vc.onset_t - 0.05:
+            ev = self._store.get(lp[0])
+            if ev is not None and ev.team is vc.team and ev.status is not EventStatus.RETRACTED:
+                self._retract(lp[0], reason)
+                self._poss_team = lp[1]
+        self._control = _Control(pid, team, ch.t, ch.frame_idx)
+        self._set_possession(team, ch.t, ch.frame_idx, pid, "other")
+
+    # ------------------------------------------------------------------ monocular pending steals
+
+    def _check_pending(self, t: float) -> None:
+        """Corroborate (dribble / shot / foul + sustained control) or settle a pending change of control."""
+        pend, cfg = self._pend, self.config
+        if pend is None:
+            return
+        held = t - pend.ch.t
+        holder = self._holder.holder
+        mine = holder is None or self._team_of(holder) is pend.team
+        if pend.evidence and held >= cfg.steal_sustain_s and mine:
+            self._confirm_pending()
+        elif t - pend.created_t > cfg.steal_corroborate_s:
+            self._settle_pending()
+
+    def _note_pending_evidence(self, team: Team | None, t: float) -> None:
+        pend = self._pend
+        if pend is not None and team is pend.team and t >= pend.ch.t - 1e-6:
+            pend.evidence = True
+
+    def _resolve_pending(self, end: bool = False) -> None:
+        """A dead ball while a change of control is pending: corroborated -> steal, else no steal (the inbound
+        decides possession). At the end of the stream no contradiction can come any more: a change the new
+        team has held ``steal_confirm_img_s`` (the steal hold) is confirmed too."""
+        pend = self._pend
+        if pend is None:
+            return
+        holder = self._holder.holder
+        held = self._now - pend.ch.t >= self.config.steal_confirm_img_s and holder is not None \
+            and self._team_of(holder) is pend.team
+        if pend.evidence or (end and held):
+            self._confirm_pending()
+            return
+        self._pend = None
+        if pend.kind == "bad_pass":
+            self._pass(pend.flight, self._intended_receiver(pend.flight.release, pend.ch.t, pend.stealer), pend.ch,
+                       completed=False)
+
+    def _confirm_pending(self) -> None:
+        pend, self._pend = self._pend, None
+        assert pend is not None
+        chg = self._steal(pend.stealer, pend.team, pend.ch, pend.flight, pend.kind, control=False)
+        ctrl = self._control
+        if chg is not None:
+            chg.chain = list(pend.chain)
+        if ctrl is not None and ctrl.team is pend.team:
+            ctrl.change = chg
+            if ctrl.player_id == pend.stealer and ctrl.onset_t == pend.ch.t:
+                ctrl.origin = "steal"
+
+    def _settle_pending(self) -> None:
+        """No corroboration within ``steal_corroborate_s``: no STEAL / TURNOVER. If the new team still has the
+        ball, its possession starts at the gain (an unexplained change, needs review)."""
+        pend, self._pend = self._pend, None
+        assert pend is not None
+        if pend.kind == "bad_pass":  # the release was a pass all the same (not known to be completed)
+            self._pass(pend.flight, self._intended_receiver(pend.flight.release, pend.ch.t, pend.stealer), pend.ch,
+                       completed=False)
+        holder = self._holder.holder or (self._control.player_id if self._control is not None else None)
+        if holder is not None and self._team_of(holder) is pend.team:
+            ev = self._set_possession(pend.team, pend.ch.t, pend.ch.frame_idx, pend.stealer, "other",
+                                      conf=0.5 * self.config.possession_conf)
+            if ev is not None:
+                ev.attrs["needs_review"] = True
+            ctrl = self._control
+            if ctrl is not None and ctrl.team is pend.team:
+                ctrl.doubtful = True  # the old team taking it back is a correction, not a steal
+
+    def _drop_pending(self, pid: str, team: Team, ch: ControlChange) -> None:
+        """The releaser's team holds the ball again before the change of control was corroborated: the
+        "stealer" was a wrong-body holder. His team's passes are retracted and the original release resumes
+        (an intercepted-looking pass completed to this teammate, or the releaser's own stint)."""
+        pend, self._pend = self._pend, None
+        assert pend is not None
+        reason = "the other team held the ball again before the change of control was corroborated (monocular)"
+        for eid in pend.chain:
+            self._retract(eid, reason)
+        r0 = pend.flight.release
+        if pid == r0.player_id:
+            vc = pend.victim_ctrl
+            self._control = vc if vc is not None and vc.player_id == pid else \
+                _Control(pid, team, ch.t, ch.frame_idx, origin="self")
+        elif r0.team is team:
+            ev = self._pass_from(r0, pid, ch, completed=True)
+            self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="pass",
+                                     via_pass=_PassRec(r0.player_id, r0.team, r0.t, ev.event_id))
+        else:
+            self._control = _Control(pid, team, ch.t, ch.frame_idx)
+        self._set_possession(team, ch.t, ch.frame_idx, pid, "other")
+
+    def _provisional(self, kind: str, t: float, team: Team | None, poss_before: Team | None, *,
+                     ids: list[str] | None = None, miss: ShotEntry | None = None,
+                     release: Release | None = None) -> _TeamChange | None:
+        """Monocular only: the change of team control can still be reversed (``_revert_change``); with
+        exact 3-D positions the first holder is right and a quick reversal is a real play."""
+        if not self._mono:
+            return None
+        return _TeamChange(kind, t, team, poss_before, ids or [], miss, release)
+
+    def _carried_change(self, releaser: str, t: float) -> _TeamChange | None:
+        """The provisional change of team control behind the releaser's stint, if still revertible at ``t``."""
+        prev = self._prev_control
+        chg = prev.change if prev is not None and prev.player_id == releaser else None
+        if chg is None or t - chg.t > self.config.team_change_revert_s:
+            return None
+        return chg
+
+    def _revert_change(self, chg: _TeamChange, pid: str, team: Team, ch: ControlChange) -> None:
+        """The other team holds the ball ``team_change_revert_s`` or less after a provisional change of
+        team control: the earlier holder was the wrong body. A steal is retracted (its intercepted pass
+        becomes a completed pass when a teammate of the passer now holds the ball); a rebound is
+        re-credited to the new holder (offensive / defensive and the POSSESSION follow)."""
+        reason = "the other team held the ball at once: wrong-body holder (monocular)"
+        for eid in chg.chain:
+            self._retract(eid, reason)
+        if chg.kind == "steal":
+            for eid in chg.ids:
+                self._retract(eid, reason)
+            self._poss_team = chg.poss_before
+            r = chg.release
+            if r is not None and r.team is team and pid != r.player_id:
+                ev = self._pass_from(r, pid, ch, completed=True)
+                self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="pass",
+                                         via_pass=_PassRec(r.player_id, r.team, r.t, ev.event_id))
+            else:
+                self._control = _Control(pid, team, ch.t, ch.frame_idx)
+            self._set_possession(team, ch.t, ch.frame_idx, pid, "other")
+            return
+        miss = chg.miss
+        assert miss is not None
+        offensive = team is miss.team
+        # the first holder was the wrong body; the rebound keeps its time when he was next to the new holder
+        # (the right moment, the wrong body), else the new holder's gain is the rebound
+        old = self._store.get(miss.rebound_id or "")
+        retime = {}
+        if old is not None and old.player_id is not None and not self._mono:  # (monocular positions: kept)
+            p_old, p_new = self._pos(old.player_id, old.t), self._pos(pid, ch.t)
+            if p_old is not None and p_new is not None and math.dist(p_old, p_new) > self.config.rebound_retime_ft:
+                retime = {"t": ch.t, "frame_idx": ch.frame_idx}
+        self._revise(miss.rebound_id, team=team, player_id=pid,
+                     x=(self._pos(pid, ch.t) or (None, None))[0], y=(self._pos(pid, ch.t) or (None, None))[1],
+                     attrs={"offensive": offensive, "revised_by": "reversal", "reason": "first control after a "
+                            "missed shot (re-credited: the earlier holder was the wrong body)"}, **retime)
+        self._retract(miss.possession_id, reason)
+        miss.possession_id = None
+        self._poss_team = chg.poss_before
+        reb = self._store.get(miss.rebound_id or "")
+        rt, rf = (reb.t, reb.frame_idx) if reb is not None else (ch.t, ch.frame_idx)
+        if not offensive:
+            pev = self._set_possession(team, rt, rf, pid, "defensive_rebound")
+            if pev is not None:
+                miss.possession_id = pev.event_id
+        self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="rebound",
+                                 change=self._provisional("rebound", ch.t, team, chg.poss_before, miss=miss))
 
     def _intended_receiver(self, r: Release, t: float, stealer: str) -> str | None:
         spos = self._pos(stealer, t)
@@ -985,6 +1517,8 @@ class EventEngine:
     def _emit_attempt(self, flight: Flight) -> ShotEntry:
         cfg, court = self.config, self.court
         r, side = flight.release, flight.target
+        if self._pend is not None and r.team is self._pend.team and not flight.is_ft:
+            self._confirm_pending()  # the new team shoots: its control is corroborated (the steal comes first)
         assert side is not None
         self._shot_seq += 1
         shot_id = f"s{self._shot_seq:04d}"
@@ -1057,8 +1591,109 @@ class EventEngine:
     def _entry(self, flight: Flight) -> ShotEntry | None:
         return self._shots.get(flight.shot_id) if flight.shot_id else None
 
+    def _box_at(self, pid: str, t: float) -> BBox | None:
+        """``pid``'s image box at (or just before) ``t`` from the short box history."""
+        best = None
+        for bt, boxes in self._boxes:
+            if bt > t + 1e-6:
+                break
+            if pid in boxes:
+                best = boxes[pid][0]
+        return best
+
+    def _retro_block(self, flight: Flight) -> bool:
+        """Monocular blocked shot seen only in hindsight. With the shooter's box grown to his raised arms and
+        the ball, a release is often recognised only after a block 0.07-0.15 s later has already turned the
+        ball back, so the flight never shows the shot-like rise. Look back over the buffered image track
+        around the release: the ball rising above the shooter's standing head line at
+        ``block_min_up_speed_fts`` or more, then turned down or back abruptly (``block_reverse_dv_img_fts``)
+        inside an opponent's raised-arm box, away from the rim. A legal block touches the ball on its way
+        up (goaltending, NBA rule 11 / FIBA art. 31), so a ball turned back after its peak is not one."""
+        cfg, court = self.config, self.court
+        r = flight.release
+        if r.xy is None or r.team is None or flight.blocker is not None:
+            return False
+        side = court.nearest_basket(*r.xy)
+        if court.distance_to_basket(r.xy[0], r.xy[1], side) > cfg.block_max_basket_dist_ft:
+            return False
+        stand = self._box_at(r.player_id, r.t - cfg.retro_block_stand_lead_s)
+        if stand is None:
+            return False
+        ppf = max(stand.h / cfg.player_height_ft, 1e-6)
+        head_v = stand.y1 + cfg.holder_head_frac * stand.h
+        lo = r.t - cfg.retro_block_lookback_s
+        if r.control_onset_t is not None:
+            lo = max(lo, r.control_onset_t)  # the shot rises from his hands: not the pass that reached him
+        pts = [(t, f, o.uv) for t, f, o in self._buffer if o is not None and o.uv is not None and lo <= t]
+        rim = self._rims.get(side)
+        span, base = cfg.block_image_span, cfg.retro_block_min_base_s
+        g_px = G_FTS2 * ppf
+        for k in range(span, len(pts) - 2 * span):
+            (t0, _, a), (t1, f1, b) = pts[k - span], pts[k]
+            (t2, _, c), (t3, _, d) = pts[k + span], pts[k + 2 * span]
+            if b[1] > head_v or not (base <= t1 - t0 <= cfg.retro_block_max_gap_s) \
+                    or not (base <= t2 - t1 <= cfg.retro_block_max_gap_s) or t3 - t2 < base:
+                continue
+            if t1 - r.t > cfg.block_max_after_release_s:
+                break
+            v1 = ((b[0] - a[0]) / (t1 - t0), (b[1] - a[1]) / (t1 - t0))
+            v2 = ((c[0] - b[0]) / (t2 - t1), (c[1] - b[1]) / (t2 - t1))
+            v3 = ((d[0] - c[0]) / (t3 - t2), (d[1] - c[1]) / (t3 - t2))
+            up1, up2, up3 = -v1[1] / ppf, -v2[1] / ppf, -v3[1] / ppf
+            back = cfg.block_min_toward_fts
+            if up1 < cfg.block_min_up_speed_fts:
+                continue  # a touch on the way up only
+            knocked_down = up2 <= -back and up3 <= -back
+            sgn = 1.0 if rim is None or rim.center[0] >= b[0] else -1.0  # image direction of the rim
+            turned_back = (rim is not None and sgn * v1[0] / ppf >= -back and sgn * v2[0] / ppf <= -back
+                           and sgn * v3[0] / ppf <= -back and up2 <= 0.0)
+            if not (knocked_down or turned_back):
+                continue
+            # velocity change beyond gravity's (image v grows downward)
+            dv = math.hypot(v2[0] - v1[0], v2[1] - v1[1] - g_px * 0.5 * (t2 - t0)) / ppf
+            if dv < cfg.block_reverse_dv_img_fts:
+                continue
+            if rim is not None:
+                w = max(rim.w, 1.0)
+                if rim.x1 - w <= b[0] <= rim.x2 + w and rim.y1 - 2.0 * w <= b[1] <= rim.y2 + w:
+                    continue  # at the rim: the rim-zone logic decides (ring bounces look the same here)
+            blocker = self._raised_arm_opponent(r, b, t1)
+            if blocker is None:
+                continue
+            # a candidate: committed when someone gains the ball before it reached a rim zone (a ball that
+            # then goes to the rim was a shot after all; the flight drops the candidate on zone entry)
+            t_rise, f_rise = pts[k - span][0], pts[k - span][1]
+            flight.retro_block = (t1, f1, blocker, side, {"reversal_dv": dv, "retro": True, "rise_t": t_rise,
+                                                          "rise_frame": f_rise})
+            return True
+        return False
+
+    def _raised_arm_opponent(self, r: Release, uv: tuple[float, float], t: float) -> str | None:
+        """An opponent of the releaser whose raised-arm box (``block_reach_frac`` above his head, the top
+        ``block_shoulder_frac`` of his body) holds the ball at ``t``; the one nearest its centre line."""
+        cfg = self.config
+        boxes = None
+        for bt, bx in self._boxes:
+            if bt > t + 1e-6:
+                break
+            boxes = bx
+        if boxes is None or r.team is None:
+            return None
+        best, best_d = None, math.inf
+        for pid, (bb, team) in boxes.items():
+            if (team or self._team_of(pid)) is not r.team.other():
+                continue
+            dx = bb.w * cfg.block_bbox_expand / 2.0
+            if not (bb.x1 - dx <= uv[0] <= bb.x2 + dx and bb.y1 - cfg.block_reach_frac * bb.h <= uv[1]
+                    <= bb.y1 + cfg.block_shoulder_frac * bb.h):
+                continue
+            d = abs(uv[0] - (bb.x1 + bb.x2) / 2.0)
+            if d < best_d:
+                best, best_d = pid, d
+        return best
+
     def _on_block(self, flight: Flight, sig: FlightSignal) -> None:
-        entry = self._emit_attempt(flight)
+        entry = self._entry(flight) or self._emit_attempt(flight)  # a block in the rim zone: attempt already out
         mc = flight.make_cues()
         p_make, mstatus = self._p("make", mc)
         miss = self._emit(EventKind.SHOT_MISSED, sig.t, sig.frame_idx, team=entry.team, player_id=entry.shooter_id,
@@ -1100,6 +1735,12 @@ class EventEngine:
             self._after_free_throw(entry, made, sig)
             return
         after_buzzer = self._dead is not None and self._dead.cause == "break"
+        if flight.continuation and not made:
+            # fouled in the act and missed: no field-goal attempt, the free throws follow (no rebound). The
+            # image make test can be wrong, so the scoreboard may still flip it to an and-one make first.
+            self._cont_misses.append(entry)
+            self._flight = None if self._flight is flight else self._flight
+            return
         if made:
             self._emit_assist(entry, sig.t, sig.frame_idx)
             self._flight = None if self._flight is flight else self._flight
@@ -1132,7 +1773,7 @@ class EventEngine:
     # ------------------------------------------------------------------ free throws
 
     def _ft_side(self, pid: str, t: float) -> Side | None:
-        f = self.deadball.formation
+        f = self.deadball.formation_at(t)  # as of the release frame, not the (later) decision frame
         if f is None or f.shooter_id != pid or t - f.since_t < self.config.ft_min_hold_s:
             return None
         if self._phase == DEAD or self._ft is not None:
@@ -1230,6 +1871,8 @@ class EventEngine:
         if not ok or hit is None:
             return
         _, t, f, _ = hit
+        if obs.t - t > cfg.dribble_max_rise_s:
+            return  # back up long after the low point: a ball rolled and then picked up, not a bounce
         if t - self._last_dribble_t.get(pid, -math.inf) < cfg.dribble_min_interval_s:
             return
         self._last_dribble_t[pid] = t
@@ -1244,7 +1887,8 @@ class EventEngine:
             pos = self._pos(pid, t)
             # Only the confirmed holder's dribble restarts play: a dead ball bouncing loose next to
             # whoever last touched it (e.g. under the basket after a make) is not live evidence.
-            if d is not None and d.cause not in ("break",) and t - d.since_t >= self.config.dead_min_s \
+            jump = d is not None and d.cause == "period" and self._mono and self._jump_expected()
+            if d is not None and d.cause not in ("break",) and not jump and self._dead_for(d, t) >= self.config.dead_min_s \
                     and self._holder.holder == pid \
                     and pos is not None and self.court.in_bounds(*pos) and (self._ft is None or self._ft.shooter != pid):
                 self._restart(self._team_of(pid), t, f, pid, "live")
@@ -1252,6 +1896,7 @@ class EventEngine:
                 return
         if ctrl is not None:
             ctrl.dribbles += 1
+        self._note_pending_evidence(self._team_of(pid), t)
         self._emit(EventKind.DRIBBLE, t, f, team=self._team_of(pid), player_id=pid, xy=self._pos(pid, t),
                    confidence=self.config.dribble_conf, attrs={"reason": "ball bounced next to the holder"})
 
@@ -1286,11 +1931,24 @@ class EventEngine:
             return
         if (self.scoreboard.game_clock or 0.0) <= 0.05:
             return
-        if self._flight is not None and self._flight.state in ("air", "shot"):
-            return
+        fl = self._flight
+        if fl is not None and (fl.state == "shot" or (fl.state == "air" and fl.release.t < since)):
+            return  # a ball released before the stoppage may still be a shot: wait for it to resolve
+        # (a ball tossed to the official after the whistle is dead from the stoppage on: a travel or a
+        # step out of bounds is dated by the clock stop, not by the inbound seconds later)
         self._clock_stop_used = since
-        f = self._last_frame if self._last_frame is not None else frame.frame_idx
-        self._enter_dead_from_live("unknown", since, f, self._flight, out=False)
+        self._enter_dead_from_live("unknown", since, self._frame_near(since), fl, out=False)
+
+    def _clock_stop_before(self, t: float) -> float | None:
+        """Start of a game-clock stoppage still in effect at ``t`` (live play since before it), or None."""
+        sb, cfg = self.scoreboard, self.config
+        since = sb.clock_stopped_since
+        if not cfg.dead_from_clock_stop or since is None or since < self._live_since or since > t:
+            return None
+        if not sb.clock_stopped(t, 2, cfg.clock_stop_min_s) or (sb.game_clock or 0.0) <= 0.05:
+            return None
+        return since
+
 
     def _check_shot_clock(self, frame: FrameState, trusted: bool) -> None:
         sb = frame.scoreboard
@@ -1316,6 +1974,14 @@ class EventEngine:
     # ------------------------------------------------------------------ reconciliation
 
     def _reconcile(self, now: float, force: bool = False) -> None:
+        for entry in list(self._cont_misses):
+            if entry.made is not False:
+                self._cont_misses.remove(entry)  # flipped to a make by the scoreboard: an and-one
+            elif force or now - (entry.result_t or entry.t_release) > self.config.continuation_miss_wait_s:
+                self._cont_misses.remove(entry)
+                entry.confirmed = True
+                for eid in (entry.attempt_id, entry.result_id):
+                    self._retract(eid, "fouled in the act of shooting and the shot missed: no FGA")
         inflight: set[Team | None] = set()
         f = self._flight
         if f is not None and f.context == "live" and (f.state == "shot" or (f.state == "air" and f.samples)):
@@ -1344,10 +2010,126 @@ class EventEngine:
         elif a.kind == "make_to_miss" and entry is not None:
             self._make_to_miss(entry, now)
         elif a.kind == "correction" and ch is not None:
+            if self._unseen_make(ch):
+                return
             self._emit(EventKind.SCORE_CORRECTION, ch.t, self._frame_near(ch.t), team=ch.team, value=ch.delta,
                        source="scoreboard", status=EventStatus.CONFIRMED, prefix="r",
                        attrs={"needs_review": True, "home": ch.home, "away": ch.away,
                               "reason": ch.reason or "scoreboard change with no matching shot"})
+
+    def _unseen_make(self, ch: ScoreChange) -> bool:
+        """A confirmed +2 / +3 that matches no shot the engine saw (monocular: a layup or dunk carried through
+        the rim inside the shooter's box, an and-one whose shooter was never the holder) is a made field
+        goal all the same: SHOT_ATTEMPT + SHOT_MADE (needs_review, low confidence) credited to the fouled
+        shooter, else to the team's last live releaser near its basket, dated at that release and at the
+        ball's next sighting at the rim. What followed the make is re-read as a dead ball after a score: an
+        out-of-bounds turnover inferred for the scoring team is retracted, and the other team's possession
+        starts after a made shot, not a turnover or a steal."""
+        cfg = self.config
+        team, value = ch.team, ch.delta
+        if not cfg.infer_unseen_makes or team is None or value not in (2, 3):
+            return False
+        half = self._half_index(self._period)
+        known = self._voted_side(team, half) is not None or self._voted_side(team, 1 - half) is not None
+        attack = self.attacking_side.get(team) if known else None  # else: the basket nearest the release
+        lo = ch.t - cfg.unseen_make_window_s
+        cand: tuple[str, float, int, str] | None = None
+        for ft, ff, pid in reversed(self._shoot_fouls):
+            if lo <= ft <= ch.t and self._team_of(pid) is team:
+                cand = (pid, ft, ff, "shooter fouled in the act")
+                break
+        ctrl: _Control | None = None
+        rel: Release | None = None
+        for r, c in reversed(self._release_log):
+            if r.t < lo:
+                break
+            if r.t > ch.t + cfg.unseen_make_release_lag_s:
+                continue
+            if cand is not None and r.player_id == cand[0] and abs(r.t - cand[1]) <= cfg.continuation_s:
+                rel, ctrl = r, c
+                cand = (r.player_id, r.t, r.frame_idx, cand[3])  # his release, if it was seen
+                break
+            if cand is None and r.team is team and r.t <= ch.t + cfg.unseen_make_release_lag_s and r.xy is not None:
+                near = attack or self.court.nearest_basket(r.xy[0], r.xy[1])
+                if self.court.distance_to_basket(r.xy[0], r.xy[1], near) <= cfg.unseen_make_max_dist_ft:
+                    rel, ctrl = r, c
+                    cand = (r.player_id, r.t, r.frame_idx, "last release near its basket")
+                    break
+        if cand is None:
+            return False
+        pid, rt, rf, why = cand
+        pos = rel.xy if rel is not None else self._pos(pid, rt)
+        side = attack or (self.court.nearest_basket(pos[0], pos[1]) if pos is not None else None)
+        if side is None:
+            return False
+        # the ball at the rim: after the release, or before a release seen late (carried through the rim)
+        made_t = self._rim_sighting(side, rt - cfg.unseen_make_release_lag_s, ch.t)
+        if made_t is None:
+            made_t = rt + cfg.unseen_make_flight_s
+        elif made_t < rt + cfg.unseen_make_flight_s:
+            rt = min(rt, made_t - cfg.unseen_make_flight_s)
+            rf = self._frame_near(rt)
+        mf = self._frame_near(made_t)
+        dist = self.court.distance_to_basket(pos[0], pos[1], side) if pos is not None else None
+        self._shot_seq += 1
+        shot_id = f"s{self._shot_seq:04d}"
+        reason = f"scoreboard +{value} matched no seen shot ({why})"
+        att = self._emit(EventKind.SHOT_ATTEMPT, rt, rf, team=team, player_id=pid, xy=pos, value=value, shot_id=shot_id,
+                         confidence=cfg.unseen_make_conf,
+                         attrs={"basket": side, "inferred": "scoreboard", "needs_review": True, "reason": reason,
+                                "distance_ft": dist, "release_t": rt,
+                                "shot_type": "layup" if dist is not None and dist <= cfg.layup_max_dist_ft else "jumper"})
+        made = self._emit(EventKind.SHOT_MADE, made_t, mf, team=team, player_id=pid, value=value, shot_id=shot_id,
+                          confidence=cfg.unseen_make_conf, status=EventStatus.CONFIRMED,
+                          attrs={"inferred": "scoreboard", "confirmed_by": "scoreboard", "needs_review": True,
+                                 "reason": reason})
+        entry = ShotEntry(shot_id, team, pid, value, att.event_id, rt, result_id=made.event_id, made=True,
+                          result_t=made_t, confirmed=True, score_matched=True)
+        if ctrl is not None and rel is not None:
+            entry.assist_candidate = self._assist_candidate(ctrl, rel)
+        self._shots[shot_id] = entry
+        self._recent.append(entry)
+        self._emit_assist(entry, made_t, mf)
+        self._after_unseen_make(team, made_t, entry)
+        return True
+
+    def _rim_sighting(self, side: Side, t0: float, t1: float) -> float | None:
+        """Last buffered ball observation at ``side``'s rim (image box, a rim width around it) in (t0, t1]:
+        a made ball leaves that region downward through the net, so it is about the crossing."""
+        rim = self._rims.get(side)
+        if rim is None:
+            return None
+        w = max(rim.w, 1.0)
+        last = None
+        for t, _, o in self._buffer:
+            if o is None or o.uv is None or not t0 < t <= t1:
+                continue
+            if rim.x1 - w <= o.uv[0] <= rim.x2 + w and rim.y1 - 2.0 * w <= o.uv[1] <= rim.y2 + w:
+                last = t
+        return last
+
+    def _after_unseen_make(self, team: Team, made_t: float, entry: ShotEntry) -> None:
+        """Re-read what followed an inferred make as the dead ball after a score."""
+        reason = "the scoreboard shows a make here: dead ball after a score"
+        other = team.other()
+        for ev in list(self._store.values()):
+            if ev.status is EventStatus.RETRACTED or ev.t < made_t - 0.2 or ev.source not in ("cv",):
+                continue
+            if ev.kind is EventKind.TURNOVER and ev.team is team and "inferred" in str(ev.attrs.get("reason", "")):
+                self._retract(ev.event_id, reason)
+            elif ev.kind is EventKind.STEAL and ev.team is other and ev.t <= made_t + 3.0:
+                self._retract(ev.event_id, reason)
+                for tv in list(self._store.values()):
+                    if tv.kind is EventKind.TURNOVER and tv.team is team and abs(tv.t - ev.t) < 1e-6:
+                        self._retract(tv.event_id, reason)
+            elif ev.kind is EventKind.POSSESSION and ev.team is other and ev.attrs.get("cause") in ("turnover", "steal",
+                                                                                                    "other"):
+                self._revise(ev.event_id, attrs={"cause": "made_shot", "reason": reason})
+                entry.possession_id = ev.event_id
+        d = self._dead
+        if d is not None and d.since_t >= made_t - 0.5 and d.cause in ("oob", "unknown"):
+            d.cause, d.scoring_team, d.shot_id = "made_fg", team, entry.shot_id
+            d.last_team = d.last_holder = None
 
     def _frame_before(self, t: float) -> tuple[float, int] | None:
         """(t, frame_idx) of the last processed frame strictly before ``t``, if still buffered."""
@@ -1383,16 +2165,21 @@ class EventEngine:
         entry.rebound_id = entry.block_id = None
         if entry.possession_id is not None:
             self._revise(entry.possession_id, attrs={"cause": "free_throw" if entry.is_ft else "made_shot"})
-        if (self._pending_miss is entry or unresolved) and not entry.is_ft:  # no rebound yet: dead ball after a make
+        d = self._dead
+        cause = "made_ft" if entry.is_ft else "made_fg"
+        if self._pending_miss is entry or (unresolved and not entry.is_ft):
+            # no rebound yet: the dead ball after a make (a last free throw called missed had sent play live)
             self._pending_miss = None
             self._flight = None
             res_t = entry.result_t if entry.result_t is not None else entry.t_release
             res = self._store.get(entry.result_id or "")
-            self._enter_dead("made_fg", res_t, res.frame_idx if res else self._frame_near(res_t), scoring_team=entry.team,
+            self._enter_dead(cause, res_t, res.frame_idx if res else self._frame_near(res_t), scoring_team=entry.team,
                              shot_id=entry.shot_id)
             self.deadball.note_stoppage(res_t, "made_basket")
-        elif self._pending_miss is entry:
-            self._pending_miss = None
+        elif d is not None and d.miss is entry:
+            # a dead ball (clock stop, out of bounds) entered while the miss was still pending: it follows the make,
+            # so the other team's inbound is the possession after a score, not a team rebound / turnover
+            d.miss, d.cause, d.scoring_team, d.shot_id = None, cause, entry.team, entry.shot_id
         if entry.assist_id is None and not entry.is_ft:
             res = self._store.get(entry.result_id or "")
             if res is not None:
@@ -1413,19 +2200,44 @@ class EventEngine:
         self._retract(entry.assist_id, f"the shot was not made ({by})")
         entry.assist_id = None
         d = self._dead
+        if (d is None or d.shot_id != entry.shot_id) and not entry.is_ft:
+            self._late_make_to_miss(entry)
+            return
         if d is None or d.shot_id != entry.shot_id or entry.is_ft:
             return
         if d.first_pickup is not None:
             t, f, pid = d.first_pickup
             ch = ControlChange("gain", pid, t, f)
             self._go_live(t)
-            self._rebound(pid, self._team_of(pid), ch, entry)
+            poss_before, team = self._poss_team, self._team_of(pid)
+            self._rebound(pid, team, ch, entry)
             ctrl = self._control
             if ctrl is not None and ctrl.player_id == pid:
                 ctrl.origin = "rebound"
+                ctrl.change = self._provisional("rebound", t, team, poss_before, miss=entry)
         else:
             self._go_live(now)
             self._pending_miss = entry
+
+    def _late_make_to_miss(self, entry: ShotEntry) -> None:
+        """A make revised to a miss after play restarted: the first pickup of the post-make dead ball was
+        the rebound (REBOUND at its time; its POSSESSION is a defensive rebound, not "made_shot")."""
+        pm = self._post_make
+        if pm is None or pm[0] != entry.shot_id:
+            return
+        self._post_make = None
+        (t, f, pid), poss_id = pm[1], pm[2]
+        team = self._team_of(pid)
+        self._retract(poss_id, "the shot was not made: the pickup after it was the rebound")
+        saved = self._poss_team
+        self._poss_team = entry.team  # the shooting team had the ball until the rebound
+        self._rebound(pid, team, ControlChange("gain", pid, t, f), entry)
+        if saved is not None:
+            self._poss_team = saved
+        ctrl = self._control
+        if ctrl is not None and ctrl.player_id == pid:
+            ctrl.origin = "rebound"
+            ctrl.change = self._provisional("rebound", t, team, entry.team, miss=entry)
 
     # ------------------------------------------------------------------ manual events
 
@@ -1490,6 +2302,23 @@ class EventEngine:
             self._retract(entry.result_id, "replaced by an operator entry")
         entry.result_id = ev.event_id
 
+    def _in_the_act(self, ev: Event) -> Flight | None:
+        """A shooting foul on a player in the act of shooting: the shot plays out (continuation, FIBA / NBA
+        rules; an and-one when it goes in). Returns his live flight when it is already in the air; when he
+        still holds the ball, his next release within ``continuation_s`` is a live shot."""
+        shooter = ev.other_player_id
+        if shooter is None:
+            return None
+        fl = self._flight
+        if fl is not None and fl.context == "live" and not fl.resolved and fl.release.player_id == shooter \
+                and ev.t - fl.release.t <= self.config.continuation_s:
+            fl.continuation = True
+            return fl
+        ctrl = self._control
+        if self._holder.holder == shooter or (ctrl is not None and ctrl.player_id == shooter):
+            self._continuation = (shooter, ev.t)
+        return None
+
     def _offensive_foul_turnover(self, ev: Event) -> None:
         """An offensive (team-control) foul is a turnover by the fouler [15]; the other team's
         inbound then starts its possession (no inferred out-of-bounds turnover). On a loose ball
@@ -1522,8 +2351,14 @@ class EventEngine:
         if awarded is None and ftype in ("flagrant", "disruptive", "unsportsmanlike"):
             awarded = int((cfg_rules.tech_ft or {}).get("flagrant_n_ft", 2))
         self.deadball.note_stoppage(ev.t, "foul")
+        self._note_pending_evidence(self._team_of(ev.other_player_id), ev.t)  # fouled while holding: control
+        if ftype == "shooting" and ev.other_player_id:
+            self._shoot_fouls.append((ev.t, ev.frame_idx, ev.other_player_id))
+        keep = self._in_the_act(ev) if ftype == "shooting" else None
         if self._phase == LIVE:
             self._enter_dead_from_live("unknown", ev.t, ev.frame_idx, self._flight, out=False)
+        if keep is not None:
+            self._flight = keep  # the shot released in the act of shooting plays out (continuation)
         if ftype in _OFFENSIVE_FOULS:
             self._offensive_foul_turnover(ev)
         if awarded:
@@ -1543,6 +2378,7 @@ class EventEngine:
 # ---------------------------------------------------------------------------- module helpers
 
 
+_PROVISIONAL = re.compile(r"^(home|away|unk)-t\d+$")  # perception's provisional ids (types.PlayerState)
 _OFFENSIVE_FOULS = frozenset({"offensive", "offensive_foul", "charge", "charging"})  # FOUL attrs["type"] spellings
 
 

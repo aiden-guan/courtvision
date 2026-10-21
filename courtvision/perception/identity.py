@@ -12,6 +12,10 @@ Rules (cv_pipeline.md §3.4, §4.2; RESEARCH.md §2.2):
   occlusion) takes its own parked identity back first.
 * A roster id is never held by two live tracks: claimants are ranked by jersey vote mass plus an
   incumbency bonus, minus a penalty for coasting; losers fall back to provisional ids.
+* Same-team contact: two tracks of one team whose boxes overlap may come out of it swapped (same
+  colours, so the tracker cannot tell). When the contact ends, each track's earlier jersey reads are
+  discounted, so a few fresh reads re-decide who it is (a confirmed id is still kept without fresh
+  contrary evidence). A track the tracker re-associates after a long coast gets the same discount.
 * At most ``max_per_team`` live tracks keep a team (5 on court); the weakest extras lose it.
 """
 
@@ -58,6 +62,15 @@ class IdentityConfig:
     # proximity guess, and full-weight inherited reads let a wrong re-link outvote the true owner's
     # fresh reads (seen on sim seed 11 after a same-team crossing); tuned.
     relink_vote_weight: float = 0.5
+    # Same-team contact: two live tracks of one team whose boxes overlap at least this IoU (a crossing,
+    # or one player behind the other in one colour blob) may come out of it swapped, and the tracker
+    # cannot tell (same colours). When the contact ends, the reads each track made before it are
+    # scaled by contact_discount, so >= min_votes fresh agreeing reads outvote them and a swapped id is
+    # corrected in ~0.5 s instead of after the window turns over (~1.3-2 s; sim train seeds: wrong
+    # same-team ids are ~93 % of wrong ids, and runs started at a crossing). The same discount applies to
+    # a track that comes back after a long occlusion. Tuned on sim train seeds.
+    contact_iou: float = 0.1
+    contact_discount: float = 0.1
     fps: float = 30.0  # converts frame gaps to seconds when ``t`` is not given; design
     incumbency_bonus: float = 1.0  # vote-mass bonus for the track already holding an id; tuned
     coast_penalty: float = 0.2  # per frame a claimant has not been matched; tuned
@@ -97,6 +110,7 @@ class IdentityManager:
         self._last_xy: dict[int, tuple[float, float]] = {}
         self._last_seen: dict[int, tuple[int, float | None]] = {}
         self._lost: dict[str, _Lost] = {}
+        self._contact: set[int] = set()  # tracks in a same-team contact last frame
 
     # ------------------------------------------------------------------ public
 
@@ -116,6 +130,8 @@ class IdentityManager:
         players = [tr for tr in tracks if tr.cls is ObjClass.PLAYER]
         live = {tr.track_id for tr in players}
         court_xy = court_xy or {}
+        team_of = {tr.track_id: self._team(teams, tr.track_id) for tr in players}
+        self._update_contacts(players, team_of)  # before this frame's reads: those are fresh evidence
         for tr in players:
             if tr.time_since_update == 0 and tr.jersey is not None:
                 self.voter.add(tr.track_id, tr.jersey, tr.jersey_conf)
@@ -126,7 +142,6 @@ class IdentityManager:
         self._expire(frame_idx, t)
         self._restore_returning(players)
 
-        team_of = {tr.track_id: self._team(teams, tr.track_id) for tr in players}
         claims = {tr.track_id: self._jersey_claim(tr.track_id, team_of[tr.track_id]) for tr in players}
         self._resolve_claims(players, claims)
         self._relink(players, team_of, frame_idx, t)
@@ -179,7 +194,27 @@ class IdentityManager:
                 self._bound[tr.track_id] = lost.player_id
                 if lost.roster_bound:
                     self._roster_bound.add(tr.track_id)
+            self.voter.discount(tr.track_id, self.config.contact_discount)  # re-associated after a long coast
             log.debug("track %d returned; identity %s restored", tr.track_id, lost.player_id)
+
+    def _update_contacts(self, players: list[Track], team_of: dict[int, Team | None]) -> None:
+        """Discount the jersey reads of tracks whose same-team contact ended this frame."""
+        cfg = self.config
+        now: set[int] = set()
+        if cfg.contact_iou is not None and cfg.contact_iou > 0:
+            for i, a in enumerate(players):
+                ta = team_of[a.track_id]
+                if ta is None:
+                    continue
+                for b in players[i + 1:]:
+                    if team_of[b.track_id] is ta and a.bbox.iou(b.bbox) >= cfg.contact_iou:
+                        now.add(a.track_id)
+                        now.add(b.track_id)
+        live = {tr.track_id for tr in players}
+        for tid in (self._contact - now) & live:
+            self.voter.discount(tid, cfg.contact_discount)
+            log.debug("track %d: same-team contact ended; older jersey reads discounted", tid)
+        self._contact = now
 
     def _expire(self, frame_idx: int, t: float | None) -> None:
         for pid, lost in list(self._lost.items()):

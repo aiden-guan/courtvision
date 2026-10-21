@@ -254,17 +254,55 @@ def _team_totals(
     return out
 
 
+# Counting stats each truth event adds (stat-line contributions), for the cut-edge alternative below.
+def edge_contributions(events: Any) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
+    """Box-score lines and team points that ``events`` (truth ``Event`` objects) contribute."""
+    from courtvision.types import EventKind as K
+
+    box: dict[str, dict[str, int]] = {}
+    score = {t: 0 for t in TEAMS}
+    attempts = {e.shot_id: e for e in events if e.kind is K.SHOT_ATTEMPT and e.shot_id}
+
+    def add(pid: str | None, **kw: int) -> None:
+        if pid is None:
+            return
+        line = box.setdefault(pid, {})
+        for k, v in kw.items():
+            line[k] = line.get(k, 0) + v
+
+    simple = {K.ASSIST: "ast", K.STEAL: "stl", K.BLOCK: "blk", K.TURNOVER: "tov", K.FOUL: "pf"}
+    for e in events:
+        if e.kind is K.SHOT_ATTEMPT:
+            add(e.player_id, **({"fta": 1} if e.value == 1 else {"fga": 1, "fg3a": int(e.value == 3)}))
+        elif e.kind is K.SHOT_MADE:
+            value = attempts[e.shot_id].value if e.shot_id in attempts else e.value
+            add(e.player_id, pts=e.value, **({"ftm": 1} if value == 1 else {"fgm": 1, "fg3m": int(value == 3)}))
+            if e.team is not None:
+                score[e.team.value] += e.value
+        elif e.kind is K.REBOUND:
+            add(e.player_id, **({"oreb": 1} if e.attrs.get("offensive") else {"dreb": 1}))
+        elif e.kind in simple:
+            add(e.player_id, **{simple[e.kind]: 1})
+    return box, score
+
+
 def compare_box(
     stats: Any,
     truth_box: Mapping[str, Mapping[str, Any]],
     truth_score: Mapping[Any, Any],
     roster: Roster | None = None,
     config: BoxEvalConfig | None = None,
+    edge: tuple[Mapping[str, Mapping[str, Any]], Mapping[Any, Any]] | None = None,
 ) -> BoxReport:
     """Compare a ``GameStats`` (object or ``to_dict()`` form) with truth counting stats.
 
     ``truth_box`` maps player_id -> {stat: count}; ``truth_score`` maps Team (or "home" /
     "away") -> points. ``roster`` (optional) resolves player teams for team totals.
+
+    ``edge`` = (box, score) contributed by truth events at the stream's cut end that the system could
+    not yet confirm (``edge_contributions``; e.g. a basket the operator's board shows only after the
+    stream stops): each truth value is then taken with or without its edge part, whichever is closer to
+    the prediction ("don't care" at a cut edge, like ``events.match_events(window=...)``).
     """
     cfg = config or BoxEvalConfig()
     stat_list = _evaluated_stats(truth_box, cfg)
@@ -277,6 +315,29 @@ def compare_box(
 
     truth_vals = {pid: values(truth_box[pid]) for pid in truth_ids}
     pred_vals = {pid: values(pred_lines.get(pid)) for pid in sorted(set(truth_ids) | set(pred_ids))}
+    if edge is not None:
+        edge_box, edge_score = edge
+        for pid in truth_ids:
+            part = values(edge_box.get(pid)) if pid in edge_box else None
+            if part is None:
+                continue
+            for st in stat_list:
+                alt = truth_vals[pid][st] - part[st]
+                if abs(pred_vals[pid][st] - alt) < abs(pred_vals[pid][st] - truth_vals[pid][st]):
+                    truth_vals[pid][st] = alt
+        truth_box = {pid: dict(truth_vals[pid]) for pid in truth_ids}
+        pred_score = _team_dict(_get(stats, "score")) or {}
+        full = {k: (int(v) if v is not None else None) for k, v in _team_dict(truth_score).items()}
+        less = _team_dict(edge_score)
+        adj: dict[str, Any] = {}
+        for t in TEAMS:
+            tr, p = full.get(t), _num(pred_score.get(t)) if pred_score else None
+            if tr is not None and p is not None and less.get(t):
+                alt = tr - int(less[t])
+                adj[t] = alt if abs(p - alt) < abs(p - tr) else tr
+            else:
+                adj[t] = tr
+        truth_score = adj
     missing = [pid for pid in truth_ids if pid not in pred_lines]
     extra = [pid for pid in pred_ids if pid not in truth_box]
 

@@ -141,11 +141,15 @@ class Flight:
         self._drop_frac: float | None = None
         self._crossed_inside = False
         self._crossed_inside_3d = False
+        self._ring_bounce = False  # 3-D: the ball was deflected at the ring / board (no block after that)
         self._last_dv: float | None = None
         self._view_quality: float | None = None
         self._shot_cues: dict[str, Any] | None = None
         self.attempt_id: str | None = None
         self.shot_id: str | None = None
+        self.continuation = False  # released in the act of shooting while fouled (the whistle does not kill it)
+        # a block candidate the engine saw in hindsight (engine._retro_block): (t, frame, blocker, side, data)
+        self.retro_block: tuple[float, int, str, Side, dict[str, Any]] | None = None
 
     # ------------------------------------------------------------------ status
 
@@ -183,6 +187,10 @@ class Flight:
         if self.state == "shot" and self.zone_t is None:  # free throw on its way to the rim
             if (self._zone3d(s) if s.is3d else self._zone_image(s, rims)) == self.target:
                 self.zone_t = s.t
+        if self.state == "shot" and self.zone_t is not None and not self.is_ft:
+            blocked = self._check_rim_block(players, team_of, rims)
+            if blocked:
+                return out + blocked
         if self.state == "shot" and self.zone_t is not None:
             out += self._step_shot3d(prev, s) if s.is3d else self._step_shot_image(prev, s, rims)
         if self.state != "made":
@@ -225,6 +233,7 @@ class Flight:
         return []
 
     def _enter(self, side: Side, s: FlightSample) -> list[FlightSignal]:
+        self.retro_block = None  # it reached the rim zone: a shot that went on, not a block
         self.state, self.target, self.zone_t = "shot", side, s.t
         self._shot_cues = self._compute_shot_cues(side)
         r = self.release
@@ -415,24 +424,86 @@ class Flight:
                        rim.center[0] if rim is not None else None, cfg.block_min_toward_fts, p3)
         if dv is None or dv < (cfg.block_reverse_dv_img_fts if image else cfg.block_reverse_dv_fts):
             return []
-        blocker, dist, above = self._defender_at(p1, players, team_of)  # contact at the reversal vertex
-        if blocker is None:
-            return []
-        mate = self._teammate_dist(p1, players, team_of)
-        if mate is not None and dist is not None and mate <= dist:
-            return []  # a teammate of the passer is nearer the ball: a catch (e.g. into a dribble), not a block
         if p1.is3d and self.release.xy is not None \
                 and math.dist(p1.xy, self.release.xy) > cfg.block_max_from_release_ft:  # type: ignore[arg-type]
+            return []
+        # contact at the reversal vertex; a teammate of the passer nearer the ball is a catch (e.g. into a
+        # dribble), not a block
+        return self._blocked_at(p1, dv, side, players, team_of)
+
+    def _check_rim_block(self, players: Sequence[PlayerState], team_of: Callable[[str], Team | None],
+                         rims: Mapping[Side, BBox]) -> list[FlightSignal]:
+        """A shot already inside the rim zone (layups, dunks, close shots: they enter it at the release)
+        turned back or knocked down by a defender before it touched the ring or the board. That is a
+        block too: any contact before the ball touches the rim, at the rim included (FIBA; rules note
+        §2a). Ring and board bounces are told apart by where the reversal happens (3-D)."""
+        cfg, court = self.cfg, self.court
+        if self._ring_bounce or self._crossed_inside or self._cross is not None or self.target is None \
+                or len(self.samples) < 4:
+            return []
+        p0, p1, p2, p3 = self.samples[-4:]
+        if p1.t - self.release.t > cfg.block_max_after_release_s:
+            return []
+        if not all(p.is3d for p in (p0, p1, p2, p3)):
+            return []
+        dv = _deflection3d(p0, p1, p2, p3, court.basket_xy(self.target), cfg.block_min_toward_fts)
+        if dv is None or dv < cfg.block_reverse_dv_fts:
+            return []
+        if self._at_ring_or_board(p1) or self._at_ring_or_board(p2):
+            # the ball came off the ring or the board: no block after that. (Mere proximity is not contact:
+            # a layup released over the ring passes within a ball radius of it without bouncing.)
+            self._ring_bounce = True
+            return []
+        # no teammate test: a shooter's teammate under the rim touching the ball in flight is rare (basket
+        # interference), while teammates crashing the boards stand next to every layup
+        return self._blocked_at(p1, dv, self.target, players, team_of, mates=False)
+
+    def _at_ring_or_board(self, s: FlightSample) -> bool:
+        """3-D: the ball touches the ring or the backboard at ``s`` (the rim-contact distance of ``_step_shot3d``)."""
+        cfg, court = self.cfg, self.court
+        assert self.target is not None and s.xy is not None and s.z is not None
+        bx, by = court.basket_xy(self.target)
+        d = math.hypot(s.xy[0] - bx, s.xy[1] - by)
+        rim_h = court.rim_height
+        if math.hypot(d - court.rim_radius, s.z - rim_h) <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft:
+            return True
+        board_x = court.backboard_offset if self.target == "left" else court.length - court.backboard_offset
+        return abs(s.xy[0] - board_x) <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft \
+            and abs(s.xy[1] - by) <= cfg.backboard_half_width_ft + cfg.ball_radius_ft \
+            and rim_h - cfg.rim_zone_below_ft <= s.z <= rim_h + cfg.backboard_above_rim_ft
+
+    def _blocked_at(self, p1: FlightSample, dv: float, side: Side, players: Sequence[PlayerState],
+                    team_of: Callable[[str], Team | None], mates: bool = True) -> list[FlightSignal]:
+        """The block decision at the reversal vertex ``p1``: an opponent at the ball (not a teammate of the
+        shooter nearer it: that is a catch / tip), then the flight turns loose with its blocker."""
+        cfg = self.cfg
+        blocker, dist, above = self._defender_at(p1, players, team_of)
+        if blocker is None:
+            return []
+        mate = self._teammate_dist(p1, players, team_of) if mates else None
+        if mate is not None and dist is not None and mate <= dist:
             return []
         self.blocker = blocker
         self.block_data = {"reversal_dv": dv, "defender_dist_ft": dist, "above_shoulder": above, "basket": side}
         self.target = side
         self.state = "loose"
-        self._shot_cues = self._compute_shot_cues(side) if side is not None else {}
+        if self._shot_cues is None:  # a block in the rim zone keeps the cues computed at the zone entry
+            self._shot_cues = self._compute_shot_cues(side)
         self.result_t, self.result_frame = p1.t, p1.frame_idx
         self.result_reason = "shot reversed by a defender before reaching the rim"
         return [FlightSignal("blocked", p1.t, p1.frame_idx, side=side, player_id=blocker, reason=self.result_reason,
                              data=dict(self.block_data))]
+
+    def mark_blocked(self, t: float, frame_idx: int, blocker: str, side: Side, data: dict[str, Any]) -> FlightSignal:
+        """The engine found the block in hindsight (monocular retro-block): the flight is a blocked shot."""
+        self.blocker, self.target, self.state = blocker, side, "loose"
+        self.block_data = {"basket": side, **data}
+        if self._shot_cues is None:
+            self._shot_cues = self._compute_shot_cues(side)
+        self.result_t, self.result_frame = t, frame_idx
+        self.result_reason = "shot turned back on its way up by a defender (seen in hindsight)"
+        return FlightSignal("blocked", t, frame_idx, side=side, player_id=blocker, reason=self.result_reason,
+                            data=dict(self.block_data))
 
     def _defender_at(self, s: FlightSample, players: Sequence[PlayerState],
                      team_of: Callable[[str], Team | None]) -> tuple[str | None, float | None, bool]:
@@ -641,6 +712,34 @@ def _reversal(p0: FlightSample, p1: FlightSample, p2: FlightSample, px_per_ft: f
     if not (turned_back or knocked_down):
         return None
     return math.dist(v1, v2) / px_per_ft
+
+
+def _deflection3d(p0: FlightSample, p1: FlightSample, p2: FlightSample, p3: FlightSample,
+                  target_xy: tuple[float, float], min_away_fts: float) -> float | None:
+    """3-D velocity change (ft/s) beyond ballistic at ``p1`` when the ball, still going toward the basket or
+    rising, was sent away from it or down, and kept going (p2 -> p3). Near the rim a shot moves slowly (a
+    layup is released next to it), so unlike ``_reversal`` no approach speed is required."""
+    dt1, dt2, dt3 = p1.t - p0.t, p2.t - p1.t, p3.t - p2.t
+    if dt1 <= 0 or dt2 <= 0 or dt3 <= 0:
+        return None
+    pts = [(*p.xy, p.z) for p in (p0, p1, p2, p3)]  # type: ignore[misc]
+    v1 = [(b - a) / dt1 for a, b in zip(pts[0], pts[1], strict=True)]
+    v2 = [(b - a) / dt2 for a, b in zip(pts[1], pts[2], strict=True)]
+    v3 = [(b - a) / dt3 for a, b in zip(pts[2], pts[3], strict=True)]
+    tx, ty = target_xy[0] - pts[1][0], target_xy[1] - pts[1][1]
+    n = math.hypot(tx, ty)
+    if n < 1e-6:
+        return None
+
+    def toward(v: list[float]) -> float:
+        return (v[0] * tx + v[1] * ty) / n
+
+    before = toward(v1) > -min_away_fts or v1[2] > 0.0
+    sent = toward(v2) <= -min_away_fts or v2[2] <= -min_away_fts
+    kept = toward(v3) <= -min_away_fts or v3[2] <= -min_away_fts
+    if not (before and sent and kept):
+        return None
+    return math.dist(v2, [v1[0], v1[1], v1[2] - G_FTS2 * dt2])
 
 
 def _parabola_fit(samples: Sequence[FlightSample], nominal_px_per_ft: float) -> tuple[float | None, int]:

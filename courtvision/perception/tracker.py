@@ -3,7 +3,7 @@
 Follows ByteTrack (Zhang et al., ECCV 2022) as in the reference ``BYTETracker``:
 
 1. High-score detections are matched to every track (tracked + lost) by IoU cost, optionally
-   blended with an appearance cost.
+   blended with an appearance cost, plus a foot-point distance term (``feet_weight``; every stage).
 2. Low-score detections are matched to the still-unmatched *tracked* tracks by IoU only.
 3. Remaining high-score detections are matched to tentative tracks; a tentative track that misses
    one frame is dropped, and it is confirmed after ``min_hits`` matches.
@@ -53,6 +53,16 @@ class TrackerConfig:
     embedding_momentum: float = 0.9  # EMA of track embeddings; sourced (BoT-SORT alpha = 0.9)
     emit_lost_frames: int = 5  # also output confirmed tracks lost <= this many frames (predicted box); tuned
     output_detection_bbox: bool = True  # matched tracks report the detection box (not the KF state); design
+    # Foot-point term: cost += feet_weight * min(1, |foot point - predicted foot point| / (feet_norm * h)).
+    # The foot point (box bottom centre) is where a body stands, and in a fixed camera it separates people
+    # one behind the other whose boxes overlap almost fully (IoU ~0.75). A merged box (two teammates in
+    # one blob: the rear player's top, the front player's feet) then cannot pass the rear player's box to
+    # the front player's track when they part: with these values a far-off foot point is past the match
+    # gate and the track coasts or restarts (the identity layer re-links it) instead of swapping. On sim
+    # train seeds 1-3 (video): wrong same-team ids 1.0 % -> 0.5 % of matched frames, holder frames on the
+    # right body under a wrong id 86 -> 4; tracks fragment more (281 -> 497 ids); tuned on sim train seeds.
+    feet_weight: float = 1.0
+    feet_norm: float = 0.4
     std_weight_position: float = 1.0 / 20  # sourced (DeepSORT/ByteTrack KalmanFilter)
     std_weight_velocity: float = 1.0 / 160  # sourced (DeepSORT/ByteTrack KalmanFilter)
 
@@ -191,6 +201,12 @@ class ByteTracker:
         db = np.array([d.bbox.as_tuple() for d in dets])
         cost = 1.0 - iou_matrix(tb, db)
         no_overlap = cost >= 1.0
+        if cfg.feet_weight > 0:  # foot points (bottom centres) apart by a share of the track's height
+            tf = np.c_[(tb[:, 0] + tb[:, 2]) / 2.0, tb[:, 3]]
+            df = np.c_[(db[:, 0] + db[:, 2]) / 2.0, db[:, 3]]
+            dist = np.linalg.norm(tf[:, None, :] - df[None, :, :], axis=2)
+            h = np.maximum(tb[:, 3] - tb[:, 1], 1.0)[:, None]
+            cost = cost + cfg.feet_weight * np.minimum(1.0, dist / (cfg.feet_norm * h))
         if use_appearance and cfg.appearance_weight > 0:
             app = self._appearance_cost(tracks, dets)
             have = ~np.isnan(app)

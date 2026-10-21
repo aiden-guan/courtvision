@@ -176,3 +176,32 @@ def test_fill_gaps_takes_context_only_next_to_the_gap() -> None:
         assert filled[k].interpolated
         assert np.hypot(filled[k].image_xy[0] - truth(k)[0], filled[k].image_xy[1] - truth(k)[1]) < 0.5
     assert not any(filled[k].visible for k in range(10, 40))  # the long gap stays unfilled
+
+
+def test_ball_lost_inside_a_person_stops_with_them_and_a_flight_flies_on() -> None:
+    """Regression (round 2, perception): a dribbled ball that disappears into the holder's body was
+    extrapolated at its last bounce velocity (35 % of coasted frames > 10 px off on sim train seeds,
+    almost all held). Lost inside a person's box it now decays to rest; lost in free space it keeps
+    flying on its arc (the flight-gap test above)."""
+    def run(people: list[BBox] | None) -> list[float]:
+        bt = BallTracker()
+        v, vel, errs = 400.0, 0.0, []
+        for k in range(40):
+            vel += 1200.0 / FPS
+            v += vel / FPS
+            if v > 520.0:
+                v, vel = 520.0, -0.8 * vel
+            if k < 30:
+                bt.update([ball_det(500.0, v)], k, k / FPS, people=people)
+                last = v
+            else:  # caught: the ball stays in the hands (at its last spot) behind the body
+                st = bt.update([], k, k / FPS, people=people)
+                if st.visible:
+                    errs.append(abs(st.image_xy[1] - last))
+        return errs
+
+    holder = [BBox(480.0, 380.0, 520.0, 560.0)]
+    held, free = run(holder), run(None)
+    assert len(held) == len(free) == BallTrackerConfig().max_gap_frames
+    assert max(held) < 0.5 * max(free)  # decays inside the holder, extrapolates otherwise
+    assert held[-1] - held[-3] < 3.0 < 10.0 < free[-1] - free[-3]  # the held ball comes to rest

@@ -71,8 +71,8 @@ import numpy as np
 from courtvision.config import AppConfig, config_to_yaml
 from courtvision.decision.advisor import JevDecider
 from courtvision.decision.client import JevClient, JevConfig
-from courtvision.eval.boxscore import BoxReport, compare_box
-from courtvision.eval.events import EventReport, match_events
+from courtvision.eval.boxscore import BoxReport, compare_box, edge_contributions
+from courtvision.eval.events import EventEvalConfig, EventReport, match_events
 from courtvision.eval.report import format_report, report_dict
 from courtvision.eval.tracking import TrackReport, tracking_report
 from courtvision.events.engine import EventEngine
@@ -90,7 +90,7 @@ from courtvision.narration.tts import TTS, NullTTS, SpokenLine, TTSConfig, estim
 from courtvision.roster import load_roster
 from courtvision.server.hub import Hub, dumps, frame_msg, meta_msg, stats_msg, status_msg
 from courtvision.sim import palette
-from courtvision.sim.noise import NoiseConfig, NoiseModel
+from courtvision.sim.noise import NoiseConfig, NoiseModel, ScoreboardConfig, ScoreboardModel
 from courtvision.sim.operator import SimOperator, SimOperatorConfig
 from courtvision.sim.render import RenderConfig, SyntheticRenderer, scoreboard_roi
 from courtvision.sim.simulator import GameSimulator, SimResult
@@ -283,13 +283,15 @@ class SimSource(FrameSource):
 
     def __init__(self, result: SimResult, mode: str = "truth3d", noise: NoiseConfig | None = None,
                  realtime: bool = False, speed: float = 1.0, *, noise_seed: int = 1, start_s: float = 0.0,
-                 duration_s: float | None = None, scoreboard: str = "truth",
-                 render_config: RenderConfig | None = None) -> None:
+                 duration_s: float | None = None, scoreboard: str = "auto",
+                 render_config: RenderConfig | None = None, board: ScoreboardConfig | None = None) -> None:
         super().__init__(realtime, speed)
         if mode not in SIM_MODES:
             raise ValueError(f"SimSource mode must be one of {SIM_MODES}, got {mode!r}")
-        if scoreboard not in ("truth", "ocr_5hz", "none"):
-            raise ValueError(f"scoreboard must be 'truth', 'ocr_5hz' or 'none', got {scoreboard!r}")
+        if scoreboard not in ("auto", "truth", "operator", "ocr_5hz", "none"):
+            raise ValueError(f"scoreboard must be 'auto', 'truth', 'operator', 'ocr_5hz' or 'none', got {scoreboard!r}")
+        if scoreboard == "auto":  # truth3d keeps the exact board; mono / video see the operator-run board
+            scoreboard = "truth" if mode == "truth3d" else "operator"
         self.mode = mode
         self.synthetic = mode == "video"
         self.result = self.truth = result
@@ -307,9 +309,24 @@ class SimSource(FrameSource):
         self._renderer: SyntheticRenderer | None = None
         self._observed: list[FrameState] | None = None
         if mode == "mono":
-            ncfg = dataclasses.replace(noise or NoiseConfig(), monocular=True)
-            self._observed = NoiseModel(ncfg, result.camera).apply(result.frames[self._i0:self._i1], seed=noise_seed)
+            ncfg = dataclasses.replace(noise or NoiseConfig(), monocular=True, fps=self.fps)
+            feet = result.feet_z[self._i0:self._i1] if result.feet_z else None
+            # (referees and substitutes waiting at the table: people a detector can mistake for players)
+            self._observed = NoiseModel(ncfg, result.camera).apply(
+                result.frames[self._i0:self._i1], seed=noise_seed, feet_z=feet,
+                referees=result.referees[self._i0:self._i1] or None, waiting=result.waiting[self._i0:self._i1] or None)
         self._ocr_every = max(1, int(round(self.fps / 5.0)))  # D14: 5 Hz
+        # The operator-run venue board (sim.noise.ScoreboardModel): OCR readings for mono, the displayed
+        # board (MM:SS panel) for video renders. Computed over the whole game so lags carry across a window.
+        self._board_reads: list[ScoreboardReading | None] | None = None
+        self._board_shown: list[ScoreboardReading | None] | None = None
+        if scoreboard == "operator":
+            model = ScoreboardModel(board)
+            boards = [f.scoreboard for f in result.frames]
+            if mode == "video":
+                self._board_shown = model.displayed(boards, self.fps, seed=noise_seed, tenths=False)
+            else:
+                self._board_reads = model.readings(boards, self.fps, seed=noise_seed)
 
     @classmethod
     def simulate(cls, sim_config: Any, mode: str = "truth3d", **kwargs: Any) -> SimSource:
@@ -322,6 +339,10 @@ class SimSource(FrameSource):
 
     def _board(self, i: int, state: FrameState) -> FrameState:
         policy = self.scoreboard_policy
+        if policy == "operator":
+            if self._board_shown is not None:  # video: the panel shows the operator-run board
+                return dataclasses.replace(state, scoreboard=self._board_shown[i])
+            return dataclasses.replace(state, scoreboard=self._board_reads[i] if self._board_reads else None)
         if policy == "truth" or state.scoreboard is None:
             return state
         if policy == "ocr_5hz" and (i - self._i0) % self._ocr_every == 0:
@@ -338,7 +359,11 @@ class SimSource(FrameSource):
             return None
         truth = self._board(frame_idx, self.result.frames[frame_idx])
         refs = self.result.referees[frame_idx] if frame_idx < len(self.result.referees) else None
-        return self.renderer().render(truth, referees=refs)
+        waiting = self.result.waiting[frame_idx] if frame_idx < len(self.result.waiting) else []
+        jersey = {e.player_id: e.jersey for e in self.result.roster.entries}
+        extras = [(Team(team), x, y, jersey.get(pid)) for pid, team, x, y in waiting]  # substitutes at the table
+        hands = self.result.hands[frame_idx] if frame_idx < len(self.result.hands) else None  # reaching arms
+        return self.renderer().render(truth, referees=refs, extras=extras, hands=hands)
 
     async def _iterate(self) -> AsyncIterator[FrameItem]:
         for k, i in enumerate(range(self._i0, self._i1)):
@@ -502,7 +527,7 @@ def make_source(cfg: AppConfig, sim_result: SimResult | None = None, realtime: b
             # image boxes, rims and the monocular ball all come from this camera (renders too)
             log.warning("sim camera does not frame the whole court; use geometry.camera.RECOMMENDED_SIM_CAMERA")
         return SimSource(sim_result, s.sim_mode, cfg.noise, rt, s.speed, noise_seed=s.noise_seed, start_s=s.start_s,
-                         duration_s=s.duration_s, scoreboard=s.scoreboard, render_config=cfg.render)
+                         duration_s=s.duration_s, scoreboard=s.scoreboard, render_config=cfg.render, board=cfg.board)
     if s.kind == "video":
         if not s.path:
             raise ValueError("source.path is required for a video source")
@@ -1997,10 +2022,22 @@ def _collect(game: LiveGame) -> RunResult:
     if src.truth is not None:
         lo, hi = src.start_t - 1e-6, (src.end_t if src.end_t is not None else math.inf) + 1e-6
         truth_events = [e for e in src.truth.events if lo <= e.t <= hi]
-        event_report = match_events(events, truth_events, tol_s=cfg.eval.tol_s, match_player=cfg.eval.match_player)
+        # The stream is cut at its end (and at its start when it begins mid-game): unmatched events at a
+        # cut edge are not scored. Operator-entered kinds are matched with the operator's modelled lag.
+        window = (src.start_t if src.start_t > 1e-6 else None, src.end_t)
+        ecfg = EventEvalConfig(operator_lag_s={"substitution": float(cfg.operator.entry_delay_s)})
+        event_report = match_events(events, truth_events, tol_s=cfg.eval.tol_s, match_player=cfg.eval.match_player,
+                                    config=ecfg, window=window)
         whole = isinstance(src, SimSource) and src.window == (0, len(src.truth.frames))
         if whole:
-            box_report = compare_box(stats, src.truth.truth_box, src.truth.truth_score, game.roster)
+            # the game is cut at the stream end: truth from its last moments (a basket the operator board
+            # shows only after the stop) is "don't care" for the box score, as for events
+            guard = float(cfg.eval.tol_s)
+            if getattr(src, "scoreboard_policy", "truth") == "operator":
+                guard = max(guard, float(cfg.board.score_lag_s[1]) + 2.0 / float(cfg.board.ocr_hz))
+            hi_t = src.end_t if src.end_t is not None else math.inf
+            edge = edge_contributions([e for e in truth_events if e.t > hi_t - guard])
+            box_report = compare_box(stats, src.truth.truth_box, src.truth.truth_score, game.roster, edge=edge)
         kept = game.kept_frames
         truth_frames = src.truth_frames()
         if kept and truth_frames:

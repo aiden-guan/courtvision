@@ -65,6 +65,7 @@ __all__ = [
     "points_file_text",
     "parse_detector",
     "read_events_jsonl",
+    "simulate_config",
     "unused_serve_flags",
 ]
 
@@ -570,14 +571,28 @@ def _print_result(result: RunResult, args: argparse.Namespace, title: str) -> No
 # --------------------------------------------------------------------------- simulate
 
 
+def simulate_config(mode: str, *, seed: int | None = None, seconds: float | None = None,
+                    league: str | None = None, jev: str | None = None, config: str | None = None,
+                    overrides: Sequence[str] = ()) -> AppConfig:
+    """The configuration ``courtvision simulate`` runs with: ``config`` file <- ``overrides`` (``--set``) <-
+    the explicit flags, and Jev off unless a mode was chosen. ``tools/accuracy_bench.py`` builds its runs
+    with this same function, so the benchmark and the CLI share one code path."""
+    if mode not in SIM_MODES:
+        raise CLIError(f"unknown sim mode {mode!r} (choose from {', '.join(SIM_MODES)})")
+    ns = argparse.Namespace(config=config, set=list(overrides), seconds=seconds, seed=seed, league=league)
+    flags = [_ov("source.kind", "sim"), _ov("source.sim_mode", mode), *_sim_flags(ns)]
+    if jev:
+        flags.append(_ov("jev.mode", jev))
+    cfg = load_cli_config(ns, flags)
+    _offline_jev_default(cfg, jev)
+    return cfg
+
+
 def cmd_simulate(args: argparse.Namespace) -> int:
     from courtvision.pipeline import run_offline
 
-    flags = [_ov("source.kind", "sim"), _ov("source.sim_mode", args.mode), *_sim_flags(args)]
-    if args.jev:
-        flags.append(_ov("jev.mode", args.jev))
-    cfg = load_cli_config(args, flags)
-    _offline_jev_default(cfg, args.jev)
+    cfg = simulate_config(args.mode, seed=args.seed, seconds=args.seconds, league=args.league, jev=args.jev,
+                          config=args.config, overrides=args.set or [])
     out = Path(args.out) if args.out else Path(cfg.pipeline.runs_dir) / (
         f"sim-{args.mode}-seed{cfg.sim.seed}-{_stamp()}")
     log.info("simulating %.0f s (seed %d, %s) in %s mode -> %s", cfg.sim.seconds, cfg.sim.seed, cfg.game.league,
@@ -1086,7 +1101,8 @@ def cmd_render(args: argparse.Namespace) -> int:
     try:
         for i in range(i0, len(result.frames)):
             refs = result.referees[i] if i < len(result.referees) else None
-            writer.write(renderer.render(result.frames[i], referees=refs))
+            hands = result.hands[i] if i < len(result.hands) else None  # reaching arms (as SimSource.render)
+            writer.write(renderer.render(result.frames[i], referees=refs, hands=hands))
             n += 1
     finally:
         writer.release()
@@ -1157,8 +1173,23 @@ def cmd_eval(args: argparse.Namespace) -> int:
         raise CLIError(f"no truth file next to {pred_path}: pass --truth truth_events.jsonl")
     pred, truth = read_events_jsonl(pred_path), read_events_jsonl(truth_path)
     kinds = [k.strip() for k in args.kinds.split(",") if k.strip()] if args.kinds else None
+    # A run directory's own eval protocol (stream window, operator lag) so the re-score matches the run.
+    window, ecfg = None, None
+    saved = pred_path.with_name("report.json")
+    if saved.is_file():
+        try:
+            proto = json.loads(saved.read_text()).get("eval", {}).get("events", {}) or {}
+        except (OSError, ValueError):
+            proto = {}
+        if proto.get("window") is not None:
+            window = tuple(proto["window"])
+        if proto.get("operator_lag_s"):
+            from courtvision.eval.events import EventEvalConfig
+
+            ecfg = EventEvalConfig(operator_lag_s={str(k): float(v) for k, v in proto["operator_lag_s"].items()})
     try:
-        report = match_events(pred, truth, kinds=kinds, tol_s=args.tol, match_player=not args.no_player)
+        report = match_events(pred, truth, kinds=kinds, tol_s=args.tol, match_player=not args.no_player,
+                              config=ecfg, window=window)
     except (KeyError, TypeError, ValueError) as exc:
         raise CLIError(f"cannot evaluate: {exc}") from exc
     text = format_report(report)

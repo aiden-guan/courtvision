@@ -1,9 +1,11 @@
 """Perception pipeline: one BGR frame -> ``FrameState``.
 
 Per frame: detect -> track players/referees -> team (k-means + per-track votes) -> jersey reads
-(every ``jersey_every`` frames per track, skipped while a nearer person covers the number) -> foot
-point through the floor homography -> drop
-coasting tracks that duplicate a freshly matched same-team track -> identity ->
+(every ``jersey_every`` frames per track, skipped while a nearer person covers the number) -> court
+position of each box (``foot_model``: an upright cylinder seen through the camera recovered from the floor
+homography, ``footpoint.py``; or the bottom centre pushed ``foot_radius_ft``) -> drop
+coasting tracks that duplicate a freshly matched same-team track (a restart; two established tracks on
+one spot are a merge, and the hidden player's track is kept) -> identity ->
 per-track court-space alpha-beta smoothing with velocity (speed clamp 30 ft/s) -> ball tracker ->
 rims (detector RIM class or ``calibration.rims``) -> drop players more than 6 ft outside the court
 -> optional scoreboard read at ``scoreboard_hz`` (5 Hz, D14).
@@ -41,6 +43,7 @@ from courtvision.types import (
 from .appearance import AppearanceConfig, torso_feature
 from .ball import BallTracker, BallTrackerConfig
 from .detector import Detector
+from .footpoint import FootModel, FootModelConfig
 from .identity import IdentityConfig, IdentityManager
 from .jersey import JerseyReader, NullJerseyReader
 from .scoreboard_reader import ScoreboardReader, ScoreboardROI
@@ -83,9 +86,20 @@ class PerceptionConfig:
     court_margin_ft: float = 6.0  # players farther outside the court are dropped; spec
     foot_radius_ft: float = 0.0  # move the bbox-bottom point this far away from the camera (body
     #   centre vs front edge of the feet); 0 = raw bottom-centre; tuned per camera
+    # "cylinder": a box is the image of an upright cylinder (foot_radius_ft, body_height_ft); the camera
+    # behind the floor homography gives the perspective lean of off-centre figures (``footpoint.py``).
+    # On sim train seeds the naive foot point ("push": bottom centre + foot_radius_ft towards image-up)
+    # is biased by ~0.5 ft; median court error on perceived boxes 0.54 -> 0.12 ft; design (geometry).
+    foot_model: str = "cylinder"  # "cylinder" (perspective-correct, footpoint.py) | "push" (naive); design (geometry)
+    body_height_ft: float = 6.5  # cylinder height; NBA average ~6 ft 6 in; sourced (league average)
     coast_confidence_decay: float = 0.8  # per frame for tracks reported while lost; tuned
     duplicate_iou: float = 0.5  # a coasting track overlapping a matched same-team track this much ...
     duplicate_radius_ft: float = 1.5  # ... or this close on the court is a stale duplicate; tuned
+    # ... but only when one of the two is new (a restart of the coasting track, or a short fragment).
+    # Two established tracks are a same-team merge: one player went behind the other (one colour blob)
+    # and must keep its track to come out under it again; deleting it handed the hidden player's
+    # detection to the merged track (identity swap). Frames; tuned on sim train seeds.
+    duplicate_new_frames: int = 30
     rim_source: str = "auto"  # "auto" (calibration if it has rims, else detector) | "detector" | "calibration"
     scoreboard_roi: dict[str, Any] | None = None  # ScoreboardROI.to_dict() form
     scoreboard_hz: float = 5.0  # OCR rate; sourced (RESEARCH.md D14)
@@ -134,6 +148,7 @@ class PerceptionPipeline:
         self._scoreboard_mask: list[list[float]] | None = None  # polygon this pipeline added to the detector
         self._last_read_t: float | None = None
         self._oriented: tuple[Homography, Homography] | None = None  # (source, oriented copy)
+        self._foot: tuple[Homography, tuple[float, float], FootModel] | None = None
         if cfg.scoreboard_roi is not None:
             self.set_scoreboard_roi(ScoreboardROI.from_dict(cfg.scoreboard_roi))
 
@@ -175,7 +190,8 @@ class PerceptionPipeline:
         players = self._drop_stale_duplicates(players, teams, raw_xy)
         ids = self.identity.assign(players, teams, frame_idx, court_xy=raw_xy, t=t)
         states = self._player_states(players, ids, raw_xy, teams, t)
-        ball = self.ball_tracker.update(fd.of(ObjClass.BALL), frame_idx, t, self._floor())
+        ball = self.ball_tracker.update(fd.of(ObjClass.BALL), frame_idx, t, self._floor(),
+                                        people=[tr.bbox for tr in tracks if tr.time_since_update == 0])
         self._forget_old(frame_idx, {tr.track_id for tr in tracks})
         return FrameState(
             frame_idx=frame_idx,
@@ -292,12 +308,28 @@ class PerceptionPipeline:
     def _court_points(self, players: list[Track]) -> dict[int, tuple[float, float]]:
         if not players:
             return {}
-        H = self._floor()
-        feet = np.array([tr.bbox.foot for tr in players], dtype=float)
-        xy = H.image_to_court(feet, front_only=True)
-        if self.config.foot_radius_ft > 0:
-            xy = self._push_from_camera(feet, xy)
+        cfg = self.config
+        if cfg.foot_model == "cylinder":
+            xy = self._foot_model().court_points(np.array([tr.bbox.as_tuple() for tr in players], dtype=float))
+        elif cfg.foot_model == "push":
+            H = self._floor()
+            feet = np.array([tr.bbox.foot for tr in players], dtype=float)
+            xy = H.image_to_court(feet, front_only=True)
+            if cfg.foot_radius_ft > 0:
+                xy = self._push_from_camera(feet, xy)
+        else:
+            raise ValueError(f"unknown foot_model {cfg.foot_model!r}")
         return {tr.track_id: (float(p[0]), float(p[1])) for tr, p in zip(players, xy) if np.all(np.isfinite(p))}
+
+    def _foot_model(self) -> FootModel:
+        """The cylinder foot model of the current calibration (rebuilt when it or the body changes)."""
+        H = self._floor()
+        body = (float(self.config.foot_radius_ft), float(self.config.body_height_ft))
+        if self._foot is None or self._foot[0] is not H or self._foot[1] != body:
+            fm = FootModel(H, self.calibration.image_size, (self.court.length, self.court.width),
+                           FootModelConfig(radius_ft=body[0], height_ft=body[1]))
+            self._foot = (H, body, fm)
+        return self._foot[2]
 
     def _drop_stale_duplicates(
         self,
@@ -306,15 +338,20 @@ class PerceptionPipeline:
         raw_xy: dict[int, tuple[float, float]],
     ) -> list[Track]:
         """Drop coasting tracks that sit on a matched track of the same team: the tracker lost the
-        association and restarted the player, so the old track must hand its identity over."""
+        association and restarted the player, so the old track must hand its identity over. Only
+        when one of the two tracks is new: two established tracks on one spot are a merge (one
+        player hidden behind a teammate), and the hidden player's track is kept."""
         cfg = self.config
         matched = [tr for tr in players if tr.time_since_update == 0]
+        new = cfg.duplicate_new_frames
 
         def duplicate(c: Track) -> bool:
             team = teams.get(c.track_id, (None, 0.0))[0]
             for m in matched:
                 if team is None or teams.get(m.track_id, (None, 0.0))[0] is not team:
                     continue
+                if c.hits > new and m.age > new:
+                    continue  # merge, not a restart
                 if c.bbox.iou(m.bbox) >= cfg.duplicate_iou:
                     return True
                 a, b = raw_xy.get(c.track_id), raw_xy.get(m.track_id)

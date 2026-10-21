@@ -149,3 +149,83 @@ def test_remove_deletes_a_confirmed_track() -> None:
     assert trk.remove(1) and not trk.remove(99)
     out = trk.update([det(400, 200)], 3)
     assert [t.track_id for t in out] == [2]
+
+
+
+# Seed 2 frames 3790-3821 (video mode, detector boxes, team colour H/A): away #27 stands behind home #49
+# and is hidden for ~20 frames while away #42 walks out from behind them (a too-tall merged box for 3
+# frames); then everyone reappears. First/last-frame truth boxes of #27 and #42.
+_CROWD = [
+    [('H', (966, 284, 992, 344)), ('A', (982, 272, 1014, 332)), ('A', (980, 286, 1010, 348))],
+    [('H', (966, 284, 992, 346)), ('A', (984, 274, 1014, 332)), ('A', (980, 286, 1012, 348))],
+    [('H', (966, 286, 994, 346)), ('A', (984, 274, 1016, 332)), ('A', (982, 288, 1012, 350))],
+    [('H', (968, 264, 1004, 346)), ('A', (982, 274, 1016, 350))],
+    [('H', (970, 262, 1006, 344)), ('A', (982, 278, 1018, 350))],
+    [('H', (970, 260, 1006, 342)), ('A', (984, 266, 1018, 352)), ('A', (932, 284, 962, 346))],
+    [('H', (972, 258, 1008, 340)), ('A', (984, 266, 1020, 352)), ('A', (934, 286, 964, 346))],
+    [('H', (972, 258, 1008, 338)), ('A', (984, 266, 1020, 352)), ('A', (938, 286, 968, 348))],
+    [('H', (974, 256, 1010, 338)), ('A', (986, 266, 1020, 354)), ('A', (940, 286, 970, 348))],
+    [('H', (974, 256, 1012, 336)), ('A', (986, 266, 1020, 354)), ('A', (942, 286, 972, 348))],
+    [('H', (976, 254, 1012, 336)), ('A', (988, 266, 1020, 354)), ('A', (944, 286, 976, 348))],
+    [('H', (976, 254, 1012, 336)), ('A', (988, 268, 1022, 354)), ('A', (946, 288, 978, 350))],
+    [('H', (976, 254, 1014, 336)), ('A', (988, 266, 1022, 356)), ('A', (948, 288, 980, 350))],
+    [('H', (978, 254, 1028, 336)), ('A', (950, 288, 982, 350)), ('A', (988, 294, 1022, 356))],
+    [('H', (978, 254, 1026, 336)), ('A', (952, 288, 984, 350)), ('A', (990, 294, 1022, 356))],
+    [('H', (980, 256, 1022, 338)), ('A', (954, 288, 984, 350)), ('A', (988, 294, 1024, 356))],
+    [('H', (980, 256, 1020, 338)), ('A', (956, 288, 986, 350)), ('A', (994, 294, 1026, 356))],
+    [('H', (982, 258, 1020, 340)), ('A', (956, 288, 988, 350)), ('A', (996, 294, 1028, 356))],
+    [('H', (984, 260, 1020, 342)), ('A', (958, 290, 988, 352)), ('A', (998, 294, 1030, 354))],
+    [('H', (984, 262, 1022, 344)), ('A', (958, 290, 990, 352)), ('A', (998, 294, 1032, 354))],
+    [('H', (986, 264, 1022, 346)), ('A', (960, 290, 992, 352)), ('A', (1000, 294, 1034, 356))],
+    [('H', (988, 266, 1020, 324)), ('A', (962, 290, 994, 352)), ('A', (1006, 272, 1060, 416))],
+    [('H', (988, 270, 1020, 328)), ('A', (964, 290, 986, 352)), ('A', (1018, 272, 1058, 416))],
+    [('H', (986, 272, 1018, 332)), ('A', (964, 290, 986, 354)), ('A', (1014, 296, 1058, 414))],
+    [('H', (930, 286, 960, 348)), ('H', (986, 294, 1018, 356)), ('A', (980, 280, 1010, 340)),
+     ('A', (966, 292, 998, 350)), ('A', (1004, 292, 1038, 354))],
+    [('H', (932, 288, 962, 350)), ('H', (986, 294, 1020, 356)), ('A', (978, 282, 1010, 342)),
+     ('A', (968, 292, 998, 352)), ('A', (1006, 292, 1038, 354))],
+    [('H', (934, 288, 964, 350)), ('H', (986, 294, 1020, 356)), ('A', (976, 282, 1008, 340)),
+     ('A', (1006, 292, 1040, 352)), ('A', (970, 292, 1000, 354))],
+    [('H', (936, 290, 968, 352)), ('H', (986, 294, 1020, 356)), ('A', (974, 282, 1006, 342)),
+     ('A', (970, 292, 1002, 354)), ('A', (1008, 292, 1040, 352))],
+    [('H', (938, 290, 970, 352)), ('A', (972, 292, 1004, 354)), ('H', (986, 294, 1020, 356)),
+     ('A', (972, 282, 1004, 348)), ('A', (1008, 292, 1042, 352))],
+    [('H', (940, 292, 972, 354)), ('A', (972, 294, 1004, 356)), ('H', (986, 294, 1020, 356)),
+     ('A', (970, 284, 1002, 348)), ('A', (1008, 290, 1042, 352))],
+    [('H', (942, 292, 974, 354)), ('A', (974, 294, 1004, 356)), ('H', (986, 294, 1020, 356)),
+     ('A', (968, 284, 1000, 346)), ('A', (1010, 290, 1042, 352))],
+    [('H', (944, 292, 976, 354)), ('H', (1006, 286, 1020, 356)), ('A', (966, 284, 998, 344)),
+     ('A', (1010, 290, 1042, 350)), ('H', (986, 294, 1020, 356)), ('A', (974, 294, 1004, 356))],
+]
+_CROWD_FIRST = {"27": (983, 273, 1014, 333), "42": (980, 287, 1012, 348), "49": (966, 284, 992, 344)}
+_CROWD_LAST = {"27": (967, 285, 998, 347), "42": (1010, 290, 1043, 353)}
+
+
+def _crowd_owners(config: TrackerConfig) -> tuple[dict[str, int], dict[str, int | None]]:
+    """Track ids on the first-frame and last-frame boxes of #27, #42 (and #49 first). No embeddings:
+    teammates' shirts look alike, so association rests on geometry."""
+    trk = ByteTracker(config)
+    owners = []
+    for f, row in enumerate(_CROWD):
+        out = [t for t in trk.update([Detection(bbox=BBox(*b), cls=ObjClass.PLAYER, score=0.95) for _, b in row], f)
+               if t.time_since_update == 0]
+        boxes = _CROWD_FIRST if f == 0 else _CROWD_LAST
+        o: dict[str, int | None] = {}
+        for name, b in boxes.items():
+            t = max(out, key=lambda t: t.bbox.iou(BBox(*b)), default=None)
+            o[name] = t.track_id if t is not None and t.bbox.iou(BBox(*b)) > 0.7 else None
+        owners.append(o)
+    return owners[0], owners[-1]  # type: ignore[return-value]
+
+
+def test_foot_points_keep_a_reappearing_player_off_other_players_tracks() -> None:
+    """Regression (round 2, perception; sim train seed 2): after an occlusion, IoU alone matched the
+    reappearing #27's box to the home player's track and #42's to #27's (wrong same-team ids for ~3 s).
+    The foot-point term refuses boxes whose feet are far from a track's predicted feet: #42 stays on
+    his track and #27 restarts (the identity layer re-links or re-reads him) instead of swapping."""
+    first, last = _crowd_owners(TrackerConfig())
+    assert len(set(first.values())) == 3
+    assert last["42"] == first["42"]
+    assert last["27"] is not None and last["27"] not in (first["42"], first["49"])
+    first, last = _crowd_owners(TrackerConfig(feet_weight=0.0))  # the old tracker: #27 lands on #49's track
+    assert last["27"] == first["49"]

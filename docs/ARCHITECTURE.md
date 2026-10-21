@@ -272,17 +272,20 @@ Stat grammar: FIBA Statisticians' Manual 2024 (RESEARCH §2.5) with NBA-league f
 | POSSESSION | first frame of confirmed control by the new team | team, player_id = first holder | not emitted for an offensive rebound (same team keeps possession); `attrs.cause` |
 | PASS | release frame | player_id passer, other_player_id intended/actual receiver | completed = a teammate gains control; intercepted ⇒ STEAL+TURNOVER instead of a completed PASS (emit PASS with `completed=False` too) |
 | DRIBBLE | floor-contact frame | player_id | not narrated |
-| SHOT_ATTEMPT | release frame | player_id shooter, team | value 2/3 from `court.is_three` at the last grounded foot position before the gather (D8; in sim = shooter position at gather); FT attempts value 1, shot_type "free_throw". A fouled shooter who misses gets NO attempt (sim: fouls only happen before the shot) |
+| SHOT_ATTEMPT | release frame | player_id shooter, team | value 2/3 from `court.is_three` at the last grounded foot position before the gather (D8; in sim = shooter position at gather); FT attempts value 1, shot_type "free_throw". A shooter fouled before the release gets NO attempt (2 FTs, 3 on a three); an **and-one** is an attempt + SHOT_MADE with the FOUL (`attrs.and_one`) at the release frame (continuation), then 1 FT |
 | SHOT_MADE / SHOT_MISSED | frame the ball centre crosses the rim plane (made) / the frame the miss is decided (ball leaves the rim zone downward or sideways, or a player gains control) | player_id shooter, shot_id | made `value` = points |
-| BLOCK | defender contact frame | player_id blocker, other_player_id shooter, shot_id | only with an FGA (attempt + SHOT_MISSED also emitted) |
+| BLOCK | defender contact frame | player_id blocker, other_player_id shooter, shot_id | only with an FGA (attempt + SHOT_MISSED also emitted). Any contact before the ball touches the rim, at the rim too (FIBA; rules note §2a): most blocks are on rim and short-mid attempts (pbpstats .095 / .102 of FGA) |
 | REBOUND | first frame of confirmed control after a missed FGA/last FT | player_id rebounder (None = team rebound), `attrs.offensive` | team rebound when the ball goes out of bounds / dead before control; credited to the team that inbounds |
 | ASSIST | the SHOT_MADE frame | player_id passer, other_player_id scorer, shot_id | last completed pass to the scorer from a teammate, catch→release ≤ `assist_window_s` = 5.0 s and scorer dribbles in between ≤ `assist_max_dribbles` = 2. Never on free throws (NBA flag; FIBA would count FT trips — configurable `assist_on_ft_trips=False`) |
-| STEAL + TURNOVER | frame the stealer gains control | STEAL: player_id stealer, other_player_id victim; TURNOVER: player_id victim, `type` "bad_pass" (intercepted pass) or "steal" (stripped dribble/hold) | |
-| TURNOVER (non-steal) | frame the ball goes out / the violation | player_id last holder, `type` "out_of_bounds" / "shot_clock" / "travel" / "other" | out of bounds attributed from the next inbound (one camera can't see the last touch): confidence < 1 |
-| FOUL | whistle frame | player_id fouler, other_player_id fouled | sim truth only + manual/feed; CV engine does not infer fouls |
-| SUBSTITUTION | entry frame | player_id in, other_player_id out | operator / sim truth |
-| PERIOD_START / PERIOD_END | first / last frame of the period | — | from scoreboard / RuleSpec |
-Matching tolerance for evaluation: ±1.0 s (`eval.match_events(tol_s=1.0)`).
+| STEAL + TURNOVER | frame the stealer('s team) gains control | STEAL: player_id stealer, other_player_id victim; TURNOVER: player_id victim, `type` "bad_pass" (intercepted pass) or "steal" (stripped dribble/hold) | the first deflector gets the steal (rules note §2a): a ball poked loose and recovered by his teammate is his STEAL at the teammate's control frame (POSSESSION player_id = the recoverer); recovered by the offence = no steal, no turnover |
+| TURNOVER (non-steal) | frame the ball goes out / the violation | player_id last holder, `type` "out_of_bounds" / "shot_clock" / "travel" / "offensive_foul" / "other" | out of bounds attributed from the next inbound (one camera can't see the last touch): confidence < 1. A ball the **defence** knocks out of bounds is no turnover and no steal: the offence throws in with the unexpired shot clock (rules note §2a) |
+| FOUL | whistle frame | player_id fouler, other_player_id fouled | sim truth only + manual/feed; CV engine does not infer fouls. `attrs.type` "shooting" / "personal" (non-shooting: FTs only in the RuleSpec team-foul penalty, else a throw-in) / "offensive" (with a TURNOVER "offensive_foul"); `attrs.n_ft` the free throws awarded |
+| SUBSTITUTION | entry frame | player_id in, other_player_id out | operator / sim truth. The substitute waits at the table (`SimResult.waiting`, rendered) and steps on after the outgoing player has left the floor. Operator entries arrive `operator.entry_delay_s` later and are matched within tolerance + that lag (`EventEvalConfig.operator_lag_s`) |
+| PERIOD_START / PERIOD_END | first / last frame of the period (PERIOD_END = the frame the game clock reaches 0) | — | from scoreboard / RuleSpec. A shot released before the horn still plays out and counts after PERIOD_END; no rebound follows its miss |
+Matching tolerance for evaluation: ±1.0 s (`eval.match_events(tol_s=1.0)`). A run cut mid-game
+(`match_events(window=(start, end))`; the pipeline passes its stream edges) does not score unmatched
+events within the kind's tolerance of a cut edge (a shot still in the air at the end, an event too late
+to confirm): they are reported in `EventReport.boundary_excluded`, matched pairs always count.
 
 ## stats/ (owners: stats-core agent and stats-models agent)
 
@@ -531,14 +534,59 @@ Possession model: realistic flow — inbound / bring-up, 1–6 passes, dribbles 
 drives, shots with a league-realistic distance mix and make probability, offensive/defensive rebounds,
 turnovers & steals, occasional blocks, shooting fouls with free throws, substitutions at dead balls,
 halftime side switch, game/shot clock, scoreboard.
+Physical realism (round-1 sim pass; constants in `SimConfig` with sources / statuses):
+* bodies never interpenetrate: every pair is projected apart to `body_contact_ft` (1.5 ft, FIBA Art. 33.1
+  cylinder principle), locked players included, and no other body centre comes within `ball_clear_ft`
+  of a held / dribbled ball; on-ball defenders keep `on_ball_gap_ft` and slide laterally under the rim;
+* person boxes follow the body: jumps lift the box off the floor (shots, blocks, high rebound catches,
+  jump balls; `SimResult.feet_z`), raised arms and a ball held above the shoulders extend it;
+* passes peak at most at `pass_apex_ft` and never cross the zone above a rim; overthrown lobs at most
+  `oob_lob_apex_ft`; catches happen at their exact flight time;
+* live-ball steals: the stealer pushes in transition at once, the robbed player reacts late; half of the
+  strips are poke-aways recovered by the deflector;
+* block rates per zone from pbpstats (~5.5% of FGA); fouls: pre-release 2- and 3-shot fouls, and-ones,
+  non-shooting fouls with RuleSpec team-foul penalties (one-and-one where the ruleset has it), offensive
+  fouls; out of bounds: overthrown lobs, fumbled catches, dribblers stepping out, defensive deflections
+  (offence keeps the ball);
+* rebounds: 1-3 players contest the landing spot, defenders box out crashing men, the rebounder has the
+  inside position; tip putbacks go straight back up;
+* PERIOD_END at the horn; substitutes walk on from the table as separate people.
+`SimResult` also carries `waiting` (substitutes at the table per frame) and `feet_z` (per frame, each
+player's feet height). `NoiseModel.apply(frames, seed, feet_z=...)` (mono): AR(1)-correlated position
+error, alpha-beta velocities from the noisy positions (never the simulator's), foot-point lift of jumping
+players, clustered occlusion drops, same-team identity swaps after image occlusions, Gilbert-Elliott
+burst ball misses plus depth-ordered body occlusion and the net, persistent false positives (heads,
+static blobs) with overlapping confidence. `ScoreboardModel` (noise.py): the operator-run venue board
+(score / clock / shot-clock lags, MM:SS display, tenths in the last minute) read by 5 Hz OCR (source
+"ocr"); `source.scoreboard="auto"` gives truth3d the exact board and mono / video the operator board
+(`board.*` settings). The renderer draws the ball in depth order (only upper bodies hide it), with a
+motion-blur streak, waiting substitutes (`render(frame, referees, extras)`) and optional hand cover /
+spare balls.
 
 ## eval/ (owner: eval agent)
 ```python
 events.py:   match_events(pred, truth, kinds=None, tol_s=1.0, match_player=True) -> EventReport
              # greedy-by-time one-to-one matching per kind; precision/recall/F1, player accuracy, mean |dt|
-boxscore.py: compare_box(stats: GameStats, truth_box, truth_score) -> BoxReport  # per-stat MAE, exact %, score match
+boxscore.py: compare_box(stats: GameStats, truth_box, truth_score, edge=None) -> BoxReport  # per-stat MAE, exact %, score match
+             # edge = edge_contributions(truth events at the cut stream end): each truth value is taken with
+             # or without that part, whichever is closer ("don't care", e.g. a last-second basket the
+             # operator board shows only after the stop); the pipeline passes the last
+             # max(tol, board lag + 2 OCR reads) seconds
 tracking.py: tracking_report(pred_frames, truth_frames, match_radius_ft=3.0) -> TrackReport  # MOTA, IDF1-lite, RMSE
 report.py:   format_report(...) -> str (markdown table)
+bench.py:    BenchCase, run_case(case) -> aggregate record, pool_mode(records), build_report, format_markdown
+             # the accuracy benchmark behind tools/accuracy_bench.py: each (mode, seed) runs the
+             # `courtvision simulate` code path (cli.simulate_config -> pipeline.run_offline); per-kind
+             # F1 pooled over seeds (sum TP / pred / truth), headline = eval's macro-F1 on the pooled
+             # F1s. Splits: train seeds 1-6 (tune here), held-out 101-104 (verifier; aggregates only).
+             # Next to the strict headline: the macro over core kinds with truth support, the pooled
+             # micro-F1, false positives per stream minute of core kinds without truth, and 95%
+             # seed-bootstrap intervals (bootstrap_ci). Only pooled multi-seed >= 180-300 s numbers are
+             # comparable; single-seed <= 60 s headlines are not.
+events.py also: match_events(..., window=(start, end)) ignores unmatched events at a cut stream edge;
+             EventEvalConfig.operator_lag_s widens operator-entered kinds (substitution) by the entry lag;
+             EventReport carries supported_macro_f1 / micro_f1 / unsupported_fp / boundary_excluded and
+             the window / lag it was scored with (`courtvision eval RUN_DIR` re-scores with them)
 ```
 
 ## server/ (owner: server agent)
@@ -586,7 +634,7 @@ load_config(path: str | Path | None = None, overrides: list[str] | None = None) 
     # defaults <- YAML <- "a.b=value" overrides; unknown keys -> ConfigError with the dotted path;
     # nested sections partial, dict fields merge key by key, lists replace
 dump_config(cfg) -> dict; config_to_yaml(cfg) -> str; render_default_yaml() -> str  # = config/default.yaml
-# AppConfig sections: game, source, sim, noise, render, operator, perception, events, stats, shot_model,
+# AppConfig sections: game, source, sim, noise, render, board, operator, perception, events, stats, shot_model,
 # decision_model, insights, jev, narration, director, facts, templates, candidates, tts, captions, llm,
 # server, hub, serve, pipeline, eval. game.* is authoritative over sim.league / ruleset / rule_overrides.
 

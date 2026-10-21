@@ -237,6 +237,14 @@ class JerseyVoter:
         merged.extend(self._reads.get(dst, ()))
         self._reads[dst] = merged
 
+    def discount(self, track_id: int, factor: float) -> None:
+        """Scale ``track_id``'s reads so far by ``factor``: after an occlusion or a same-team crossing
+        the track may be on another body, so older reads are weak evidence about who it is now and a
+        few fresh agreeing reads must be able to outvote them."""
+        reads = self._reads.get(track_id)
+        if reads:
+            self._reads[track_id] = deque(((n, c * factor) for n, c in reads), maxlen=self.window)
+
     def forget(self, track_id: int) -> None:
         self._reads.pop(track_id, None)
 

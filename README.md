@@ -151,6 +151,52 @@ a monocular ball with no height. `video` renders frames and runs the real percep
 (colour-blob detector, ByteTrack, template jersey reader, scoreboard OCR, homography). Offline runs
 use source-time clocks, so they are deterministic: the same seed gives the same report.
 
+**The benchmark.** `tools/accuracy_bench.py` is the one accuracy number every change reports. For
+each (mode, seed) it runs exactly what `courtvision simulate` runs, then pools over seeds: per-kind
+F1 from summed TP / predictions / truths, the headline macro-F1 (eval's definition) over those
+pooled F1s, FG make/miss and 2-vs-3 accuracy, rebound and assist attribution, box-score MAE and
+team-points error (`courtvision/eval/bench.py` defines each). Runs go to a process pool. Tune only on
+the **train** seeds 1-6. The **held-out** seeds 101-104 are for the verifier; they produce aggregate
+numbers only (`--keep-runs` is refused). Video mode renders every frame, so its games default to
+180 s (`--video-seconds`); box scores of 180 s and 300 s games are not comparable across modes.
+
+```bash
+.venv/bin/python tools/accuracy_bench.py --modes truth3d,mono,video --split train --seconds 300 \
+    --video-seconds 180 --video-seeds 1,2,3 --workers 8 --json runs/bench/train.json
+```
+
+Train baseline (2026-10-20, the command above, 2 min 47 s wall on 8 workers):
+
+| Mode | Seeds | s/game | Headline F1 (pooled) | Seed mean ± sd | FG make/miss | 2 vs 3 | Rebound F1 / rebounder | Assist F1 / label | Box MAE | Team pts error |
+|---|---|---|---|---|---|---|---|---|---|---|
+| truth3d | 1-6 | 300 | **0.934** | 0.935 ± 0.063 | 0.967 (n=92) | 0.989 (n=95) | 0.964 / 0.963 | 1.000 / 0.946 | 0.022 | 0 |
+| mono | 1-6 | 300 | **0.600** | 0.644 ± 0.060 | 0.967 (n=92) | 0.947 (n=94) | 0.807 / 0.543 | 0.931 / 0.730 | 0.119 | 0 |
+| video | 1-3 | 180 | **0.707** | 0.761 ± 0.098 | 0.933 (n=30) | 0.935 (n=31) | 0.821 / 0.500 | 0.941 / 0.909 | 0.080 | 0 |
+
+The pooled headline counts a kind once over all seeds, so a kind with only false positives (mono
+blocks, video steals) costs a full 1/9 of it. The seed mean counts that kind only in the seeds where
+it occurs. Since the round-1 simulator pass the report also gives the macro over the core kinds that
+have truth, the pooled micro-F1, false positives per stream minute of core kinds without truth and 95%
+seed-bootstrap intervals; with 0-15 truth events per rare kind, only pooled multi-seed numbers of
+>= 180-300 s games are comparable.
+
+**Simulator realism pass (round 1).** The simulator and the observation models were made more like real
+basketball and a real single camera (see ARCHITECTURE "sim/" for the list): bodies no longer
+interpenetrate, boxes include jumps and raised arms, passes avoid the rim, steals are followed by a
+transition push, blocks / fouls / free throws / out-of-bounds follow the rules note's priors, rebounds
+are contested, PERIOD_END sits at the horn, substitutes walk on; mono velocities come from the noisy
+positions, ball misses are bursty and occlusion-driven, false positives persist, identities swap in
+occlusions, and mono / video read an operator-run scoreboard at 5 Hz. The eval no longer scores
+unresolvable events at a cut stream edge and matches operator substitutions with the operator's lag.
+Re-measured train numbers (`--modes truth3d,mono`, 300 s, seeds 1-6; `runs/bench/r1_sim_after.md`):
+
+| Mode | Headline F1 (pooled) [95% CI] | Micro F1 | FG make/miss | Rebound F1 / rebounder | Assist F1 / label | Box MAE |
+|---|---|---|---|---|---|---|
+| truth3d | **0.953** [0.869, 0.997] | 0.988 | 1.000 (n=83) | 1.000 / 0.945 | 0.976 / 1.000 | 0.015 |
+| mono | **0.553** [0.536, 0.573] | 0.814 | 0.987 (n=78) | 0.642 / 0.600 | 0.800 / 0.655 | 0.113 |
+
+The end-to-end table below predates that pass.
+
 ## Current end-to-end numbers
 
 Measured on 2026-10-20 on the development Mac with `courtvision simulate` / `render` + `run` +

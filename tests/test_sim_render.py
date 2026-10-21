@@ -20,7 +20,7 @@ from courtvision.sim.render import (
     scoreboard_roi,
     segment_rects,
 )
-from courtvision.sim.simulator import GameSimulator, SimConfig, SimResult
+from courtvision.sim.simulator import GameSimulator, SimConfig, SimResult, cylinder_boxes
 from courtvision.types import BBox, FrameState, PlayerState, ScoreboardReading, Team
 
 
@@ -38,21 +38,28 @@ def _px(img: np.ndarray, u: float, v: float) -> tuple[int, ...]:
     return tuple(int(c) for c in img[int(round(v)), int(round(u))])
 
 
-def _isolated(frame: FrameState) -> list[PlayerState]:
-    """Players whose box overlaps no other player's box (no occlusion)."""
+def _isolated(frame: FrameState, sim: SimResult | None = None, idx: int | None = None) -> list[PlayerState]:
+    """Players whose box overlaps no other player's box (no occlusion), nor a referee's figure when the
+    simulation is given (referees are rendered too)."""
+    refs: list[BBox] = []
+    if sim is not None and idx is not None and sim.referees:
+        xy = np.array(sim.referees[idx], dtype=float)
+        boxes = cylinder_boxes(sim.camera, xy, sim.config.referee_height_ft, sim.config.player_radius_ft)
+        refs = [BBox(*map(float, b)) for b in boxes]
     out = []
     for p in frame.players:
-        if all(p.bbox.iou(q.bbox) == 0.0 for q in frame.players if q is not p):
+        if all(p.bbox.iou(q.bbox) == 0.0 for q in frame.players if q is not p) and \
+                all(p.bbox.iou(r) == 0.0 for r in refs):
             out.append(p)
     return out
 
 
 def test_jersey_colours_and_heads(sim: SimResult, renderer: SyntheticRenderer) -> None:
     checked = 0
-    for idx in (0, 200, 450, 800):
+    for idx in (0, 50, 100, 200, 450, 650, 800):
         f = sim.frames[idx]
         img = renderer.render(f, sim.referees[idx])
-        for p in _isolated(f):
+        for p in _isolated(f, sim, idx):
             b = p.bbox
             cx = (b.x1 + b.x2) / 2.0
             want = palette.HOME_BGR if p.team is Team.HOME else palette.AWAY_BGR
@@ -183,3 +190,72 @@ def test_noisy_frames_render(sim: SimResult, renderer: SyntheticRenderer) -> Non
     odd = FrameState(frame_idx=0, t=0.0, players=[PlayerState("x", None, 1.0, 1.0, bbox=BBox(math.nan, 0, 1, 1))],
                      ball=None, rims=[], scoreboard=f.scoreboard)
     assert renderer.render(odd).shape == (720, 1280, 3)
+
+
+# ---------------------------------------------------------------------------- ball occlusion & blur
+
+
+def _scene(sim: SimResult, player_xy: tuple[float, float], ball_xyz: tuple[float, float, float],
+           idx: int = 0) -> FrameState:
+    """One player and the ball, at chosen court points (the rest of a real frame dropped)."""
+    import dataclasses
+
+    from courtvision.types import BallState
+
+    cam = sim.camera
+    x, y = player_xy
+    box = cam.bbox_of_cylinder(x, y, 6.5, 1.0)
+    p = PlayerState(player_id="home-1", team=Team.HOME, x=x, y=y, bbox=box, jersey="1")
+    uv = cam.project(np.array(ball_xyz, dtype=float))
+    bb = cam.bbox_of_sphere(*ball_xyz, 0.39)
+    ball = BallState(visible=True, image_xy=(float(uv[0]), float(uv[1])), court_xy=ball_xyz[:2], z=ball_xyz[2],
+                     radius_px=bb.w / 2.0)
+    return dataclasses.replace(sim.frames[idx], frame_idx=10_000 + idx, players=[p], ball=ball)
+
+
+def test_a_nearer_body_hides_the_ball(sim: SimResult) -> None:
+    """RESEARCH §2.1: the ball drawn in depth order, so a player between it and the camera covers it;
+    the same ball in front of him is drawn (it used to be drawn on top of everything)."""
+    r = SyntheticRenderer(sim.camera, sim.court)
+    behind = r.render(_scene(sim, (47.0, 20.0), (47.0, 23.0, 3.5)))  # the camera looks along +y
+    front = r.render(_scene(sim, (47.0, 26.0), (47.0, 23.0, 3.5)))
+    u, v = sim.camera.project(np.array([47.0, 23.0, 3.5]))
+    assert _px(behind, u, v) != palette.BALL_BGR
+    assert _px(front, u, v) == palette.BALL_BGR
+    from courtvision.sim.render import RenderConfig
+
+    old = SyntheticRenderer(sim.camera, sim.court, RenderConfig(ball_depth_order=False))
+    assert _px(old.render(_scene(sim, (47.0, 20.0), (47.0, 23.0, 3.5))), u, v) == palette.BALL_BGR
+
+
+def test_a_held_ball_is_partly_covered_by_the_hand(sim: SimResult) -> None:
+    from courtvision.sim.render import RenderConfig
+
+    f = _scene(sim, (47.0, 23.0), (47.0, 21.6, 3.75))  # held 1.4 ft in front of the holder
+    plain = SyntheticRenderer(sim.camera, sim.court).render(f)
+    hand = SyntheticRenderer(sim.camera, sim.court, RenderConfig(ball_hand_cover=0.5)).render(f)
+    n_plain = int(np.all(plain == palette.BALL_BGR, axis=2).sum())
+    n_hand = int(np.all(hand == palette.BALL_BGR, axis=2).sum())
+    assert n_plain > 10 and 0 < n_hand < 0.8 * n_plain
+
+
+def test_a_fast_ball_is_motion_blurred(sim: SimResult) -> None:
+    """cv_pipeline §6.1: at pass / shot speeds the ball smears along its image motion (shutter 1/60 s)."""
+    r = SyntheticRenderer(sim.camera, sim.court)
+    a = _scene(sim, (20.0, 10.0), (40.0, 25.0, 6.0), idx=0)
+    b = _scene(sim, (20.0, 10.0), (41.5, 25.0, 6.0), idx=1)  # 1.5 ft in 1/30 s = 45 ft/s
+    r.render(a)
+    img = r.render(b)
+    mask = np.all(img == palette.BALL_BGR, axis=2)
+    ys, xs = np.nonzero(mask)
+    still = SyntheticRenderer(sim.camera, sim.court).render(b)  # no previous frame: no blur
+    ys0, xs0 = np.nonzero(np.all(still == palette.BALL_BGR, axis=2))
+    assert (xs.max() - xs.min()) > (xs0.max() - xs0.min()) + 4  # longer along the motion (+x in the image)
+    assert abs(xs.mean() - xs0.mean()) < 1.5  # centred on the ball: the centroid stays put
+
+
+def test_waiting_substitutes_are_drawn_off_the_court(sim: SimResult, renderer: SyntheticRenderer) -> None:
+    f = sim.frames[0]
+    img = renderer.render(f, extras=[(Team.AWAY, 51.0, -2.5, "7")])
+    box = sim.camera.bbox_of_cylinder(51.0, -2.5, 6.5, 1.0)
+    assert _px(img, (box.x1 + box.x2) / 2, box.y1 + 0.85 * box.h) == palette.AWAY_BGR

@@ -183,3 +183,31 @@ def test_roster_resolves_teams_and_stat_subset() -> None:
     assert rep.team_totals["away"]["pts"]["truth"] == 2.0
     only_pts = compare_box(stats, truth, {"home": 3, "away": 2}, config=BoxEvalConfig(stats=("pts",)))
     assert only_pts.stats == ["pts"] and only_pts.line_exact_rate == 1.0
+
+
+def test_a_basket_at_the_cut_edge_is_dont_care() -> None:
+    """A basket 1 s before the stream stops (the operator board shows it only after the stop) is neither
+    an error when the prediction lacks it nor when it has it; outside the edge it still counts."""
+    from courtvision.eval.boxscore import edge_contributions
+    from courtvision.types import Event, EventKind
+
+    late = [Event("t1", EventKind.SHOT_ATTEMPT, 298.4, 8952, team=Team.HOME, player_id="home-2", value=2,
+                  shot_id="s9", attrs={"shot_type": "layup"}),
+            Event("t2", EventKind.SHOT_MADE, 299.0, 8970, team=Team.HOME, player_id="home-2", value=2, shot_id="s9")]
+    box, score = edge_contributions(late)
+    assert box == {"home-2": {"fga": 1, "fg3a": 0, "pts": 2, "fgm": 1, "fg3m": 0}} and score == {"home": 2, "away": 0}
+    truth = truth_box()
+    truth["home-2"].update(pts=6, fgm=3, fga=4)
+    full = {Team.HOME: 13, Team.AWAY: 5}
+    lacking = perfect_stats()  # the system's line and score without the last basket (11-5, home-2 4 pts)
+    plain = compare_box(lacking, truth, full)
+    assert not plain.score_match and plain.team_points_abs_error == 2 and plain.per_stat["pts"].mae > 0
+    cut = compare_box(lacking, truth, full, edge=(box, score))
+    assert cut.score_match and cut.team_points_abs_error == 0 and cut.per_stat["pts"].mae == 0.0
+    having = perfect_stats()
+    having.players["home-2"].pts, having.players["home-2"].fgm, having.players["home-2"].fga = 6, 3, 4
+    having.score = {Team.HOME: 13, Team.AWAY: 5}
+    assert compare_box(having, truth, full, edge=(box, score)).score_match
+    wrong = perfect_stats()
+    wrong.score = {Team.HOME: 9, Team.AWAY: 5}  # an error beyond the edge basket still counts
+    assert compare_box(wrong, truth, full, edge=(box, score)).team_points_abs_error == 2

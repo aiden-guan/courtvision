@@ -9,7 +9,8 @@ held. Each frame the tracker:
 2. keeps the detections inside the gate (Mahalanobis on the innovation, or within
    ``gate_min_px`` for bounces and catches, never beyond ``gate_max_px``) and updates on the best;
 3. otherwise coasts: for up to ``max_gap_frames`` frames the predicted point is reported with
-   ``interpolated=True`` and a decaying confidence, then the ball is reported not visible;
+   ``interpolated=True`` and a decaying confidence, then the ball is reported not visible (a ball last
+   seen inside a person's box decays to rest: it is held behind the body, not flying on);
 4. re-acquires on the highest-score detection after ``reacquire_after`` frames without a gated
    match (a ball that jumped, or a stale track), or at once when the frame has a single confident
    ball detection (a release or a fast pass that outran the gate).
@@ -31,7 +32,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from courtvision.geometry.homography import Homography
-from courtvision.types import BallState, Detection, ObjClass
+from courtvision.types import BallState, BBox, Detection, ObjClass
 
 __all__ = ["BallTracker", "BallTrackerConfig", "fill_gaps"]
 
@@ -56,6 +57,14 @@ class BallTrackerConfig:
     #   fast passes); weaker or competing out-of-gate detections wait reacquire_after frames; tuned
     min_score: float = 0.2  # ignore weaker ball detections; tuned
     confidence_decay: float = 0.85  # per coasted frame; tuned
+    # A ball last seen inside a person's box (held, dribbled, caught) that disappears is hidden by that
+    # body and mostly stops with it: per coasted frame its velocity / acceleration state is scaled by
+    # this. A ball lost in free space (a flight) is extrapolated on its arc. With pure extrapolation
+    # 35 % of coasted frames were > 10 px off (median 6.7 px; sim train seeds 1-3, almost all held), with
+    # 0.6 25 % (4.9 px); events ignore coasted points, this is for the gate and the ball track; tuned on
+    # sim train seeds.
+    coast_velocity_decay: float = 0.6
+    person_margin_px: float = 2.0  # "inside a person's box" tolerance; design
     radius_momentum: float = 0.7  # EMA of the detected radius; tuned
     fallback_dt_s: float = 1.0 / 30.0  # used when t does not advance; design
 
@@ -72,12 +81,14 @@ class BallTracker:
         self._misses_with_dets = 0
         self._radius: float | None = None
         self._conf = 0.0
+        self._with_person = False  # last observation inside a person's box
 
     def reset(self) -> None:
         """Forget the ball (e.g. at a broadcast cut)."""
         self._x, self._P, self._t = None, None, None
         self._frames_since_obs = self._misses_with_dets = 0
         self._radius, self._conf = None, 0.0
+        self._with_person = False
 
     @property
     def predicted_xy(self) -> tuple[float, float] | None:
@@ -87,9 +98,11 @@ class BallTracker:
         return float(self._x[0]), float(self._x[1])
 
     def update(
-        self, ball_dets: list[Detection], frame_idx: int, t: float, homography: Homography | None = None
+        self, ball_dets: list[Detection], frame_idx: int, t: float, homography: Homography | None = None,
+        people: list[BBox] | None = None,
     ) -> BallState:
-        """Advance to ``t`` with this frame's BALL detections and return the ball state."""
+        """Advance to ``t`` with this frame's BALL detections and return the ball state. ``people``
+        (this frame's person boxes) tells a held ball from one in flight when it disappears."""
         cfg = self.config
         # A non-finite box would turn the filter state into NaN for good (every later detection
         # passes a NaN gate), so such detections are dropped here.
@@ -111,6 +124,9 @@ class BallTracker:
             self._correct(chosen)
         if chosen is not None:
             self._observed(chosen)
+            u, v = chosen.bbox.center
+            m = cfg.person_margin_px
+            self._with_person = any(b.x1 - m <= u <= b.x2 + m and b.y1 - m <= v <= b.y2 + m for b in people or ())
             return self._state(homography, interpolated=False)
 
         self._misses_with_dets = self._misses_with_dets + 1 if dets else 0
@@ -121,6 +137,8 @@ class BallTracker:
                 self._x, self._P = None, None
             return BallState(visible=False)
         self._conf *= cfg.confidence_decay
+        if self._with_person and cfg.coast_velocity_decay < 1.0:
+            self._x[2:] *= cfg.coast_velocity_decay
         return self._state(homography, interpolated=True)
 
     # ------------------------------------------------------------------ filter

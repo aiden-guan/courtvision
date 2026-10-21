@@ -52,7 +52,7 @@ from courtvision.perception.pipeline import PerceptionConfig
 from courtvision.perception.rfdetr_adapter import RFDETRConfig
 from courtvision.server.app import ServerConfig
 from courtvision.server.hub import HubConfig
-from courtvision.sim.noise import NoiseConfig
+from courtvision.sim.noise import NoiseConfig, ScoreboardConfig
 from courtvision.sim.render import RenderConfig
 from courtvision.sim.simulator import SimConfig
 from courtvision.stats.decision import DecisionConfig
@@ -89,7 +89,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "default.yaml
 
 SOURCE_KINDS = ("sim", "video", "camera")
 SIM_MODES = ("truth3d", "mono", "video")
-SIM_SCOREBOARDS = ("truth", "ocr_5hz", "none")
+SIM_SCOREBOARDS = ("auto", "truth", "operator", "ocr_5hz", "none")
 DETECTORS = ("auto", "color_blob", "rfdetr")
 JERSEY_READERS = ("auto", "template", "none")
 
@@ -126,7 +126,10 @@ class SourceConfig:
     start_s: float = 0.0  # skip source time before this (sim window / video seek)
     duration_s: float | None = None  # stop after this many source seconds (None = whole source)
     noise_seed: int = 1  # NoiseModel seed for sim_mode="mono"
-    scoreboard: str = "truth"  # sim scoreboard readings: "truth" (every frame) | "ocr_5hz" | "none"
+    # sim scoreboard: "auto" = "truth" for truth3d, "operator" for mono / video | "truth" (exact, every
+    # frame, source "sim") | "operator" (operator-run board read by 5 Hz OCR: board.* settings) |
+    # "ocr_5hz" (exact values at 5 Hz) | "none"
+    scoreboard: str = "auto"
     drop_late_s: float | None = None  # realtime: drop frames more than this late (None = never drop)
     fps: float | None = None  # override the container fps for video files (None = from the file)
 
@@ -236,6 +239,7 @@ class AppConfig:
     sim: SimConfig = field(default_factory=SimConfig)  # simulator (league/ruleset come from game.*)
     noise: NoiseConfig = field(default_factory=NoiseConfig)  # observation noise for source.sim_mode="mono"
     render: RenderConfig = field(default_factory=RenderConfig)  # synthetic renderer for source.sim_mode="video"
+    board: ScoreboardConfig = field(default_factory=ScoreboardConfig)  # sim venue scoreboard: operator lag, 5 Hz OCR
     operator: OperatorConfig = field(default_factory=OperatorConfig)  # simulated operator entries
     perception: PerceptionSettings = field(default_factory=PerceptionSettings)  # detector + PerceptionPipeline
     events: EventEngineConfig = field(default_factory=EventEngineConfig)  # event engine thresholds

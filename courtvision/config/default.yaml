@@ -30,7 +30,7 @@ source:
   start_s: 0.0  # skip source time before this (sim window / video seek)
   duration_s: null  # stop after this many source seconds (None = whole source)
   noise_seed: 1  # NoiseModel seed for sim_mode="mono"
-  scoreboard: truth  # sim scoreboard readings: "truth" (every frame) | "ocr_5hz" | "none"
+  scoreboard: auto  # sim scoreboard: "auto" = "truth" for truth3d, "operator" for mono / video | "truth" (exact, every frame, so...
   drop_late_s: null  # realtime: drop frames more than this late (None = never drop)
   fps: null  # override the container fps for video files (None = from the file)
 
@@ -65,7 +65,41 @@ sim:
   player_radius_ft: 1.0  # bbox cylinder radius; spec
   referee_height_ft: 6.2  # unverified
   referee_speed_fts: 16.0  # tuned
-  separation_ft: 2.2  # players closer than this push apart; tuned
+  separation_ft: 2.2  # players closer than this push apart (soft steering); tuned
+  body_contact_ft: 1.5  # Hard non-penetration (FIBA Art. 33.1 cylinder principle: a player may not enter an opponent's cylinder). Ce...
+  ball_clear_ft: 1.8  # No other player's body centre closer than this to a held / dribbled ball: torso half-depth ~0.5 ft + ball r...
+  strip_clear_ft: 1.2
+  protect_ft: 5.0  # Ball protection (coaching fundamental: the handler keeps his body between the ball and the defender and dri...
+  protect_full_ft: 2.5
+  protect_lat_ft: 1.2
+  protect_fwd_ft: 0.3
+  dribble_lat_ft: 0.5
+  hand_switch_s: 0.5
+  hand_move_fts: 8.0
+  left_hand_share: 0.1
+  force_weak_share: 0.5  # On-ball defenders shade the handler's strong hand by force_weak_ft ("force him to his weak hand", a defensi...
+  force_weak_ft: 1.0
+  on_ball_gap_ft: 3.2  # On-ball defender stays about arm's length from the ball handler's centre (arm length ~0.44 x stature ~2.9 f...
+  help_gap_ft: [3.0, 0.2, 3.0, 8.0]  # Off-ball defenders sit help_gap_ft = clip(a + b * distance to the ball, lo, hi) toward the basket from thei...
+  pullup_step_ft: [1.5, 3.0]  # A pull-up shooter creates separation (step-back / side-step, pullup_step_ft) that the on-ball defender read...
+  pullup_react_s: [0.25, 0.5]
+  closeout_share: 0.7  # Closeout: at a pass release the receiver's defender reads it (closeout_read_s) and, on closeout_share of pa...
+  closeout_read_s: [0.15, 0.3]
+  closeout_gap_ft: [4.5, 7.5]
+  closeout_hold_s: 0.6
+  closeout_arms_s: 1.0
+  strip_reach_ft: 2.3  # stripping defender's centre distance from the dribbler (hand reach); unverified
+  strip_help_share: 0.3  # Share of strips made by a help / trailing defender (a dig from the side or a poke from behind) instead of t...
+  steal_reaction_s: [0.4, 0.7]  # After a live-ball steal the robbed player reacts this long (s) before defending (choice reaction ~0.35-0.5...
+  strip_poke_share: 0.5  # Share of strips that are poke-aways: the ball skips low off the poke (first bounce strip_poke_ft away after...
+  strip_poke_ft: [1.5, 3.0]
+  strip_poke_s: [0.25, 0.35]
+  arm_length_ratio: 0.44  # A reaching hand is in the person's image box (a detector's person box includes the extended arm): while a p...
+  hand_radius_ft: 0.35
+  hand_reach_s: 0.15
+  standing_reach_ratio: 1.33  # Standing reach / stature ~1.33 (anthropometric ratio); used for raised-ball bbox tops; unverified.
+  shoulder_ratio: 0.82  # shoulder height / stature (anthropometric); a ball above it is in raised hands
+  jump_ft: {jumper: [0.8, 1.6], hook: [0.6, 1.2], layup: [1.4, 2.4], dunk: [2.2, 3.0], tip: [1.6, 2.6], rebound: [1.2, 2.6], block: [1.6, 2.8]}  # Vertical jump heights (ft) by action: NBA combine standing verticals ~2.0-2.8 ft, max ~2.8-3.5 ft; jumpers...
   ball_radius_ft: 0.39  # size 7: 29.5 in circumference -> 9.39 in diameter (note §1a); sourced
   ball_restitution: 0.77  # FIBA 1.8 m drop rebounds 1.035-1.085 m -> sqrt(1.06/1.8); derived
   floor_friction: 0.85  # horizontal speed kept per floor bounce; tuned
@@ -74,12 +108,27 @@ sim:
   dead_ball_stop_ft: 6.0  # A dead ball moving away from the court is stopped (bench, table, fans) this far beyond the boundary, so thr...
   held_z_ft: 3.75  # held ball centre height (spec 3.5-4 ft)
   hand_offset_ft: 1.0  # held ball ahead of the holder (spec)
-  carry_speed_fts: 30.0  # A caught / rebounded ball is carried from the catch point to the hand at this relative speed instead of sna...
+  carry_speed_fts: 10.0  # A caught / rebounded ball is carried from the catch point to the hand instead of snapping there (keeps the...
   ft_gather_s: 0.35  # the FT shooter raises the ball to the release height over this time; tuned
   dribble_period_s: [0.45, 0.6]  # hand-floor-hand cycle, ~2 Hz (spec); tuned
   dribble_hand_z_ft: 3.6  # dribble hand height; tuned
   pass_speed_fts: [30.0, 45.0]  # horizontal pass speed (spec)
+  pass_apex_ft: 10.0  # Pass arcs (design notes, unverified): chest / skip passes peak at most ~10 ft; an overthrown lob at most ~1...
+  oob_lob_apex_ft: 14.0
+  pass_rim_zone_ft: 4.5
+  pass_rim_clear_ft: 1.0
+  pass_max_speed_fts: 55.0
   lazy_pass_speed_fts: [20.0, 26.0]  # intercepted passes; tuned
+  intercept_read_s: [0.15, 0.3]  # Interceptions are reads after the release, not a defender parked in the lane before the throw (he used to l...
+  intercept_hand_ft: 3.0
+  intercept_max_z_ft: 8.5
+  board_width_ft: 6.0  # --- make / miss paths (ring contacts, the backboard, air balls) Backboard (rules note §1a, NBA / FIBA, sour...
+  board_height_ft: 3.5
+  board_bottom_below_rim_ft: 0.5
+  board_restitution: [0.45, 0.7]  # Off the glass: normal restitution and the share of the tangential speed kept; design, unverified.
+  board_tangent_keep: [0.75, 0.95]
+  make_paths: {dunk: {swish: 1.0}, layup: {swish: 0.35, rim_in: 0.2, bank: 0.45}, tip: {swish: 0.6, rim_in: 0.4}, hook: {swish: 0.55, rim_in: 0.3, bank: 0.15}, jumper: {swish: 0.6, rim_in: 0.33, bank: 0.07}, jumper3: {swish: 0.62, rim_in: 0.36, bank: 0.02}, free_throw: {swish: 0.6, rim_in: 0.4}}  # How an unblocked try plays out, as shares of the makes / misses of each shot type ("jumper3" = 3-pt jumpers...
+  miss_paths: {dunk: {rim_out: 1.0}, layup: {rim_out: 0.4, rim_multi: 0.15, in_out: 0.1, board_rim: 0.35}, tip: {rim_out: 0.75, rim_multi: 0.25}, hook: {rim_out: 0.56, rim_multi: 0.2, in_out: 0.1, board_rim: 0.12, air: 0.02}, jumper: {rim_out: 0.595, rim_multi: 0.25, in_out: 0.07, board_rim: 0.06, air: 0.025}, jumper3: {rim_out: 0.61, rim_multi: 0.25, in_out: 0.06, board_rim: 0.04, air: 0.04}, free_throw: {rim_out: 0.6, rim_multi: 0.3, in_out: 0.1}}
   jumper_release_z_ft: [7.5, 9.0]  # spec
   layup_release_z_ft: [9.0, 10.5]  # layup/dunk release (spec)
   hook_release_z_ft: [8.5, 9.5]  # unverified
@@ -88,29 +137,59 @@ sim:
   hold_s: [0.6, 2.0]  # holding / probing time between passes; tuned
   urgency_s: 3.0  # shot clock / game clock left that forces a shot; tuned
   relocate_s: [2.5, 4.5]  # off-ball relocation period; tuned
-  turnover_rate: 0.135  # per segment; realises ~12-14% of possessions (spec; note §4c 0.144); tuned
-  turnover_mix: {intercept: 0.27, strip: 0.27, oob: 0.22, travel: 0.14, shot_clock: 0.1}  # steals ~54% (note §4c: 57% live-ball); tuned
+  turnover_rate: 0.127  # Turnovers per half-court segment. Round 2 (interceptions read after the release, poke-aways loose, bad pass...
+  turnover_mix: {intercept: 0.33, strip: 0.29, oob: 0.09, fumble_out: 0.03, step_out: 0.05, travel: 0.07, offensive_foul: 0.1, shot_clock: 0.03}  # Turnover types: live-ball (intercept + strip) 0.57 of turnovers (note §4c .574; sourced). The dead-ball spl...
   after_oreb_scale: 0.5  # turnover / foul rates after an offensive rebound are scaled; tuned
-  foul_rate: 0.1  # pre-shot fouls -> 2 FTs per segment (spec 8-10% of possessions); tuned
+  foul_rate: 0.07  # 2-pt shooting fouls with no make (whistle at the gather of a drive, no FGA) -> 2 FTs, per segment: 17,711 s...
+  three_foul_rate: 0.0086  # 3-pt shooting fouls with no make -> 3 FTs, per 3-pt shot: (0.011 x ~93,300 3-pt actions - 218 and-ones) / ~...
+  and_one_rate: {'2': 0.077, '3': 0.0065}  # And-ones per made FG by value: 5,337 / ~69,300 2PM and 218 / ~33,300 3PM (note §4a/§4c: 2P% .545, 3P% .360,...
+  nonshoot_foul_rate: 0.08  # Non-shooting defensive fouls per segment (reach-ins, holds, illegal screens defended): FTs only in the team...
+  deflect_out_rate: 0.03  # Passes deflected out of bounds by the defence (offence keeps the ball, no turnover, the shot clock keeps it...
   shot_mix: {'0_3': 0.226, '3_10': 0.214, '10_16': 0.091, 16_3p: 0.048, 3p: 0.421}  # share of FGA by distance, NBA 2024-25 (note §4b); sourced
   corner3_share: 0.243  # corner 3s / 3PA, 2024-25 (note §4b); sourced
   putback_share: 0.02  # 0-3 ft FGA expected from putbacks, removed from the scripted mix; tuned
   fg_pct: {'0_3': 0.696, '3_10': 0.461, '10_16': 0.443, 16_3p: 0.4, c3: 0.388, ab3: 0.351, heave: 0.027}  # FG% by bin, 2024-25 (note §4b, corner/arc 3 from §4c); sourced
-  defender_ref_ft: {'0_3': 1.8, '3_10': 2.5, '10_16': 3.3, 16_3p: 4.0, c3: 8.0, ab3: 5.6, heave: 6.0}  # Defender-distance adjustment: FG% += slope * (closest_defender_ft - ref_ft), clipped to +-0.1. Note §4d: pl...
+  defender_ref_ft: {'0_3': 2.35, '3_10': 2.6, '10_16': 4.3, 16_3p: 4.0, c3: 6.2, ab3: 5.25, heave: 3.4}  # Defender-distance adjustment: FG% += slope * (closest_defender_ft - ref_ft), clipped to +-0.1. Note §4d: pl...
   defender_slope: {'0_3': 0.03, '3_10': 0.02, '10_16': 0.015, 16_3p: 0.015, c3: 0.012, ab3: 0.012, heave: 0.0}
-  block_rate: {'0_3': 0.045, '3_10': 0.045, '10_16': 0.02, 16_3p: 0.01, c3: 0.008, ab3: 0.008, heave: 0.0}  # P(block) by bin; spec ~5-6% of 2PA overall; tuned
+  block_rate: {'0_3': 0.095, '3_10': 0.1, '10_16': 0.079, 16_3p: 0.017, c3: 0.011, ab3: 0.008, heave: 0.0}  # Realised P(block | FGA) by bin from the note's pbpstats zone "% blocked" 2024-25 (§4c: at rim .095, short m...
   block_max_defender_ft: 6.0  # no block when the closest defender is farther; tuned
+  block_defender_norm: {'0_3': 1.2, '3_10': 1.0, '10_16': 0.58, 16_3p: 0.71, c3: 0.27, ab3: 0.43, heave: 0.79}  # Closest-defender weighting of the block chance (x1.3 under 3 ft, x0.6 at 3-6 ft, 0 beyond, and 0 when no de...
+  block_jumper_s: [0.07, 0.14]  # When / by whom (_plan_block): any touch before rim contact while the ball still rises (touching it on its d...
+  block_close_s: 0.25  # at-rim tries: the block window used by the reachability pre-check
+  block_help_share: 0.3
+  rim_help_share: 0.5  # Help at the rim (_rotate_help): on rim_help_share of drives (once the driver is within rim_help_trigger_ft...
+  rim_help_trigger_ft: 14.0
+  rim_help_ft: 16.0
+  rim_help_spot_ft: [2.0, 3.5]
+  block_hand_ft: 3.0  # arm length ~0.44 x stature (anthropometric) + a lean; unverified
   dunk_share_0_3: 0.27  # dunks 6.1% FGA / 0-3 ft 22.6% FGA (note §4b); derived
   ft_pct: 0.78  # NBA 2024-25 league FT% (note §4a); sourced
   ft_pct_sd: 0.06  # per-player spread; unverified
   oreb_rate: 0.25  # offensive rebound rate on FG misses (spec ~25%; note ORB% 25.2); sourced
+  oreb_zone: {rim: 0.382, short_mid: 0.312, long_mid: 0.22, c3: 0.264, ab3: 0.242}  # ... by the miss's pbpstats zone (note §4c 2024-25 OREB% after a miss: at rim .382, short mid 4-14 ft .312,...
+  oreb_zone_ref: 0.285
   oreb_rate_ft: 0.131  # on missed final FTs, 2024-25 (note §4c); sourced
   oreb_rate_block: 0.4  # after blocks (note: 58% of blocks recovered by the defense); unverified
   putback_rate: 0.4  # immediate putback after an OREB within 6 ft of the rim; tuned
+  rebound_contest_n: [1, 3]  # Players (besides the rebounder) contesting the landing spot of a missed shot; design choice, unverified (no...
+  block_loose_s: 0.2  # A blocked ball leaves the blocker's hand unexpectedly at 8-15 ft/s: nobody controls it before this reaction...
+  crash_share: {C: 0.9, F: 0.6, G: 0.15}  # Rebound positioning starts at the release of a field-goal try, not at the miss (players react to the shot):...
+  shooter_follow_ft: 12.0  # the shooter crashes his own miss only from within this distance
+  crash_spot_ft: [4.0, 8.0]  # crashers' spots, from the rim
+  sink_ft: [5.0, 9.0]  # defenders (F / C) without a man to box out sink this far from the rim
+  outlet_ft: [13.0, 19.0]  # ... defensive guards hold the long-rebound / outlet area
+  get_back_ft: [30.0, 42.0]  # get-back spot: this far from the shot's basket
   team_rebound_rate: 0.03  # misses deflected out of bounds before control; unverified
   assist_window_s: 5.0  # ARCHITECTURE assist rule (catch -> release)
   assist_max_dribbles: 2  # ARCHITECTURE assist rule
   ft_set_s: 1.5  # shooter stationary at the FT line before each FT (RESEARCH §7A.5 rule 2)
+  ft_return_s: [0.2, 1.6]  # Free-throw cadence is not machine-regular (the FT-to-FT gap used to be 3.6-4.0 s, p5-p95): after a first FT...
+  ft_routine_s: [0.2, 2.2]
+  ft_lane_shuffle_ft: 0.35
+  made_pickup_z_ft: 5.0  # After a made basket the inbounder picks the ball up himself, off the bounce once it is below this height (a...
+  rebound_secure_s: [0.5, 1.0]  # A rebounder secures the ball, lands and pivots before he outlets it ("rebound - chin - pivot - outlet" fund...
+  dunk_max_ft: 3.5  # At-rim tries: a drive that does not get to its gather spot (cut off) is finished from where it stops, and t...
+  layup_max_ft: 6.0
   sub_prob: 0.3  # P(a team substitutes) at an eligible dead ball; tuned
   min_stint_s: 120.0  # game seconds on court before a fatigue substitution; tuned
   min_rest_s: 60.0  # game seconds on the bench before re-entry; tuned
@@ -118,21 +197,70 @@ sim:
 
 # noise: observation noise for source.sim_mode="mono"
 noise:
-  pos_sigma_ft: 0.4  # player court-position jitter
-  bbox_sigma_px: 2.0  # per-edge bbox jitter
-  ball_miss_rate: 0.12  # ball not detected while in flight / loose
-  ball_miss_rate_held: 0.35  # ball not detected while held (occluded by hands/body)
-  ball_fp_rate: 0.01  # a spurious ball detection replaces the observation
+  pos_sigma_ft: 0.4  # Player court-position error, from one source: the foot point (bbox bottom centre) is off by a slow AR(1) pi...
+  pos_rho: 0.995  # AR(1) frame-to-frame correlation of that error. Tracked positions err mostly by slowly varying biases (foot...
+  bbox_sigma_px: 2.0  # per-edge bbox jitter (marginal sd)
+  bbox_rho: 0.7  # AR(1) correlation of the bbox jitter
+  foot_lift: true  # a jumping player's court point follows his lifted foot point (needs feet_z)
+  vel_alpha: 0.6  # Velocities from the noisy positions: alpha-beta gains, speed clamp and reset jump of the video pipeline's c...
+  vel_beta: 0.15
+  vel_max_fts: 30.0
+  vel_reset_ft: 8.0
+  ball_miss_rate: 0.06  # Detector miss rate (burst-process mean) of an unoccluded ball in flight / loose, and of an unoccluded held...
+  ball_miss_rate_held: 0.09
+  ball_burst_frames: 4.0  # mean length of a "bad" detector state (misses come in runs)
+  ball_bad_miss: 0.85  # miss probability in the bad state
+  ball_good_miss: 0.03  # miss probability in the good state
+  ball_occluded_miss: 0.97  # Occlusion is a state, not an i.i.d. per-frame coin: while the ball's image point lies behind a nearer upper...
+  ball_behind_ft: 0.4  # ... i.e. the ball is this much farther from the camera than the body axis
+  ball_hide_frac: 0.55  # ... and behind the upper body (top share of the box); legs leave gaps
+  ball_net_frames: 3  # frames hidden in the net after a downward crossing (cv_pipeline §6.4: ~2)
+  ball_net_miss: 0.8
+  ball_fp_rate: 0.01  # share of frames with a false-positive candidate (persistent episodes)
+  ball_fp_episode_s: [0.2, 1.5]  # how long one false-positive source persists
+  ball_fp_head_share: 0.5  # share of episodes that follow a player's head (else a static blob)
+  ball_fp_present: 0.85  # P(the source is detected on a frame of its episode)
+  ball_fp_conf: [0.35, 0.85]  # overlaps true detections (cv_pipeline §2.1)
+  ball_conf: [0.5, 0.95]  # true detections
   ball_px_sigma: 1.5  # ball image-centre jitter
   ball_radius_sigma_px: 0.3
-  drop_player_rate: 0.02  # player missing from a frame
-  id_swap_rate: 0.0  # P(start an identity swap) per frame
-  id_swap_frames: 15  # swap duration
-  id_swap_max_ft: 5.0  # only nearby same-team players swap
+  drop_player_rate: 0.02  # player missing from a frame (i.i.d.)
+  occluded_drop_rate: 0.15  # extra per-frame drop while >= half the box is behind a nearer body
+  occluded_cover: 0.5  # covered box share that counts as occluded
+  id_swap_rate: 0.0  # legacy: P(start a random nearby same-team identity swap) per frame
+  id_swap_frames: 15  # legacy swap duration
+  id_swap_max_ft: 5.0  # legacy: only nearby same-team players swap
+  occlusion_swap_prob: 0.35  # Occlusion swaps: two same-team players whose image boxes overlap (IoU >= occlusion_iou) for >= occlusion_fr...
+  occlusion_iou: 0.3
+  occlusion_frames: 8
+  occlusion_swap_s: [1.0, 3.0]
+  team_flip_share: 0.008  # Team-label errors: a track's team vote flips for a short episode (team_flip_s) in team_flip_share of frames...
+  team_flip_s: [0.3, 1.5]
+  player_conf: [0.75, 0.98]  # Detection confidence: uniform in player_conf, scaled down by the covered share of the box and for an identi...
+  conf_covered_drop: 0.4
+  conf_doubt: 0.85
+  frag_after_drop_1: 0.015  # Track fragmentation: a real tracker starts new track ids (after a player is lost, and re-initialising on a...
+  frag_per_frame: 0.25
+  frag_hazard: 0.0003
+  frag_provisional: 0.3
+  frag_relink_s: [0.2, 1.2]
+  dup_hazard: 0.003  # Phantom people (calibrated to the video pipeline on train seeds 1-3, 180 s renders; tuned): a second detect...
+  dup_frames: 4.7
+  dup_offset_ft: [1.0, 2.5]
+  dup_labels: [0.35, 0.45, 0.2]  # provisional / other roster id / own id
+  dup_conf: [0.3, 0.8]
+  ref_hazard: 0.00013
+  ref_frames: [3, 30]
+  ref_height_ft: 6.2  # SimConfig.referee_height_ft
+  waiting_detect: 0.95
+  waiting_id: 0.7
+  person_height_ft: 6.5  # cylinder of an off-court person (SimConfig.player_height_ft)
+  person_radius_ft: 1.0
   rim_px_sigma: 0.5
   monocular: true  # ball z -> None, court_xy -> floor projection of the image point
   held_radius_ft: 2.5  # "held" heuristic: ball within this of a player ...
   held_max_z_ft: 6.0  # ... and below this height
+  fps: 30.0  # frame rate of the input (correlations and durations are per frame at this rate)
 
 # render: synthetic renderer for source.sim_mode="video"
 render:
@@ -144,6 +272,23 @@ render:
   apron_ft: 6.0  # floor drawn beyond the boundary lines
   head_frac: 0.07  # head radius / figure height
   draw_scoreboard: true
+  ball_depth_order: true  # The ball is drawn in depth order with the people, so a nearer body hides it (RESEARCH §2.1 / cv_pipeline §6...
+  ball_hide_frac: 0.55  # ... but only the upper body (head, torso, shorts: the top ``ball_hide_frac`` of a figure's box) hides it; l...
+  ball_hand_cover: 0.0  # Share of a held ball's disc covered by the holder's hand (skin), drawn on the holder's side (cv_pipeline §6...
+  motion_blur_exposure: 0.5  # Motion blur: the ball is smeared along its image motion over this fraction of the frame interval (a 1/60 s...
+  spare_balls: []  # Spare balls (a rack by the bench): court points (x, y, z) drawn as orange discs, a detector distractor (RES...
+
+# board: sim venue scoreboard: operator lag, 5 Hz OCR
+board:
+  ocr_hz: 5.0  # D14
+  source: ocr
+  tenths_below_s: 60.0  # rules note §3: tenths in the last minute (NBA, NCAA)
+  score_lag_s: [0.4, 2.0]  # unverified; bounded by the 3.0 s make wait (§7A.5)
+  clock_lag_s: [0.15, 0.6]  # stop / start reaction to whistle / touch; unverified
+  shot_reset_lag_s: [0.2, 0.9]  # unverified
+  clock_fix_s: 1.0  # unverified
+  misread_rate: 0.01  # unverified
+  confidence: 0.9
 
 # operator: simulated operator entries
 operator:
@@ -180,14 +325,28 @@ perception:
     close_kernel_wh: [3, 7]  # bridges white number strokes across the jersey; tuned
     head_search_frac: 0.8  # search for a head up to this x jersey height above the blob; tuned
     leg_search_frac: 0.8  # same below the blob (legs drawn in skin colour, if any); tuned
+    legs_skip_heads: true  # Heads (skin discs) are never legs: the leg search ignores them. On sim train seed 3, 46 % of the boxes the...
+    bridge_ball: true  # A ball in front of a body can cut its visible shirt in two (an upper piece with the head whose box ends at...
     touch_gap_frac: 0.08  # max gap (x jersey height) between blob and head/legs; tuned
     fallback_head_frac: 0.25  # no head found: extend up by this x jersey height; tuned
     full_conf_area_px: 300.0  # blobs at least this large get score 0.95; tuned
     split_merged: true  # split a same-colour blob that carries >= 2 heads (overlapping players)
+    stacked_head_ratio: 1.25  # Heads are drawn as discs; a skin component taller than this x its width is two heads touching vertically (a...
+    head_disc_fill: 0.65  # Heads touching at an angle: a skin component filling less than this share of its box is several discs (one...
+    headless_takes_head: true  # A blob with two or more heads hands one to a touching headless blob (another body side by side); design (si...
     default_width_per_head: 3.2  # Body / head-width ratios used until learned online; measured on sim/render.py output (head radius 0.07 x he...
     default_height_per_head: 6.7
     proportion_samples: 200  # single-figure blobs kept for the online proportion medians; tuned
     split_bottom_tol: 0.12  # observed feet within this x height of the predicted ones are used; tuned
+    figure_model: true  # Fixed-camera figure model, learned online from clean single figures (``FigureModel``): head top -> feet hom...
+    figure_samples: 400  # clean single figures kept for the fit; tuned
+    figure_min_samples: 40  # the model is used only after this many samples; tuned
+    figure_refit_every: 25  # refit after this many new samples; tuned
+    figure_max_resid_px: 2.5  # ... and only while its median feet residual is below this; tuned
+    figure_min_cells: 12  # ... and its feet samples cover this many 64-px image cells (spread); tuned
+    figure_bottom_tol: 0.06  # observed feet within this x height of the model's are used; tuned
+    figure_row_min_samples: 10  # Until the full model has its spread: feet row = a + b * head-top row + c * head-top column (a fixed camera...
+    figure_row_min_span_px: 40.0
     court_tol: 6  # floor / paint pixels (feet visible below a blob); skin is 10 from paint; tuned
     occlusion_scan_px: 8  # look this far below a blob, past white / blended pixels; tuned
     mask_polygons: []  # image polygons to ignore
@@ -227,9 +386,12 @@ perception:
     reset_jump_ft: 8.0  # a measurement this far from the prediction restarts the filter; tuned
     court_margin_ft: 6.0  # players farther outside the court are dropped; spec
     foot_radius_ft: 0.0  # move the bbox-bottom point this far away from the camera (body
+    foot_model: cylinder  # "cylinder" (perspective-correct, footpoint.py) | "push" (naive); design (geometry)
+    body_height_ft: 6.5  # cylinder height; NBA average ~6 ft 6 in; sourced (league average)
     coast_confidence_decay: 0.8  # per frame for tracks reported while lost; tuned
     duplicate_iou: 0.5  # a coasting track overlapping a matched same-team track this much ...
     duplicate_radius_ft: 1.5  # ... or this close on the court is a stale duplicate; tuned
+    duplicate_new_frames: 30  # ... but only when one of the two is new (a restart of the coasting track, or a short fragment). Two establi...
     rim_source: auto  # "auto" (calibration if it has rims, else detector) | "detector" | "calibration"
     scoreboard_roi: null  # ScoreboardROI.to_dict() form
     scoreboard_hz: 5.0  # OCR rate; sourced (RESEARCH.md D14)
@@ -281,7 +443,9 @@ events:
   holder_radius_ft: 1.6  # 0.5 m holder radius (RESEARCH §7A.2); unverified
   holder_keep_radius_ft: 3.0  # keep radius for dribble excursions; tuned
   holder_max_z_ft: 7.5  # a held ball is below this height (spec); unverified
+  holder_reach_z_ft: 12.0  # 3-D: above holder_max_z_ft the holder keeps a raised ball up to this height until it is first in free fligh...
   holder_freefall_min_z_ft: 4.5  # 3-D: above dribble height (catches and dribbles near the floor are partly ballistic) ... ; tuned
+  holder_loose_free_min_z_ft: 3.5  # 3-D, loose ball after a miss / block (nobody dribbles it): free flight above about waist height (~0.53 x st...
   holder_freefall_tol_fts2: 8.0  # ... a ball with |a_z + g| below this is in free flight, nobody gains it; tuned
   holder_acquire_max_speed_fts: 15.0  # a catch slows the ball to the catcher's speed; tuned
   holder_rel_speed_scale_fts: 10.0  # 3-D: score -= relative ball-player speed / this; tuned
@@ -291,7 +455,7 @@ events:
   holder_rel_speed_scale_img_fts: 25.0  # image: same, noisier velocities; tuned
   holder_rel_speed_slack_img_fts: 10.0  # image: extra slack on the hard acquire gate (noise); tuned
   holder_team_prior: 0.15  # score bonus for the passer's team while a pass is in the air; tuned
-  holder_switch_margin_opp: 0.25  # image: extra margin an opponent needs to take the ball from the holder; tuned
+  holder_switch_margin_opp: 0.1  # image: extra margin an opponent needs to take the ball from the holder; tuned
   holder_switch_margin_opp_court: 0.0  # 3-D / court: positions are exact, relative motion decides; tuned
   use_ray_model: true  # monocular: estimate the camera from rims + ball floor projections; tuned
   holder_ray_max_lateral_ft: 2.5  # image: the ball's viewing ray passes this close to the holder; tuned
@@ -300,13 +464,37 @@ events:
   holder_ray_z_ref_ft: 2.5  # typical held / dribbled ball height; unverified
   holder_ray_z_band_ft: 2.0  # no penalty within ref +- band; tuned
   holder_ray_z_weight: 0.1  # score penalty per ft outside the band; tuned
-  steal_confirm_s: 0.3  # a change of team control needs this long (narration §9.3 holds 500 ms); tuned
+  holder_ray_lateral_free_ft: 1.0  # image: no penalty while the viewing ray passes within this of the player ...; tuned on sim train seeds
+  holder_ray_lateral_weight: 0.15  # ... then this score penalty per ft (depth disambiguation of overlapping boxes); tuned on sim train seeds
+  holder_img_reach_ft: 0.4  # image acquire: ball centre at most this far beyond the body's image span (hands); tuned on sim train seeds
+  holder_img_keep_reach_ft: 0.6  # image: the holder keeps it this far beyond the span (crossovers, side dribbles); tuned on sim train seeds
+  holder_img_bottom_frac: 0.12  # image acquire: down to this fraction of bbox height below the feet (floor contact in front of the body); tu...
+  holder_img_centre_pref: 0.3  # image: score drop from the centre line to the span edge (tie-break between overlapping boxes); tuned on sim...
+  holder_vote_slack: 1  # image: a new holder wins confirm_n of the last confirm_n + this observed frames; tuned on sim train seeds
+  holder_acquire_loose_img_fts: 16.0  # image: a loose ball after a miss is acquired only below this ball-player relative speed (vertical included)...
+  holder_vote_loose_k: 5  # image, loose ball after a miss: the rebounder wins this many ...; tuned on sim train seeds
+  rebound_backdate_max_s: 1.0  # image, loose ball: the rebounder's gain is dated back over his valid candidacy (during the loose ball) at m...
+  holder_vote_loose_n: 6  # ... of the last this many observed frames (RESEARCH §2.4 holds a rebound 300 ms); tuned on sim train seeds
+  steal_confirm_img_s: 0.5  # image: a change of team control must last this long (steal hold 500 ms, RESEARCH §2.4 / §4.1); sourced
+  steal_vote_window_s: 0.8  # image: votes for a change of team control are counted over this window ...; tuned on sim train seeds
+  steal_vote_frac: 0.6  # ... the other team must win this share of the observed frames since its first win ...; tuned on sim train s...
+  steal_min_votes: 5  # ... and at least this many of them; tuned on sim train seeds
+  steal_backdate_slack: 2  # ... observed frames in a row without a candidate of that team that do not end its contest; tuned on sim tra...
+  steal_backdate_max_s: 0.7  # image: such a change is dated back to the start of the new team's contest for the ball (its valid candidacy...
+  steal_confirm_s: 0.3  # 3-D / court: a change of team control needs this long (exact positions); tuned
+  steal_sustain_s: 0.9  # 0 disables (immediate steals); tuned on sim train seeds
+  steal_corroborate_s: 1.5  # ... counted from the confirmation of the gain; tuned on sim train seeds
+  holder_clear_margin: 0.3  # image: a frame is unambiguous when no other candidate scores within this of the pick (keep bonus left out);...
+  holder_clear_frames: 6  # image: unambiguous observed frames that corroborate a releaser's control (victim_min_hold_s); tuned on sim...
+  victim_min_hold_s: 1.5  # monocular: a releaser without a dribble held the ball at least this long, or his "loss" to an opponent is a...
   holder_contest_margin: 0.02  # opponents within this score of each other: contested, no holder; tuned
   holder_confirm_s: 0.1  # new holder after ~3 frames at 30 fps; tuned
   holder_release_s: 0.1  # release after ~3 frames without the ball; tuned
+  release_gap_backdate_s: 0.3  # image: a ball reappearing in flight after a gap this long was released when its flight left the holder's bo...
   holder_min_frames: 2  # floor on hysteresis frame counts at low fps; tuned
   holder_gap_keep_s: 10.0  # keep the holder through ball gaps up to this (cv_pipeline §6.2); tuned
   id_swap_radius_ft: 2.5  # a vanished holder replaced in place by a teammate id = id swap; tuned
+  track_identity_memory_s: 3.0  # a track shown with a provisional id within this of its last roster id keeps that id (team-vote flips last ~...
   self_regain_s: 1.5  # releaser regains within this: same control stint (dribble excursion); tuned
   rim_zone_radius_ft: 4.5  # 3-D shot zone radius around the basket (spec); unverified
   rim_zone_below_ft: 1.0  # zone floor = rim height - this (spec); unverified
@@ -329,6 +517,8 @@ events:
   freefall_min_frac: 0.9  # >= this = air-ball free-fall signature [16]; sourced
   shot_resolve_timeout_s: 4.0  # unresolved shot -> missed + needs_review; tuned
   pass_max_flight_s: 4.0  # a "pass" flight longer than this is a loose ball; tuned
+  pass_min_flight_s: 0.2  # monocular: a same-team change faster than this ... (engine._flicker); tuned on sim train seeds
+  pass_min_dist_ft: 6.0  # ... between players this close, the ball moving less than a body width in the image, is no pass (2% of sim...
   gather_lead_s: 0.35  # last grounded foot position ~ this before release (D8 proxy); unverified
   tip_max_control_s: 0.35  # shorter control near the rim = tip; tuned
   layup_max_dist_ft: 6.0  # tuned
@@ -348,17 +538,26 @@ events:
   block_max_after_release_s: 1.2  # tuned
   block_max_from_release_ft: 10.0  # tuned
   block_max_basket_dist_ft: 35.0  # shot-like releases only within this of a basket; tuned
+  retro_block_lookback_s: 1.5  # look back this far before the (often late) release, not before his control began; tuned on sim train seeds
+  retro_block_stand_lead_s: 0.6  # the shooter's standing box (head line) this long before the release; tuned on sim train seeds
+  retro_block_min_base_s: 0.06  # ... over baselines of at least this (+-1.5 px jitter); tuned on sim train seeds
+  retro_block_max_gap_s: 0.35  # velocities only between observations this close (the ball is often hidden at the touch); tuned on sim train...
+  backboard_half_width_ft: 3.0  # 72 in board (NBA rule 1 sec. II); sourced
+  backboard_above_rim_ft: 3.5  # board top ~ 42 in board, rim ~ 6 in above its bottom edge; sourced (approx.)
   airball_radius_ft: 7.0  # 3-D: descending past rim height within this of the basket; tuned
   airball_min_apex_above_ft: 1.0  # tuned
   airball_min_release_dist_ft: 6.0  # tuned
+  team_change_revert_s: 2.5  # tuned on sim train seeds
+  rebound_retime_ft: 4.0  # 3-D: a re-credited rebound moves to the new holder's gain when the wrong body stood farther than this from...
   strip_max_travel_ft: 6.0  # opponent gains within this of the release: steal, not bad pass; tuned
   strip_max_flight_s: 0.6  # tuned
   dribble_floor_z_ft: 1.2  # bounce minimum below this (ball centre 0.39 ft at contact); tuned
   dribble_min_amp_ft: 0.8  # 3-D reversal amplitude of a bounce; tuned
   dribble_radius_ft: 4.0  # bounce within this of the dribbler; tuned
-  dribble_foot_band: 0.25  # image: bounce within this fraction of bbox height of the feet; tuned
+  dribble_foot_band: 0.35  # image: lowest observed point of a bounce within this fraction of bbox height of the feet (the floor-contact...
   dribble_min_amp_h: 0.15  # image: reversal amplitude as a fraction of bbox height; tuned
   dribble_min_interval_s: 0.2  # tuned
+  dribble_max_rise_s: 0.6  # a bounce is back up by the reversal amplitude within this of its low point (floor to hand ~0.2-0.3 s); unve...
   assist_window_s: 5.0  # catch -> release; sourced (project rule)
   assist_max_dribbles: 2  # sourced (project rule)
   assist_on_ft_trips: false  # NBA flag; FIBA counts FT trips [15]; sourced
@@ -369,12 +568,21 @@ events:
   holder_oob_frames: 3  # live holder out of bounds this many frames = stepped out; tuned
   oob_turnover_conf: 0.6  # inferred out-of-bounds turnovers (< 1 per semantics); tuned
   team_rebound_conf: 0.7  # inferred team rebounds; tuned
-  dead_min_s: 1.0  # fallback restarts (dribble / pass in bounds) only after this; tuned
+  dead_min_s: 1.0  # fallback restarts (dribble / pass in bounds) only this long after the dead ball was recognised; tuned
   dead_from_clock_stop: true  # enter a dead ball when the trusted game clock stops; tuned
   clock_stop_min_s: 1.2  # clock unchanged this long (MM:SS display) = stopped; tuned
   detect_shot_clock_violations: true  # shot clock read 0 while live -> team turnover; tuned
   period_start_tol_s: 1.0  # first read within this of a full period = period start; tuned
-  toss_min_speed_fts: 5.0  # an unheld ball moving this fast at a period start = the jump-ball toss; tuned
+  continuation_s: 0.8  # a shooter fouled in the act releases (or released) within this of the whistle: the shot plays out (and-one...
+  continuation_miss_wait_s: 5.0  # such a shot called missed is retracted (no FGA) unless the scoreboard shows it made by then (make_confirm_w...
+  toss_min_speed_fts: 5.0  # 3-D: an unheld ball moving this fast at a period start = the jump-ball toss; tuned
+  toss_min_rise_ft: 2.0  # image: rise (in px at the players' px/ft) over toss_window_s that marks the toss (it peaks ~7 ft above the...
+  toss_window_s: 0.6  # tuned on sim train seeds
+  toss_min_frames: 4  # observed frames in that window, the last three rising; tuned on sim train seeds
+  toss_fallback_move_ft: 8.0  # image: the ball carried this far from the referee's spot = play began (no toss seen); tuned
+  toss_wait_max_s: 12.0  # image: no toss seen this long after the period start -> normal holder logic; unverified
+  jump_ball_radius_ft: 12.0  # image: the ball's floor projection this close to centre court = the referee's jump-ball spot (6 ft circle +...
+  jump_control_s: 0.45  # image: a gain after the toss counts once held this long (the jumpers' tap is a touch, not control); tuned o...
   possession_conf: 0.9  # confidence of POSSESSION events from control; tuned
   pass_conf: 0.9  # tuned
   dribble_conf: 0.8  # tuned
@@ -386,6 +594,12 @@ events:
   reconcile_flip_window_s: 15.0  # misses this old can be flipped to makes; tuned
   reconcile_hold_s: 2.0  # unmatched delta waits this long before a SCORE_CORRECTION; tuned
   reconcile_inflight_max_s: 5.0  # max wait for an in-flight shot of the scoring team; tuned
+  infer_unseen_makes: true  # design
+  unseen_make_window_s: 6.0  # the shooter's release / shooting foul at most this before the delta's first read (make -> board lag 0.4-2 s...
+  unseen_make_max_dist_ft: 10.0  # a releaser this close to his basket (layups, dunks, close shots: the ones the image misses); tuned on sim t...
+  unseen_make_release_lag_s: 1.0  # ... or released at most this after the delta (a ball carried through the rim leaves the shooter's box late)...
+  unseen_make_flight_s: 0.4  # release -> rim when the ball is not seen at the rim; unverified
+  unseen_make_conf: 0.5  # confidence of inferred attempts / makes; design
   assume_calibrated: false  # simulator evaluation only: p_status "assumed_sim"
   cue_model_path: null  # CueModelSet JSON; None = hand-set cold start
   scoreboard: {}  # ScoreboardConfig field overrides

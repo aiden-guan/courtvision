@@ -53,6 +53,10 @@ class DeadBallConfig:
     ft_lane_inside_ft: float = 1.0  # ... and inside it; tuned
     ft_lane_near_baseline_ft: float = 4.0  # lane spots start this far from the baseline; tuned
     ft_lane_max_speed_fts: float = 3.0  # "set" lane players move slower than this; tuned
+    # A formation missing from a few frames (a lane player or the shooter dropped by the detector, ~2% of
+    # boxes per frame) keeps its start time: it is reset only after this long unseen; tuned on sim train seeds
+    ft_gap_keep_s: float = 0.4
+    ft_history_s: float = 1.0  # formation states kept for "formation at the release frame" queries; tuned
     stillness_speed_fts: float = 2.0  # rule 3: median speed < 2 ft/s (§7A.5); sourced (proposal)
     stillness_hold_s: float = 2.0  # rule 3 hold (§7A.5); sourced (proposal)
     stillness_min_players: int = 4  # need this many players for a median; tuned
@@ -146,6 +150,8 @@ class DeadBallDetector:
         self._still_since: float | None = None
         self._moving_since: float | None = None
         self.formation: Formation | None = None  # current formation (with since_t), even before the hold
+        self._form_seen_t: float | None = None  # last frame the formation was actually seen
+        self._form_hist: deque[tuple[float, Formation | None]] = deque()  # (t, formation) per frame
         self._intervals: deque[tuple[float, float, str]] = deque(maxlen=self.config.history)
 
     # ------------------------------------------------------------------ inputs
@@ -253,17 +259,33 @@ class DeadBallDetector:
         if self._clock_reads >= cfg.clock_stopped_reads and t - (self._clock_since or t) >= cfg.clock_stopped_min_s:
             self._set("clock", self._clock_since or t, self._hint_stoppage() or "unknown")
 
+    def formation_at(self, t: float) -> Formation | None:
+        """The formation state of the last processed frame at or before ``t`` (a release is decided a
+        few frames after it happened), else the current one."""
+        for ft, f in reversed(self._form_hist):
+            if ft <= t + 1e-9:
+                return f
+        return self.formation
+
     def _rule_formation(self, players: Sequence[PlayerState], t: float) -> None:
-        f = ft_formation(self.court, players, self.config)
-        if f is None:
-            self.formation = None
-            self._clear("formation", t)
-            return
+        cfg = self.config
+        f = ft_formation(self.court, players, cfg)
         prev = self.formation
-        since = prev.since_t if prev is not None and (prev.side, prev.shooter_id) == (f.side, f.shooter_id) else t
-        self.formation = Formation(f.side, f.shooter_id, f.lane_ids, since)
-        if t - since >= self.config.ft_formation_hold_s:
-            self._set("formation", since, "free_throw")
+        if f is None:
+            # a detector dropout of one lane player or the shooter is not the formation breaking up
+            if prev is None or self._form_seen_t is None or t - self._form_seen_t > cfg.ft_gap_keep_s:
+                self.formation = None
+                self._clear("formation", t)
+        else:
+            self._form_seen_t = t
+            same = prev is not None and (prev.side, prev.shooter_id) == (f.side, f.shooter_id)
+            since = prev.since_t if same else t  # type: ignore[union-attr]
+            self.formation = Formation(f.side, f.shooter_id, f.lane_ids, since)
+            if t - since >= cfg.ft_formation_hold_s:
+                self._set("formation", since, "free_throw")
+        self._form_hist.append((t, self.formation))
+        while self._form_hist and t - self._form_hist[0][0] > cfg.ft_history_s:
+            self._form_hist.popleft()
 
     def _rule_stillness(self, players: Sequence[PlayerState], t: float, ball_idle: bool) -> None:
         cfg = self.config

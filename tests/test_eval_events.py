@@ -434,3 +434,53 @@ def test_orphan_assist_is_not_a_shot_and_explicit_dribble_kind() -> None:
     assert rep.per_kind["assist"].fp == 1
     only = match_events(pred, truth, kinds=["dribble"])
     assert only.per_kind == {} and only.headline_macro_f1 is None and only.dribble is not None
+
+
+# --------------------------------------------------------------------------- stream boundaries / operator lag
+
+
+def test_cut_stream_end_does_not_score_unresolvable_events() -> None:
+    """A stream cut mid-flight: the engine's flush-time SHOT_MISSED for a shot still in the air, and a truth
+    attempt too close to the end to be seen, are left out instead of scoring FP / FN; matched pairs count."""
+    end = 300.0
+    truth = [*shot(100.0, "home-2", True, sid="s1"), ev(K.SHOT_ATTEMPT, 299.93, "away-5", value=2, shot_id="s2")]
+    pred = [*shot(100.1, "home-2", True, sid="p1"),
+            ev(K.SHOT_MISSED, 299.97, "home-4", shot_id="p9", attrs={"reason": "unresolved at end of tracking"}),
+            ev(K.PASS, 299.2, "home-4")]
+    plain = match_events(pred, truth)
+    assert plain.per_kind["shot_missed"].fp == 1 and plain.per_kind["shot_attempt"].fn == 1
+    assert plain.per_kind["pass"].fp == 1
+    cut = match_events(pred, truth, window=(None, end))
+    assert cut.per_kind["shot_missed"].n_pred == 0 and cut.per_kind["shot_missed"].f1 is None
+    att = cut.per_kind["shot_attempt"]
+    assert (att.tp, att.fp, att.fn) == (1, 0, 0)  # the near-end FN falls in the guard band
+    assert cut.per_kind["pass"].n_pred == 0
+    assert cut.boundary_excluded == {"shot_attempt": {"pred": 0, "truth": 1}, "shot_missed": {"pred": 1, "truth": 0},
+                                     "pass": {"pred": 1, "truth": 0}}
+    assert cut.headline_macro_f1 == pytest.approx(1.0)
+    # a pair that matches inside the band always counts; events outside the band are untouched
+    late = match_events([ev(K.PASS, 299.6, "home-1")], [ev(K.PASS, 299.9, "home-1")], window=(None, end))
+    assert late.per_kind["pass"].tp == 1
+    early = match_events([ev(K.PASS, 150.0, "home-1")], [ev(K.PASS, 160.0, "home-1")], window=(None, end))
+    assert (early.per_kind["pass"].fp, early.per_kind["pass"].fn) == (1, 1)
+    # a window that starts mid-game guards its start edge too
+    start = match_events([ev(K.PASS, 30.4, "home-1")], [], window=(30.0, end))
+    assert start.per_kind["pass"].n_pred == 0
+    narrow = match_events([ev(K.PASS, 299.5, "home-1")], [], window=(None, end),
+                          config=EventEvalConfig(boundary_guard_s=0.2))
+    assert narrow.per_kind["pass"].fp == 1  # outside a 0.2 s guard
+
+
+def test_operator_entered_kinds_match_with_the_operator_lag() -> None:
+    """SUBSTITUTION truth is the entry frame; the operator enters it entry_delay_s later (2.0 s): matched
+    within tolerance + lag, attribution still by player."""
+    truth = [ev(K.SUBSTITUTION, 263.17, "home-9", other_player_id="home-3"),
+             ev(K.SUBSTITUTION, 264.53, "home-7", other_player_id="home-4")]
+    pred = [ev(K.SUBSTITUTION, 265.17, "home-9", other_player_id="home-3", source="manual"),
+            ev(K.SUBSTITUTION, 266.53, "home-7", other_player_id="home-4", source="manual")]
+    plain = match_events(pred, truth)
+    assert plain.per_kind["substitution"].tp == 1  # only the cross pairing 265.17 ~ 264.53 fits +-1 s
+    lagged = match_events(pred, truth, config=EventEvalConfig(operator_lag_s={"substitution": 2.0}))
+    sub = lagged.per_kind["substitution"]
+    assert sub.tp == 2 and sub.player_accuracy == 1.0 and sub.tol_s == pytest.approx(3.0)
+    assert lagged.per_kind["substitution"].f1 == 1.0

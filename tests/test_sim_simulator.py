@@ -19,7 +19,7 @@ BALL_R = 0.39
 @pytest.fixture(scope="module")
 def sim() -> SimResult:
     # Short periods so one run covers several periods, halftime and the late-clock rules.
-    return GameSimulator(SimConfig(seconds=420.0, fps=30.0, seed=3, period_s=80.0)).run()
+    return GameSimulator(SimConfig(seconds=600.0, fps=30.0, seed=3, period_s=90.0)).run()
 
 
 def _kind(r: SimResult, kind: K) -> list:
@@ -260,7 +260,9 @@ def test_steals_and_turnovers(sim: SimResult) -> None:
     for st in _kind(sim, K.STEAL):
         tos = [t for t in turnovers if t.frame_idx == st.frame_idx]
         assert tos and tos[0].player_id == st.other_player_id and tos[0].attrs["type"] in ("steal", "bad_pass")
-        assert sim.holders[st.frame_idx] == st.player_id
+        holder = sim.holders[st.frame_idx]  # the stealer, or a teammate recovering the ball he poked loose
+        assert holder == st.player_id or (tos[0].attrs["type"] == "steal" and
+                                          sim.roster.team_of(holder) is sim.roster.team_of(st.player_id)), st
     for t in turnovers:
         assert t.attrs["type"] in ("steal", "bad_pass", "out_of_bounds", "shot_clock", "travel", "offensive_foul",
                                    "other")
@@ -369,13 +371,17 @@ def test_game_clock_and_shot_clock(sim: SimResult) -> None:
 def test_clock_stops_after_late_made_field_goals(sim: SimResult) -> None:
     rules = sim.rules
     checked = 0
+    and_ones = {sim.frames[f.frame_idx].t for f in _kind(sim, K.FOUL) if f.attrs.get("and_one")}
     for m in _kind(sim, K.SHOT_MADE):
         sb = sim.frames[m.frame_idx].scoreboard
         if m.value == 1 or not rules.clock_stops_after_fg_at(sb.period, sb.game_clock):
             continue
-        nxt = [p for p in _kind(sim, K.PASS) if p.frame_idx > m.frame_idx]
-        if not nxt:
+        att = next(a for a in _kind(sim, K.SHOT_ATTEMPT) if a.shot_id == m.shot_id)
+        if att.t in and_ones:  # an and-one: a free throw (perhaps missed and rebounded live) comes first
             continue
+        nxt = [p for p in _kind(sim, K.PASS) if p.frame_idx > m.frame_idx]
+        if not nxt or any(m.frame_idx <= e.frame_idx <= nxt[0].frame_idx for e in _kind(sim, K.PERIOD_START)):
+            continue  # (a buzzer-beater: the period is over, the next pass is the next period's)
         stop = sim.frames[nxt[0].frame_idx].scoreboard.game_clock
         assert math.isclose(stop, sb.game_clock, abs_tol=1e-6)
         checked += 1
@@ -388,7 +394,7 @@ def test_clock_stops_after_late_made_field_goals(sim: SimResult) -> None:
 @pytest.fixture(scope="module")
 def ft_sim() -> SimResult:
     """Foul-heavy game: many free-throw trips."""
-    return GameSimulator(SimConfig(seconds=150.0, fps=30.0, seed=8, foul_rate=0.6, turnover_rate=0.0)).run()
+    return GameSimulator(SimConfig(seconds=240.0, fps=30.0, seed=8, foul_rate=0.6, turnover_rate=0.0)).run()
 
 
 def test_free_throw_formation(ft_sim: SimResult) -> None:
@@ -409,10 +415,14 @@ def test_free_throw_formation(ft_sim: SimResult) -> None:
         on_lane = [p for p in f.players if abs(abs(p.y - by) - lane) < 1.5 and abs(p.x - bx) < 10.0]
         assert len(on_lane) >= 4
     fouls = [f for f in _kind(sim, K.FOUL) if f.t < sim.frames[-1].t - 25.0]
-    assert fouls
-    for foul in fouls:  # fouls happen before a shot: no FGA, then 2 FTs by the fouled player
-        later = [a for a in _kind(sim, K.SHOT_ATTEMPT) if a.t > foul.t][:2]
-        assert [a.value for a in later] == [1, 1] and all(a.player_id == foul.other_player_id for a in later)
+    assert any(f.attrs["n_ft"] == 2 and f.attrs["type"] == "shooting" for f in fouls)
+    for foul in fouls:  # each foul's free throws (attrs n_ft: 0, 1 after an and-one, 2 or 3) by the fouled player
+        n = foul.attrs["n_ft"]
+        later = [a for a in _kind(sim, K.SHOT_ATTEMPT) if a.t > foul.t and a.value == 1][:n]
+        assert len(later) == n and all(a.player_id == foul.other_player_id for a in later), foul
+        if foul.attrs["type"] == "shooting" and not foul.attrs.get("and_one"):  # before the shot: no FGA first
+            between = [a for a in _kind(sim, K.SHOT_ATTEMPT) if foul.t <= a.t < later[0].t]
+            assert all(a.value == 1 for a in between)
 
 
 def test_substitutions_match_frames(sim: SimResult) -> None:

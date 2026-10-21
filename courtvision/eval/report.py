@@ -97,6 +97,18 @@ def _events_section(ev: Mapping[str, Any]) -> list[str]:
         f"{', '.join(head['kinds']) or 'none'}.",
         "",
     ]
+    if head.get("supported_kinds") is not None and "supported_macro_f1" in head:
+        fp = head.get("unsupported_fp") or {}
+        lines += [
+            f"Macro-F1 over the core kinds with truth: {_f(head['supported_macro_f1'])}; micro-F1: "
+            f"{_f(head.get('micro_f1'))}; false positives of core kinds without truth: "
+            f"{', '.join(f'{k} {v}' for k, v in fp.items()) or 'none'}.",
+            "",
+        ]
+    excluded = ev.get("boundary_excluded") or {}
+    if excluded:
+        lines += ["Not scored at a cut stream edge (unmatched within the guard band): "
+                  + ", ".join(f"{k} {v['pred']} pred / {v['truth']} truth" for k, v in excluded.items()) + ".", ""]
     per_kind = ev["per_kind"]
     order = [k for k in CORE_KINDS if k in per_kind] + sorted(k for k in per_kind if k not in CORE_KINDS)
     if order:

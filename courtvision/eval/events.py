@@ -69,6 +69,15 @@ class EventEvalConfig:
     # Per-kind tolerance overrides (s). Dribble: bounces come every ~0.5-0.6 s, so the
     # global 1.0 s window would let spurious bounces match neighbours (unverified; tuned).
     kind_tol_s: dict[str, float] = field(default_factory=lambda: {"dribble": 0.25})
+    # Kinds a human operator enters (ARCHITECTURE: SUBSTITUTION is operator / sim truth): they are
+    # matched within the kind's tolerance plus the modelled entry lag (s), since an entry cannot come
+    # before the operator sees the event. The pipeline sets the lag from ``operator.entry_delay_s``.
+    operator_lag_s: dict[str, float] = field(default_factory=dict)
+    # Stream boundaries: when a run is cut mid-game (``match_events(window=...)``), unmatched predictions
+    # and truths within this many seconds of a cut edge are not scored (their evidence lies outside the
+    # stream: a shot still in the air at the end, an event too close to the end to confirm). None = the
+    # kind's matching tolerance.
+    boundary_guard_s: float | None = None
     # Event.attrs keys whose agreement is reported per kind (types.py well-known keys).
     attr_keys: dict[str, tuple[str, ...]] = field(
         default_factory=lambda: {
@@ -107,6 +116,7 @@ class KindReport:
     mean_abs_dt: float | None
     mean_dt: float | None  # signed pred - truth (positive = engine late)
     attr_accuracy: dict[str, float | None] = field(default_factory=dict)
+    attr_n: dict[str, int] = field(default_factory=dict)  # pairs judged per attr key (truth carries the key)
     fp_ids: list[str] = field(default_factory=list)
     fn_ids: list[str] = field(default_factory=list)
     wrong_player: list[tuple[str, str]] = field(default_factory=list)  # (pred_id, truth_id)
@@ -115,6 +125,7 @@ class KindReport:
         d = {k: getattr(self, k) for k in self.__dataclass_fields__}
         d["wrong_player"] = [list(p) for p in self.wrong_player]
         d["attr_accuracy"] = dict(self.attr_accuracy)
+        d["attr_n"] = dict(self.attr_n)
         d["fp_ids"] = list(self.fp_ids)
         d["fn_ids"] = list(self.fn_ids)
         return d
@@ -167,6 +178,17 @@ class EventReport:
     headline_attributed_f1: float | None
     headline_kinds: list[str]
     input_counts: dict[str, dict[str, int]]
+    # Companions to the (unchanged, strict) headline: the macro over core kinds with truth support,
+    # the micro-F1 over core kinds (2 sum TP / (sum pred + sum truth)), and the false positives of core
+    # kinds with no truth (each such kind enters the headline as F1 0).
+    supported_macro_f1: float | None = None
+    supported_kinds: list[str] = field(default_factory=list)
+    micro_f1: float | None = None
+    unsupported_fp: dict[str, int] = field(default_factory=dict)
+    boundary_excluded: dict[str, dict[str, int]] = field(default_factory=dict)  # kind -> {"pred", "truth"}
+    # The protocol this report was scored with (so ``courtvision eval`` can re-score a run the same way).
+    window: tuple[float | None, float | None] | None = None
+    operator_lag_s: dict[str, float] = field(default_factory=dict)
 
     @property
     def dribble(self) -> KindReport | None:
@@ -180,7 +202,14 @@ class EventReport:
                 "macro_f1": self.headline_macro_f1,
                 "attributed_macro_f1": self.headline_attributed_f1,
                 "kinds": list(self.headline_kinds),
+                "supported_macro_f1": self.supported_macro_f1,
+                "supported_kinds": list(self.supported_kinds),
+                "micro_f1": self.micro_f1,
+                "unsupported_fp": dict(self.unsupported_fp),
             },
+            "boundary_excluded": {k: dict(v) for k, v in self.boundary_excluded.items()},
+            "window": list(self.window) if self.window is not None else None,
+            "operator_lag_s": dict(self.operator_lag_s),
             "per_kind": {k: r.to_dict() for k, r in self.per_kind.items()},
             "separate": {k: r.to_dict() for k, r in self.separate.items()},
             "shots": self.shots.to_dict(),
@@ -378,9 +407,11 @@ def _kind_report(
     teamed = [(p, t) for p, t in pairs if t.team is not None]
     dts = [p.t - t.t for p, t in pairs]
     attr_acc: dict[str, float | None] = {}
+    attr_n: dict[str, int] = {}
     for key in attr_keys:
         judged = [p.attrs.get(key) == t.attrs[key] for p, t in pairs if key in t.attrs]
         attr_acc[key] = _ratio(sum(judged), len(judged))
+        attr_n[key] = len(judged)
     atp = _attributed_tp(pred, truth, tol) if match_player else 0
     return KindReport(
         kind=kind,
@@ -406,6 +437,7 @@ def _kind_report(
         mean_abs_dt=_mean([abs(d) for d in dts]),
         mean_dt=_mean(dts),
         attr_accuracy=attr_acc,
+        attr_n=attr_n,
         fp_ids=[e.event_id for e in pred if e.event_id not in matched_p],
         fn_ids=[e.event_id for e in truth if e.event_id not in matched_t],
         wrong_player=(
@@ -584,6 +616,13 @@ def _group(events: list[Event]) -> dict[str, list[Event]]:
     return out
 
 
+def _outside_guard(e: Event, window: tuple[float | None, float | None] | None, guard: float) -> bool:
+    if window is None:
+        return True
+    lo, hi = window
+    return not ((hi is not None and e.t > hi - guard) or (lo is not None and e.t < lo + guard))
+
+
 def match_events(
     pred: Iterable[EventLike],
     truth: Iterable[EventLike],
@@ -591,6 +630,7 @@ def match_events(
     tol_s: float = 1.0,
     match_player: bool = True,
     config: EventEvalConfig | None = None,
+    window: tuple[float | None, float | None] | None = None,
 ) -> EventReport:
     """Compare predicted events with truth events (``Event`` objects or ``to_dict()`` dicts).
 
@@ -598,6 +638,11 @@ def match_events(
     ``config.ignore_kinds``). With ``match_player=False`` actors are ignored when pairing
     and player metrics are ``None``. The shot-level analysis always runs on the full
     (deduplicated) streams.
+
+    ``window=(start, end)`` gives the edges where the stream was cut mid-game (None = not cut): an
+    event within ``config.boundary_guard_s`` (default: the kind's tolerance) of a cut edge that finds no
+    partner is left out of that kind's counts instead of being scored FP / FN (see
+    ``boundary_excluded``); matched pairs always count.
     """
     cfg = config or EventEvalConfig()
     pred_ev, pred_counts = _dedupe(pred)
@@ -612,16 +657,30 @@ def match_events(
 
     per_kind: dict[str, KindReport] = {}
     separate: dict[str, KindReport] = {}
+    excluded: dict[str, dict[str, int]] = {}
     for kind in selected:
-        tol = cfg.kind_tol_s.get(kind, tol_s)
+        tol = cfg.kind_tol_s.get(kind, tol_s) + cfg.operator_lag_s.get(kind, 0.0)
         p, t = by_p.get(kind, []), by_t.get(kind, [])
         pairs = _match_events(p, t, tol, match_player)
+        if window is not None:
+            guard = cfg.boundary_guard_s if cfg.boundary_guard_s is not None else tol
+            mp, mt = {a.event_id for a, _ in pairs}, {b.event_id for _, b in pairs}
+            p2 = [e for e in p if e.event_id in mp or _outside_guard(e, window, guard)]
+            t2 = [e for e in t if e.event_id in mt or _outside_guard(e, window, guard)]
+            if len(p2) < len(p) or len(t2) < len(t):
+                excluded[kind] = {"pred": len(p) - len(p2), "truth": len(t) - len(t2)}
+            p, t = p2, t2
         rep = _kind_report(kind, p, t, pairs, tol, match_player, cfg.attr_keys.get(kind, ()))
         (separate if kind in cfg.separate_kinds else per_kind)[kind] = rep
 
     head = [k for k in cfg.core_kinds if k in per_kind and per_kind[k].f1 is not None]
     macro = _mean([per_kind[k].f1 or 0.0 for k in head])
     attributed = _mean([per_kind[k].attributed_f1 or 0.0 for k in head]) if match_player else None
+    supported = [k for k in head if per_kind[k].n_truth > 0]
+    supported_macro = _mean([per_kind[k].f1 or 0.0 for k in supported])
+    micro = _f1(sum(per_kind[k].tp for k in head), sum(per_kind[k].n_pred for k in head),
+                sum(per_kind[k].n_truth for k in head))
+    unsupported_fp = {k: per_kind[k].fp for k in head if per_kind[k].n_truth == 0}
 
     shot_tol = cfg.kind_tol_s.get(EventKind.SHOT_ATTEMPT.value, tol_s)
     shots = _shot_report(pred_ev, truth_ev, shot_tol, match_player)
@@ -635,6 +694,13 @@ def match_events(
         headline_attributed_f1=attributed,
         headline_kinds=head,
         input_counts={"pred": pred_counts, "truth": truth_counts},
+        supported_macro_f1=supported_macro,
+        supported_kinds=supported,
+        micro_f1=micro,
+        unsupported_fp=unsupported_fp,
+        boundary_excluded=excluded,
+        window=tuple(window) if window is not None else None,
+        operator_lag_s=dict(cfg.operator_lag_s),
     )
     logger.debug("match_events: macro-F1 %s over %s", macro, head)
     return report
