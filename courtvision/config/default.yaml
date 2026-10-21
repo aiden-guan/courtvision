@@ -438,6 +438,7 @@ events:
   holder_keep_bottom_frac: 0.15  # ... and this far below the feet (bounces); tuned
   holder_head_frac: 0.15  # top fraction of the bbox treated as the head; unverified
   holder_above_head_factor: 0.4  # score multiplier for a ball above the head; tuned
+  holder_img_raised_keep: true  # image: the holder keeps a ball raised overhead while the ray model puts it within holder_reach_z_ft at him...
   holder_min_score: 0.1  # minimum candidate score; tuned
   holder_switch_margin: 0.25  # current holder's score bonus (no flicker); tuned
   holder_radius_ft: 1.6  # 0.5 m holder radius (RESEARCH §7A.2); unverified
@@ -448,6 +449,7 @@ events:
   holder_loose_free_min_z_ft: 3.5  # 3-D, loose ball after a miss / block (nobody dribbles it): free flight above about waist height (~0.53 x st...
   holder_freefall_tol_fts2: 8.0  # ... a ball with |a_z + g| below this is in free flight, nobody gains it; tuned
   holder_acquire_max_speed_fts: 15.0  # a catch slows the ball to the catcher's speed; tuned
+  holder_lift_min_accel_fts2: -16.0  # 3-D, loose ball: a ball whose vertical acceleration is above this (supported, not falling at -g) is in some...
   holder_rel_speed_scale_fts: 10.0  # 3-D: score -= relative ball-player speed / this; tuned
   holder_rel_vertical_weight: 0.5  # weight of vertical motion in that speed during a pass (catch-then-dribble); tuned
   holder_rel_vertical_weight_loose: 1.0  # ... for a loose ball (rebounds, fumbles); tuned
@@ -474,16 +476,21 @@ events:
   holder_acquire_loose_img_fts: 16.0  # image: a loose ball after a miss is acquired only below this ball-player relative speed (vertical included)...
   holder_vote_loose_k: 5  # image, loose ball after a miss: the rebounder wins this many ...; tuned on sim train seeds
   rebound_backdate_max_s: 1.0  # image, loose ball: the rebounder's gain is dated back over his valid candidacy (during the loose ball) at m...
+  holder_hidden_confirm_s: 0.4  # image, loose ball: a clear winner whose ball is then hidden this long (a rebound secured at the chest in tr...
+  holder_hidden_share: 0.6  # ... the ball hidden on at least this share of the frames since his first win ...; tuned on sim train seeds
+  holder_hidden_window_s: 1.0  # ... looking back this far for other winners; tuned on sim train seeds
   holder_vote_loose_n: 6  # ... of the last this many observed frames (RESEARCH §2.4 holds a rebound 300 ms); tuned on sim train seeds
   steal_confirm_img_s: 0.5  # image: a change of team control must last this long (steal hold 500 ms, RESEARCH §2.4 / §4.1); sourced
   steal_vote_window_s: 0.8  # image: votes for a change of team control are counted over this window ...; tuned on sim train seeds
   steal_vote_frac: 0.6  # ... the other team must win this share of the observed frames since its first win ...; tuned on sim train s...
   steal_min_votes: 5  # ... and at least this many of them; tuned on sim train seeds
   steal_backdate_slack: 2  # ... observed frames in a row without a candidate of that team that do not end its contest; tuned on sim tra...
-  steal_backdate_max_s: 0.7  # image: such a change is dated back to the start of the new team's contest for the ball (its valid candidacy...
+  steal_backdate_max_s: 1.0  # image: such a change is dated back to the start of the new team's contest for the ball (its valid candidacy...
   steal_confirm_s: 0.3  # 3-D / court: a change of team control needs this long (exact positions); tuned
   steal_sustain_s: 0.9  # 0 disables (immediate steals); tuned on sim train seeds
   steal_corroborate_s: 1.5  # ... counted from the confirmation of the gain; tuned on sim train seeds
+  steal_reach_ft: 6.0  # stripping hand reach (~2.3 ft, sim) + both players' monocular position error; design choice, unverified
+  steal_max_ball_speed_fts: 50.0  # a hard pass; design choice, unverified
   holder_clear_margin: 0.3  # image: a frame is unambiguous when no other candidate scores within this of the pick (keep bonus left out);...
   holder_clear_frames: 6  # image: unambiguous observed frames that corroborate a releaser's control (victim_min_hold_s); tuned on sim...
   victim_min_hold_s: 1.5  # monocular: a releaser without a dribble held the ball at least this long, or his "loss" to an opponent is a...
@@ -542,13 +549,20 @@ events:
   retro_block_stand_lead_s: 0.6  # the shooter's standing box (head line) this long before the release; tuned on sim train seeds
   retro_block_min_base_s: 0.06  # ... over baselines of at least this (+-1.5 px jitter); tuned on sim train seeds
   retro_block_max_gap_s: 0.35  # velocities only between observations this close (the ball is often hidden at the touch); tuned on sim train...
+  retro_block_turn_rise_frac: 0.5  # a ball turned back from the rim has at least this much less rise after the touch than before (a swat from t...
   backboard_half_width_ft: 3.0  # 72 in board (NBA rule 1 sec. II); sourced
   backboard_above_rim_ft: 3.5  # board top ~ 42 in board, rim ~ 6 in above its bottom edge; sourced (approx.)
+  tip_min_z_ft: 7.0  # contact at least this high (lower catches go through the holder vote); tuned on sim train seeds
+  tip_reach_ft: 2.5  # a player's centre this close (horizontal) to the contact; tuned on sim train seeds
+  tip_min_dv_fts: 10.0  # upward velocity change beyond gravity's across the contact step; tuned on sim train seeds
+  tip_min_up_fts: 3.0  # ... and the ball rises at least this fast after it; tuned on sim train seeds
+  tip_max_basket_ft: 8.0  # contact within this of the basket (horizontal); tuned on sim train seeds
   airball_radius_ft: 7.0  # 3-D: descending past rim height within this of the basket; tuned
   airball_min_apex_above_ft: 1.0  # tuned
   airball_min_release_dist_ft: 6.0  # tuned
   team_change_revert_s: 2.5  # tuned on sim train seeds
   rebound_retime_ft: 4.0  # 3-D: a re-credited rebound moves to the new holder's gain when the wrong body stood farther than this from...
+  rebound_retime_mono_ft: 6.0  # monocular: the same, from the (noisier) floor positions; tuned on sim train seeds
   strip_max_travel_ft: 6.0  # opponent gains within this of the release: steal, not bad pass; tuned
   strip_max_flight_s: 0.6  # tuned
   dribble_floor_z_ft: 1.2  # bounce minimum below this (ball centre 0.39 ft at contact); tuned

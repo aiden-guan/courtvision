@@ -394,7 +394,9 @@ class HolderTracker:
             counts[v[2]] = counts.get(v[2], 0) + 1  # type: ignore[index]
         order = {v[2]: i for i, v in enumerate(hits)}  # ties: the most recent winner
         best = max(counts, key=lambda p: (counts[p], order[p]))
-        return best, self._walk_onset(votes, hits[0], lambda v: team in v[4], cfg.steal_backdate_max_s)
+        # the contest: the new team had a valid candidate and the old team did not clearly win the frame
+        return best, self._walk_onset(votes, hits[0], lambda v: team in v[4] and not (v[7] and v[3] is not team),
+                                      cfg.steal_backdate_max_s)
 
     def _walk_onset(self, votes: list[tuple], first: tuple, valid: Callable[[tuple], bool],
                     cap: float) -> tuple[float, int]:
@@ -862,6 +864,12 @@ class PlayerHistory:
         if chosen is None:
             chosen = next((s for s in h if s.t >= lo), h[-1])
         return chosen.x, chosen.y
+
+    def positions_near(self, pid: str, t: float, half_s: float = 0.2) -> list[tuple[float, float]]:
+        """Every floor position recorded for ``pid`` within ``t +- half_s`` (with label errors one id can have
+        two boxes in a frame)."""
+        h = self._h.get(pid)
+        return [(s.x, s.y) for s in h if abs(s.t - t) <= half_s] if h else []
 
     def last(self, pid: str) -> tuple[float, float] | None:
         h = self._h.get(pid)

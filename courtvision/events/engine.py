@@ -149,7 +149,7 @@ class EventEngineConfig:
     steal_vote_frac: float = 0.6  # ... the other team must win this share of the observed frames since its first win ...; tuned on sim train seeds
     steal_min_votes: int = 5  # ... and at least this many of them; tuned on sim train seeds
     steal_backdate_slack: int = 2  # ... observed frames in a row without a candidate of that team that do not end its contest; tuned on sim train seeds
-    steal_backdate_max_s: float = 0.7  # image: such a change is dated back to the start of the new team's contest for the ball (its valid candidacy), at most this before its first win (possession._contest_onset); tuned on sim train seeds
+    steal_backdate_max_s: float = 1.0  # image: such a change is dated back to the start of the new team's contest for the ball (its valid candidacy), at most this before its first win (possession._contest_onset); tuned on sim train seeds
     steal_confirm_s: float = 0.3  # 3-D / court: a change of team control needs this long (exact positions); tuned
     # Monocular steal corroboration (engine._PendingSteal): STEAL / TURNOVER / POSSESSION of an opponent's gain
     # are emitted (dated at the gain) once the new team has held the ball steal_sustain_s and dribbled, shot or
@@ -1214,20 +1214,29 @@ class EventEngine:
             kind = "steal" if strip else "bad_pass"
             if self._mono and cfg.steal_sustain_s > 0.0:
                 self._pend = _PendingSteal(pid, team, ch, flight, kind, self._prev_control, created_t=self._now,
-                                           implausible=not self._reachable(travel, ch.t - r.t))
+                                           implausible=not self._reachable(r, pid, ch))
                 self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="steal")
                 return
             self._steal(pid, team, ch, flight, kind)
             return
         self._control = _Control(pid, team, ch.t, ch.frame_idx)
 
-    def _reachable(self, travel: float, flight_s: float) -> bool:
-        """Could the ball have gone ``travel`` ft from the releaser to the gainer in ``flight_s`` (negative: the
-        gain is dated before the release, a strip)? Within ``steal_reach_ft`` always; beyond it only in a flight
-        of at most ``steal_max_ball_speed_fts``."""
+    def _reachable(self, r: Release, pid: str, ch: ControlChange) -> bool:
+        """Could the ball have gone from the releaser to the gainer ``pid`` by his gain? A gain dated before the
+        release (a strip): the two players within ``steal_reach_ft`` at its onset. Otherwise from the release
+        point: within that reach, or beyond it in a flight of at most ``steal_max_ball_speed_fts``. Monocular
+        labels are noisy (a duplicate or swapped box can carry an id), so the distance is the nearest over every
+        position recorded for them around the onset: only a change far beyond reach on every sample is
+        rejected, and fewer than three positions is no evidence."""
         cfg = self.config
-        extra = travel - cfg.steal_reach_ft
-        return extra <= 0.0 or flight_s * cfg.steal_max_ball_speed_fts >= extra
+        near = self._hist.positions_near
+        flight_s = ch.t - r.t
+        dst = near(pid, ch.t)
+        src = near(r.player_id, ch.t) if flight_s < 0.0 else ([r.xy] if r.xy is not None else [])
+        if len(dst) < 3 or not src or (flight_s < 0.0 and len(src) < 3):  # a stray box or two: unknown
+            return True
+        extra = min(math.dist(a, b) for a in src for b in dst) - cfg.steal_reach_ft
+        return extra <= 0.0 or max(flight_s, 0.0) * cfg.steal_max_ball_speed_fts >= extra
 
     def _flicker(self, r: Release, pid: str, ch: ControlChange) -> bool:
         """Monocular: a same-team "pass" whose flight was shorter than ``pass_min_flight_s`` between players
