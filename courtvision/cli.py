@@ -72,7 +72,7 @@ __all__ = [
 log = logging.getLogger("courtvision.cli")
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
-SIM_MODES = ("truth3d", "mono", "video")
+SIM_MODES = ("truth3d", "mono", "video", "broadcast")
 SOURCES = ("sim", "video", "camera")
 JEV_MODES = ("live", "stub", "off")
 TTS_KINDS = ("none", "say", "avspeech")
@@ -283,6 +283,58 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", metavar="FILE", help="also write the report as JSON")
     p.add_argument("--out", metavar="FILE", help="also write the markdown report")
     p.set_defaults(func=cmd_eval)
+
+    # ingest / train / promote: the learning loop (courtvision/learning, docs/TRAINING.md §7)
+    p = sub.add_parser("ingest", parents=[cfgp], help="video + play-by-play -> an aligned, labelled game dataset",
+                       description="Run a game video through perception and the event engine, fit the clock "
+                                   "timeline from the scoreboard / scorebug reads, align the play-by-play, gate the "
+                                   "game (median |residual| on made FGs < 0.5 s) and write a game dataset (cached "
+                                   "tracks, labels, clips, cue and shot rows, manifest with rights). --sim-seed "
+                                   "ingests a simulated game with a pseudo play-by-play instead (no footage needed).")
+    p.add_argument("--video", metavar="PATH", help="game video (real footage)")
+    p.add_argument("--pbp", metavar="FILE", help="play-by-play: nba_api PlayByPlayV3 / live JSON, or our CSV / JSON schema")
+    p.add_argument("--sim-seed", type=int, default=None, help="ingest a simulated game instead (pseudo-PBP from its truth)")
+    p.add_argument("--mode", choices=SIM_MODES, default="mono", help="--sim-seed: sim mode (default mono)")
+    p.add_argument("--seconds", type=_positive_float, default=None, help="--sim-seed: game length (default sim.seconds)")
+    p.add_argument("--game-id", default=None, help="dataset name (default: video stem / sim-<mode>-<seed>)")
+    p.add_argument("--out", metavar="DIR", default="datasets", help="datasets root (default datasets/)")
+    p.add_argument("--rights", choices=("own", "licensed", "research_only"), default="research_only",
+                   help="rights of the footage (default research_only: NBA footage is R&D only; simulated games: own)")
+    p.add_argument("--training-allowed", action="store_true", help="the game's owner consented to training on it")
+    p.add_argument("--gold", action="store_true", help="a frozen evaluation game (never trains)")
+    p.add_argument("--broadcast", action="store_true", help="TV footage: court tracking, replay gating, scorebug")
+    p.add_argument("--scorebug-layout", metavar="FILE", help="ScorebugLayout JSON for --broadcast")
+    _perception_args(p)
+    p.add_argument("--league", choices=LEAGUES, default=None, help="court + rules (default: game.league)")
+    p.set_defaults(func=cmd_ingest)
+
+    p = sub.add_parser("train", help="train a candidate model bundle from ingested games",
+                       description="Tune the event engine on the games' cached tracks against their PBP labels, refit "
+                                   "the cue and shot models, and write a model bundle (pipeline.model_bundle). Only "
+                                   "accepted, non-gold games train; the bundle records its games and rights.")
+    p.add_argument("datasets", nargs="+", metavar="DATASET", help="game dataset directories (or roots holding them)")
+    p.add_argument("--out", metavar="DIR", required=True, help="candidate bundle directory")
+    p.add_argument("--base", metavar="BUNDLE", help="start from this bundle (e.g. models/current)")
+    p.add_argument("--rounds", type=int, default=1, help="coordinate-search passes (default 1)")
+    p.add_argument("--params", metavar="P1,P2", help="tune only these engine settings (default: the search space)")
+    p.add_argument("--glyph-bank", metavar="FILE", help="scorebug GlyphBank JSON to ship in the bundle")
+    p.add_argument("--workers", type=int, default=None, help="parallel games (default: CPU count)")
+    p.add_argument("--no-cues", action="store_true", help="do not refit the cue models")
+    p.add_argument("--no-shots", action="store_true", help="do not refit the shot model")
+    p.set_defaults(func=cmd_train)
+
+    p = sub.add_parser("promote", help="promote a candidate bundle if it beats the current one on gold games",
+                       description="Score the candidate and the current bundle on frozen gold games; the candidate "
+                                   "replaces <models>/current only with a macro-F1 gain and no per-kind regression "
+                                   "(the ship channel also needs shippable rights). Every decision is logged in "
+                                   "<models>/promotions.jsonl.")
+    p.add_argument("candidate", metavar="BUNDLE", help="candidate bundle directory (courtvision train)")
+    p.add_argument("--gold", nargs="+", required=True, metavar="DATASET", help="gold game datasets")
+    p.add_argument("--models", metavar="DIR", default="models", help="models root (default models/)")
+    p.add_argument("--channel", choices=("research", "ship"), default="research")
+    p.add_argument("--min-gain", type=float, default=None, help="required macro-F1 gain (default 0.005)")
+    p.add_argument("--dry-run", action="store_true", help="decide and print, change nothing")
+    p.set_defaults(func=cmd_promote)
 
     # config
     p = sub.add_parser("config", parents=[cfgp], help="print the effective YAML configuration")
@@ -600,6 +652,104 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     result = run_offline(cfg, out_dir=out)
     _print_result(result, args, "CourtVision simulate")
     return EXIT_OK
+
+
+# --------------------------------------------------------------------------- learning loop
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    from courtvision.learning.ingest import IngestConfig, ingest_game, sim_pbp
+    from courtvision.pipeline import make_source
+    from courtvision.training.align_pbp import load_pbp
+
+    icfg = IngestConfig(rights_status=args.rights, training_allowed=args.training_allowed, gold=args.gold)
+    if args.sim_seed is not None:
+        if args.video or args.pbp:
+            raise CLIError("--sim-seed ingests a simulated game: drop --video / --pbp")
+        from courtvision.sim.simulator import GameSimulator
+
+        cfg = simulate_config(args.mode, seed=args.sim_seed, seconds=args.seconds, league=args.league,
+                              config=args.config, overrides=args.set or [])
+        result = GameSimulator(_sim_config(cfg)).run()
+        source = make_source(cfg, sim_result=result, realtime=False)
+        pbp = sim_pbp(result.events, result.frames, icfg.sim_pbp_lag_s)
+        game_id = args.game_id or f"sim-{args.mode}-{args.sim_seed}"
+        if args.rights == "research_only" and not args.training_allowed:
+            icfg.rights_status, icfg.training_allowed = "own", True  # simulator output is ours
+        ds = ingest_game(cfg, source, pbp, Path(args.out) / game_id, game_id, icfg)
+    else:
+        if not args.video or not args.pbp:
+            raise CLIError("ingest needs --video and --pbp (or --sim-seed for a simulated game)")
+        video, pbp_path = Path(args.video), Path(args.pbp)
+        for f in (video, pbp_path):
+            if not f.is_file():
+                raise CLIError(f"file not found: {f}")
+        flags = [_ov("source.kind", "video"), _ov("source.path", str(video)), _ov("source.realtime", False),
+                 *_perception_flags(args)]
+        if args.league:
+            flags.append(_ov("game.league", args.league))
+        if args.broadcast:
+            flags.append(_ov("perception.broadcast", "on"))
+        if args.scorebug_layout:
+            flags.append(_ov("perception.scorebug_layout_path", str(args.scorebug_layout)))
+        cfg = load_cli_config(args, flags)
+        _offline_jev_default(cfg, None)
+        _check_roster(cfg)
+        if not cfg.perception.calibration_path or not Path(cfg.perception.calibration_path).is_file():
+            raise CLIError("ingest needs a calibration of the (game) camera: --calibration calibration.json")
+        spec: DetectorSpec | None = args.detector
+        if spec is not None:
+            spec.check_available()
+        _check_rfdetr_weights(cfg, spec, real_video=True)
+        source = make_source(cfg, realtime=False)
+        game_id = args.game_id or video.stem
+        ds = ingest_game(cfg, source, load_pbp(pbp_path), Path(args.out) / game_id, game_id, icfg,
+                         video=str(video), pbp_path=str(pbp_path))
+    m = ds.manifest
+    print(f"ingested {m.game_id} -> {ds.path}: {m.frames} frames, alignment "
+          f"{'accepted' if m.accepted else 'REJECTED'} (median made-FG residual "
+          f"{m.alignment.get('median_made_residual_s')} s over {m.alignment.get('n_made_checked')} makes), "
+          f"rights {m.rights_status}{', gold' if m.gold else ''}")
+    return EXIT_OK
+
+
+def cmd_train(args: argparse.Namespace) -> int:
+    from courtvision.learning.bundle import ModelBundle
+    from courtvision.learning.dataset import load_datasets
+    from courtvision.learning.train import SEARCH_SPACE, TrainConfig, train
+
+    search = dict(SEARCH_SPACE)
+    if args.params:
+        names = [n.strip() for n in args.params.split(",") if n.strip()]
+        unknown = [n for n in names if n not in SEARCH_SPACE]
+        if unknown:
+            raise CLIError(f"unknown --params {unknown}; tunable: {sorted(SEARCH_SPACE)}")
+        search = {n: SEARCH_SPACE[n] for n in names}
+    cfg = TrainConfig(search=search, rounds=args.rounds, workers=args.workers, fit_cues=not args.no_cues,
+                      fit_shots=not args.no_shots)
+    base = ModelBundle.load(args.base) if args.base else None
+    bundle = train(load_datasets(args.datasets), args.out, cfg, base, args.glyph_bank)
+    eng, start = bundle.metrics["engine"], bundle.metrics["engine_start"]
+    print(f"bundle {bundle.id} ({bundle.rights}) -> {bundle.path}: engine macro F1 "
+          f"{start['macro_f1'] or 0:.4f} -> {eng['macro_f1'] or 0:.4f} over {eng['games']} game(s); "
+          f"settings {bundle.engine_overrides}")
+    return EXIT_OK
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    from courtvision.learning.bundle import ModelBundle
+    from courtvision.learning.dataset import load_datasets
+    from courtvision.learning.promote import PromoteConfig, promote
+
+    pc = PromoteConfig(channel=args.channel)
+    if args.min_gain is not None:
+        pc.min_gain = float(args.min_gain)
+    d = promote(ModelBundle.load(args.candidate), args.models, load_datasets(args.gold), pc, dry_run=args.dry_run)
+    c, b = d["candidate_score"]["macro_f1"] or 0.0, d["current_score"]["macro_f1"] or 0.0
+    verdict = "PROMOTED" if d["promoted"] else "not promoted: " + "; ".join(d["reasons"])
+    print(f"candidate {d['candidate']} vs current {d['current'] or 'defaults'} on {len(d['gold'])} gold game(s): "
+          f"macro F1 {c:.4f} vs {b:.4f} -> {verdict}{' (dry run)' if args.dry_run else ''}")
+    return EXIT_OK if d["promoted"] else EXIT_ERROR
 
 
 # --------------------------------------------------------------------------- run (video file)

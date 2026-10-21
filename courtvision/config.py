@@ -46,6 +46,7 @@ from courtvision.narration.facts import FactsConfig
 from courtvision.narration.narrator import NarrationConfig
 from courtvision.narration.templates import TemplateConfig
 from courtvision.narration.tts import TTSConfig
+from courtvision.perception.broadcast import BroadcastPerceptionConfig
 from courtvision.perception.detector import DetectorConfig
 from courtvision.perception.jersey import TemplateJerseyConfig
 from courtvision.perception.pipeline import PerceptionConfig
@@ -88,7 +89,7 @@ log = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "default.yaml"
 
 SOURCE_KINDS = ("sim", "video", "camera")
-SIM_MODES = ("truth3d", "mono", "video")
+SIM_MODES = ("truth3d", "mono", "video", "broadcast")
 SIM_SCOREBOARDS = ("auto", "truth", "operator", "ocr_5hz", "none")
 DETECTORS = ("auto", "color_blob", "rfdetr")
 JERSEY_READERS = ("auto", "template", "none")
@@ -118,7 +119,7 @@ class SourceConfig:
     """Where frames come from."""
 
     kind: str = "sim"  # "sim" | "video" (file) | "camera" (index or URL)
-    sim_mode: str = "truth3d"  # sim: "truth3d" (3-D truth) | "mono" (NoiseModel, monocular) | "video" (render + perception)
+    sim_mode: str = "truth3d"  # sim: "truth3d" (3-D truth) | "mono" (NoiseModel, monocular) | "video" (render + perception) | "broadcast" (TV-style render: panning camera, replays, scorebug)
     path: str | None = None  # video file for kind="video"
     camera: str = "0"  # device index ("0") or stream URL for kind="camera"
     realtime: bool = True  # pace frames at t / speed (run_offline always runs as fast as possible)
@@ -159,6 +160,12 @@ class PerceptionSettings:
     scoreboard_roi_path: str | None = None  # ScoreboardROI JSON (overrides pipeline.scoreboard_roi)
     save_calibration: bool = False  # write POST /api/calibration and /api/scoreboard_roi results back to the paths
     use_source_hints: bool = True  # sim renders: take calibration, ROI, jersey candidates and foot radius from the sim
+    # Broadcast footage (perception/broadcast.py): per-frame court homography of a panning / zooming game camera,
+    # cut / replay gating, scorebug OCR. "auto": on for source.sim_mode=broadcast, off otherwise.
+    broadcast: str = "auto"  # "auto" | "on" | "off"
+    broadcast_config: BroadcastPerceptionConfig = field(default_factory=BroadcastPerceptionConfig)
+    scorebug_layout_path: str | None = None  # ScorebugLayout JSON (broadcast scorebug fields)
+    glyph_bank_path: str | None = None  # GlyphBank JSON (learned scorebug glyphs); None = bootstrap from a font
 
 
 @dataclass
@@ -214,6 +221,7 @@ class PipelineSettings:
     max_kept_frames: int = 36000  # cap on kept frames (20 min at 30 fps)
     tail_s: float = 15.0  # source-time seconds narration may finish after the last frame
     runs_dir: str = "runs"  # run_offline output root when no directory is given
+    model_bundle: str | None = None  # learning/bundle.py directory (courtvision train / promote): engine settings, cue / shot models, scorebug glyphs
     jpeg_quality: int = 80  # GET /api/frame.jpg quality
     captions_sidecar: bool = True  # caption / AD cues -> hub "caption" messages
     webvtt_path: str | None = None  # also write an HLS WebVTT caption file
@@ -269,6 +277,7 @@ class AppConfig:
         _choice("source.scoreboard", self.source.scoreboard, SIM_SCOREBOARDS)
         _choice("perception.detector", self.perception.detector, DETECTORS)
         _choice("perception.jersey_reader", self.perception.jersey_reader, JERSEY_READERS)
+        _choice("perception.broadcast", self.perception.broadcast, ("auto", "on", "off"))
         _choice("narration.mode", self.narration.mode, ("broadcast", "coach", "accessibility"))
         _choice("narration.tts", self.narration.tts, ("avspeech", "say", "none", "null"))
         _choice("jev.mode", self.jev.mode, ("live", "stub", "replay", "off"))

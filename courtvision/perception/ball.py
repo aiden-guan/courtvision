@@ -90,6 +90,22 @@ class BallTracker:
         self._radius, self._conf = None, 0.0
         self._with_person = False
 
+    def warp(self, M: np.ndarray) -> None:
+        """Camera-motion compensation: move the filter's image position and velocity by the image -> image
+        homography ``M`` (velocities over a 1/30 s step through it)."""
+        if self._x is None:
+            return
+        u, v, vu, vv = (float(x) for x in self._x[:4])
+        k = self.config.fallback_dt_s
+        pts = np.array([[u, v], [u + vu * k, v + vv * k]], dtype=float)
+        h = pts @ M[:, :2].T + M[:, 2]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            q = h[:, :2] / h[:, 2:3]
+        if not np.all(np.isfinite(q)):
+            return
+        self._x[0], self._x[1] = q[0]
+        self._x[2], self._x[3] = (q[1] - q[0]) / k
+
     @property
     def predicted_xy(self) -> tuple[float, float] | None:
         """Last filtered image position (for ROI re-detection), or None when not tracking."""

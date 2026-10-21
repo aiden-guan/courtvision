@@ -1460,11 +1460,13 @@ def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
 
 
 def _feed_clock(c: float, resolution: str, tenths_below_s: float) -> float:
-    """Quantise like the feed: whole seconds above the last minute, tenths below ("exact" = untouched)."""
+    """Quantise like the feed: whole seconds above the last minute, tenths below ("exact" = untouched).
+    "feed" truncates the whole seconds; "ceil" shows their ceiling, as the simulator's venue board and scorebug
+    do (a pseudo-PBP on the board's display scale, so an OCR timeline and the PBP share one convention)."""
     if resolution == "exact":
         return float(c)
     if c >= tenths_below_s:
-        return float(math.floor(c + 1e-9))
+        return float(math.ceil(c - 1e-9) if resolution == "ceil" else math.floor(c + 1e-9))
     return math.floor(c * 10 + 1e-9) / 10.0
 
 

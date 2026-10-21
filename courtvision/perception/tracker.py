@@ -138,6 +138,25 @@ class ByteTracker:
         self._tracks, self._tentative, self._frame_idx = [], [], None
         self._first_frame = True
 
+    def warp(self, M: np.ndarray) -> None:
+        """Camera-motion compensation: map every track's state from the previous image into this one by the
+        image -> image homography ``M`` (a camera that rotates / zooms about a fixed centre; BoT-SORT style).
+        Centres, heights and velocities move with the image; aspect ratios are kept."""
+        for tr in self._tracks + self._tentative:
+            cx, cy, a, h = tr.mean[:4]
+            vx, vy = tr.mean[4], tr.mean[5]
+            pts = _warp(M, np.array([[cx, cy], [cx, cy - h / 2.0], [cx, cy + h / 2.0], [cx + vx, cy + vy]]))
+            if not np.all(np.isfinite(pts)):
+                continue
+            nh = float(pts[2, 1] - pts[1, 1])
+            if nh <= 1e-6:
+                continue
+            tr.mean[0], tr.mean[1], tr.mean[3] = pts[0, 0], pts[0, 1], nh
+            tr.mean[4], tr.mean[5] = pts[3, 0] - pts[0, 0], pts[3, 1] - pts[0, 1]
+            b = _warp(M, np.array([[tr.bbox.x1, tr.bbox.y1], [tr.bbox.x2, tr.bbox.y2]]))
+            if np.all(np.isfinite(b)):
+                tr.bbox = BBox(float(b[0, 0]), float(b[0, 1]), float(b[1, 0]), float(b[1, 1]))
+
     def remove(self, track_id: int) -> bool:
         """Delete a confirmed track now (e.g. a stale duplicate of a restarted player)."""
         before = len(self._tracks)
@@ -336,3 +355,10 @@ def _xyah_to_bbox(z: np.ndarray) -> BBox:
     h = max(h, 1e-6)
     w = max(a, 0.0) * h
     return BBox(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+
+
+def _warp(M: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Apply a 3x3 homography to (N, 2) points."""
+    h = pts @ M[:, :2].T + M[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return h[:, :2] / h[:, 2:3]

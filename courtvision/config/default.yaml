@@ -22,7 +22,7 @@ game:
 # source: frame source and pacing
 source:
   kind: sim  # "sim" | "video" (file) | "camera" (index or URL)
-  sim_mode: truth3d  # sim: "truth3d" (3-D truth) | "mono" (NoiseModel, monocular) | "video" (render + perception)
+  sim_mode: truth3d  # sim: "truth3d" (3-D truth) | "mono" (NoiseModel, monocular) | "video" (render + perception) | "broadcast" (...
   path: null  # video file for kind="video"
   camera: '0'  # device index ("0") or stream URL for kind="camera"
   realtime: true  # pace frames at t / speed (run_offline always runs as fast as possible)
@@ -388,6 +388,7 @@ perception:
     foot_radius_ft: 0.0  # move the bbox-bottom point this far away from the camera (body
     foot_model: cylinder  # "cylinder" (perspective-correct, footpoint.py) | "push" (naive); design (geometry)
     body_height_ft: 6.5  # cylinder height; NBA average ~6 ft 6 in; sourced (league average)
+    foot_direct: false  # evaluate the foot correction per box (FootModelConfig.direct; broadcast: a new homography each frame)
     coast_confidence_decay: 0.8  # per frame for tracks reported while lost; tuned
     duplicate_iou: 0.5  # a coasting track overlapping a matched same-team track this much ...
     duplicate_radius_ft: 1.5  # ... or this close on the court is a stale duplicate; tuned
@@ -418,6 +419,14 @@ perception:
   scoreboard_roi_path: null  # ScoreboardROI JSON (overrides pipeline.scoreboard_roi)
   save_calibration: false  # write POST /api/calibration and /api/scoreboard_roi results back to the paths
   use_source_hints: true  # sim renders: take calibration, ROI, jersey candidates and foot radius from the sim
+  broadcast: auto  # "auto" | "on" | "off"
+  broadcast_config:
+    tracker: {}  # CourtTrackerConfig overrides
+    cut_threshold: 0.35  # Bhattacharyya distance of consecutive HSV histograms; tuned on sim renders
+    live_requires_scorebug: true  # a replay hides the scorebug
+    scoreboard_hz: 5.0  # D14
+  scorebug_layout_path: null  # ScorebugLayout JSON (broadcast scorebug fields)
+  glyph_bank_path: null  # GlyphBank JSON (learned scorebug glyphs); None = bootstrap from a font
 
 # events: event engine thresholds
 events:
@@ -941,6 +950,7 @@ pipeline:
   max_kept_frames: 36000  # cap on kept frames (20 min at 30 fps)
   tail_s: 15.0  # source-time seconds narration may finish after the last frame
   runs_dir: runs  # run_offline output root when no directory is given
+  model_bundle: null  # learning/bundle.py directory (courtvision train / promote): engine settings, cue / shot models, scorebug gl...
   jpeg_quality: 80  # GET /api/frame.jpg quality
   captions_sidecar: true  # caption / AD cues -> hub "caption" messages
   webvtt_path: null  # also write an HLS WebVTT caption file

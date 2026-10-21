@@ -41,6 +41,9 @@ class FootModelConfig:
     margin_ft: float = 10.0  # the correction table covers the court plus this margin; design
     step_ft: float = 2.0  # table spacing (the field is smooth: bilinear error < 0.01 ft); design
     max_reproj_px: float = 1.0  # the recovered camera must reproduce the homography this well; design
+    # evaluate the correction at each box instead of tabulating it over the court (a moving camera has a new
+    # homography every frame: a table per frame cost ~150 ms, a dozen boxes ~2 ms); design
+    direct: bool = False
 
 
 def camera_from_homography(homography: Homography, image_size: tuple[int, int],
@@ -161,6 +164,8 @@ class FootModel:
         return self._grid
 
     def _correction(self, pts: np.ndarray) -> np.ndarray:
+        if self.config.direct:
+            return self._correction_direct(pts)
         xs, ys, corr = self._table()
         out = np.zeros_like(pts)
         ok = np.all(np.isfinite(pts), axis=1)
@@ -173,4 +178,19 @@ class FootModel:
         tx, ty = (fx - i)[:, None], (fy - j)[:, None]
         out[ok] = ((1 - tx) * (1 - ty) * corr[i, j] + tx * (1 - ty) * corr[i + 1, j]
                    + (1 - tx) * ty * corr[i, j + 1] + tx * ty * corr[i + 1, j + 1])
+        return out
+
+    def _correction_direct(self, pts: np.ndarray) -> np.ndarray:
+        """The table's field (``base - naive(box of the cylinder at base)``) evaluated at ``pts`` themselves."""
+        cfg = self.config
+        assert self.camera is not None
+        out = np.zeros_like(pts)
+        ok = np.all(np.isfinite(pts), axis=1)
+        if not ok.any():
+            return out
+        p = pts[ok]
+        boxes = np.array([self.camera.bbox_of_cylinder(x, y, cfg.height_ft, cfg.radius_ft).as_tuple() for x, y in p])
+        corr = p - self.naive(boxes)
+        corr[~np.all(np.isfinite(corr), axis=1)] = 0.0
+        out[ok] = corr
         return out

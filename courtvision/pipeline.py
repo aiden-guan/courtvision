@@ -143,7 +143,7 @@ log = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-SIM_MODES = ("truth3d", "mono", "video")
+SIM_MODES = ("truth3d", "mono", "video", "broadcast")
 _TRUSTED_SOURCES = frozenset({"sim", "manual", "feed"})  # identity is known: no tiering
 _QUIET_KINDS = frozenset({EventKind.DRIBBLE, EventKind.PASS})  # do not trigger snapshots / insight updates alone
 
@@ -284,7 +284,7 @@ class SimSource(FrameSource):
         if scoreboard == "auto":  # truth3d keeps the exact board; mono / video see the operator-run board
             scoreboard = "truth" if mode == "truth3d" else "operator"
         self.mode = mode
-        self.synthetic = mode == "video"
+        self.synthetic = mode in ("video", "broadcast")
         self.result = self.truth = result
         self.roster, self.court, self.rules = result.roster, result.court, result.rules
         self.fps = float(result.config.fps)
@@ -298,6 +298,8 @@ class SimSource(FrameSource):
             self.end_t = result.frames[self._i1 - 1].t
         self._render_config = render_config
         self._renderer: SyntheticRenderer | None = None
+        self._noise_seed = noise_seed
+        self._broadcast: Any = None  # (BroadcastPlan, BroadcastRenderer), built on first use
         self._observed: list[FrameState] | None = None
         if mode == "mono":
             ncfg = dataclasses.replace(noise or NoiseConfig(), monocular=True, fps=self.fps)
@@ -316,6 +318,8 @@ class SimSource(FrameSource):
             boards = [f.scoreboard for f in result.frames]
             if mode == "video":
                 self._board_shown = model.displayed(boards, self.fps, seed=noise_seed, tenths=False)
+            elif mode == "broadcast":  # the scorebug shows tenths in the last minute
+                self._board_shown = model.displayed(boards, self.fps, seed=noise_seed, tenths=True)
             else:
                 self._board_reads = model.readings(boards, self.fps, seed=noise_seed)
 
@@ -345,9 +349,26 @@ class SimSource(FrameSource):
             self._renderer = SyntheticRenderer(self.result.camera, self.result.court, self._render_config)
         return self._renderer
 
+    def broadcast(self) -> Any:
+        """(BroadcastPlan, BroadcastRenderer) of the whole game (``sim/broadcast.py``; the scorebug shows the
+        operator-run board)."""
+        if self._broadcast is None:
+            from courtvision.sim.broadcast import BroadcastConfig, BroadcastRenderer, plan_broadcast
+
+            r = self.result
+            plan = plan_broadcast(r.frames, self.fps, r.court.length, BroadcastConfig(seed=self._noise_seed))
+            shown = [self._board(i, f) for i, f in enumerate(r.frames)]
+            names = r.roster.team_names
+            abbr = (names.get(Team.AWAY, "Away")[:3].upper(), names.get(Team.HOME, "Home")[:3].upper())
+            self._broadcast = (plan, BroadcastRenderer(shown, r.court, plan, r.feet_z or None, r.referees or None,
+                                                       self._render_config, abbr=abbr, seed=self._noise_seed))
+        return self._broadcast
+
     def render(self, frame_idx: int) -> np.ndarray | None:
         if not 0 <= frame_idx < len(self.result.frames):
             return None
+        if self.mode == "broadcast":
+            return self.broadcast()[1].render(frame_idx)
         truth = self._board(frame_idx, self.result.frames[frame_idx])
         refs = self.result.referees[frame_idx] if frame_idx < len(self.result.referees) else None
         waiting = self.result.waiting[frame_idx] if frame_idx < len(self.result.waiting) else []
@@ -359,20 +380,40 @@ class SimSource(FrameSource):
     async def _iterate(self) -> AsyncIterator[FrameItem]:
         for k, i in enumerate(range(self._i0, self._i1)):
             truth = self.result.frames[i]
-            if self.mode == "video":
+            if self.mode in ("video", "broadcast"):
                 yield FrameItem(i, truth.t, self.render(i), None)
             else:
                 state = self._observed[k] if self._observed is not None else truth
                 yield FrameItem(i, truth.t, None, self._board(i, state))
 
     def calibration(self) -> Calibration:
+        if self.mode == "broadcast":  # the operator calibrates the game camera on the first game-camera frame
+            plan = self.broadcast()[0]
+            cam = next((f.camera for f in plan.frames[self._i0:] if f.kind == "live"), plan.frames[0].camera)
+            rims = {}
+            for side in ("left", "right"):
+                bx, by = self.court.basket_xy(side)
+                box = cam.bbox_of_circle(bx, by, self.court.rim_height, self.court.rim_radius)
+                if np.all(np.isfinite([box.x1, box.y1, box.x2, box.y2])):
+                    rims[side] = box
+            return Calibration(homography=cam.floor_homography(), image_size=cam.image_size, league=self.court.league,
+                               rims=rims)
         cam = self.result.camera
         rims = {r.side: r.bbox for r in (self.result.frames[0].rims if self.result.frames else [])}
         return Calibration(homography=cam.floor_homography(), image_size=cam.image_size, league=self.court.league,
                            rims=rims)
 
-    def scoreboard_roi(self) -> dict[str, Any]:
+    def scoreboard_roi(self) -> dict[str, Any] | None:
+        if self.mode == "broadcast":
+            return None  # no venue board in view: the scorebug carries the score
         return scoreboard_roi(self.result.camera.image_size)
+
+    def scorebug_layout(self) -> dict[str, Any] | None:
+        if self.mode != "broadcast":
+            return None
+        from courtvision.sim.broadcast import scorebug_layout
+
+        return scorebug_layout(self.result.camera.image_size)
 
     def jersey_candidates(self) -> list[str]:
         return sorted({e.jersey for e in self.result.roster.entries})
@@ -1003,7 +1044,13 @@ class LiveGame:
 
     def __init__(self, config: AppConfig, source: FrameSource, hub: Hub | None = None, *,
                  realtime: bool | None = None, jev: JevDecider | None = None, llm: NarrationLLM | None = None,
-                 tts: TTS | None = None, env: Mapping[str, str] | None = None, detector: Any | None = None) -> None:
+                 tts: TTS | None = None, env: Mapping[str, str] | None = None, detector: Any | None = None,
+                 on_frame: Callable[[FrameState], None] | None = None) -> None:
+        self._on_frame = on_frame  # sees every FrameState the event engine consumes (courtvision ingest caches them)
+        if config.pipeline.model_bundle:  # what `courtvision train` learned and `promote` accepted
+            from courtvision.learning.bundle import apply_bundle
+
+            config = apply_bundle(config, config.pipeline.model_bundle)
         cfg = self.config = config
         self.source = source
         self.hub = hub
@@ -1032,7 +1079,7 @@ class LiveGame:
         self.stats = StatsEngine(self.court, self.roster, cfg.stats, shot_model=self.shot_model,
                                  decision_model=self.decision_model, rules=self.rules)
         self.insights = InsightEngine(self.roster, self.court, cfg.insights, rules=self.rules)
-        self.enricher = EventEnricher(trusted_identity=self.is_sim and source.mode != "video")
+        self.enricher = EventEnricher(trusted_identity=self.is_sim and not source.synthetic)  # renders: perceived ids
 
         # --- decision layer, Claude, voice, captions, narrator
         self.pseudo = pseudonyms_for(self.roster, seed=cfg.narration.seed)
@@ -1246,7 +1293,7 @@ class LiveGame:
             colors = {"home": _hex(palette.HOME_BGR), "away": _hex(palette.AWAY_BGR)} if self.is_sim else None
             await self.hub.publish(meta_msg(self.roster, self.court, self.rules, t=self._t, colors=colors))
             await self.hub.publish(status_msg(self._t, **self.status()))
-        if self.realtime and self.source.mode == "video":
+        if self.realtime and self.source.mode in ("video", "broadcast"):
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="perception")
         self.narrator.start()
         if self.narrator.pool is not None and self.config.llm.prewarm:
@@ -1441,10 +1488,38 @@ class LiveGame:
             cands = self.source.jersey_candidates() or sorted({e.jersey for e in self.roster.entries}) or None
             reader = TemplateJerseyReader(pc.jersey, candidates=cands)
         self.perception = PerceptionPipeline(detector, calib, roster=self.roster, config=pcfg, jersey_reader=reader)
+        if pc.broadcast == "on" or (pc.broadcast == "auto" and self.source.mode == "broadcast"):
+            self.perception = self._broadcast_perception(self.perception, calib, hints)
         self._pending_roi = None
         log.info("perception ready: %s detector, %s jersey reader, calibration %s", kind, reader_kind,
                  "from the sim camera" if calib is not None and hints else "from file / operator")
         return self.perception
+
+    def _broadcast_perception(self, inner: Any, calib: Calibration, hints: bool) -> Any:
+        """Wrap the pipeline for broadcast footage (perception/broadcast.py) with the scorebug reader of the
+        configured layout and glyph bank (sim renders: the simulator's layout, glyphs from its font)."""
+        from courtvision.perception.broadcast import BroadcastPerception
+        from courtvision.perception.scorebug import GlyphBank, ScorebugLayout, ScorebugReader
+
+        pc = self.config.perception
+        layout: Any = None
+        if pc.scorebug_layout_path and Path(pc.scorebug_layout_path).is_file():
+            layout = json.loads(Path(pc.scorebug_layout_path).read_text())
+        elif hints and hasattr(self.source, "scorebug_layout"):
+            layout = self.source.scorebug_layout()
+        reader = None
+        if layout is not None:
+            lay = ScorebugLayout.from_dict(layout)
+            if pc.glyph_bank_path and Path(pc.glyph_bank_path).is_file():
+                bank = GlyphBank.from_dict(json.loads(Path(pc.glyph_bank_path).read_text()))
+            else:  # bootstrap from the font the simulator draws with (real broadcasts: learn it, ingest/train)
+                scale = float(layout.get("scale", 1.0))
+                bank = GlyphBank.from_font(lay.fields["game_clock"][3], scale=0.9 * scale,
+                                           thickness=max(1, int(round(2 * scale))))
+            reader = ScorebugReader(lay, bank)
+        log.info("broadcast perception: court tracking, cut / replay gate, scorebug %s",
+                 "on" if reader is not None else "off (no layout)")
+        return BroadcastPerception(inner, calib, reader, pc.broadcast_config)
 
     def _perceive(self, image: np.ndarray, frame_idx: int, t: float) -> tuple[FrameState, dict[str, float]] | None:
         with self._perc_lock:
@@ -1508,6 +1583,8 @@ class LiveGame:
                 frame = dataclasses.replace(frame, scoreboard=self._pending_board)
                 self._pending_board = None
             self.enricher.observe(frame, jersey)
+            if self._on_frame is not None:
+                self._on_frame(frame)
             e0 = time.perf_counter()
             batch += self._ingest(self.engine.process(frame))
             e1 = time.perf_counter()
@@ -1517,7 +1594,7 @@ class LiveGame:
             e2 = time.perf_counter()
             if frame.scoreboard is not None:
                 self._update_board(frame.scoreboard)
-            if (not self.realtime and self.source.mode == "video" and self.is_sim and cfg.keep_frames
+            if (not self.realtime and self.source.synthetic and self.is_sim and cfg.keep_frames
                     and len(self._kept) < cfg.max_kept_frames):
                 self._kept.append(frame)  # only offline runs build the tracking report from these
             self._frames_done += 1
@@ -2035,10 +2112,10 @@ class RunResult:
 async def arun_offline(cfg: AppConfig, source: FrameSource | None = None, out_dir: str | Path | None = None, *,
                        hub: Hub | None = None, jev: JevDecider | None = None, llm: NarrationLLM | None = None,
                        write: bool = True, env: Mapping[str, str] | None = None,
-                       detector: Any | None = None) -> RunResult:
+                       detector: Any | None = None, on_frame: Callable[[FrameState], None] | None = None) -> RunResult:
     """Async :func:`run_offline`."""
     src = source if source is not None else make_source(cfg, realtime=False)
-    game = LiveGame(cfg, src, hub=hub, realtime=False, jev=jev, llm=llm, env=env, detector=detector)
+    game = LiveGame(cfg, src, hub=hub, realtime=False, jev=jev, llm=llm, env=env, detector=detector, on_frame=on_frame)
     await game.run()
     result = _collect(game)
     if write:
@@ -2048,7 +2125,8 @@ async def arun_offline(cfg: AppConfig, source: FrameSource | None = None, out_di
 
 def run_offline(cfg: AppConfig, source: FrameSource | None = None, out_dir: str | Path | None = None, *,
                 hub: Hub | None = None, jev: JevDecider | None = None, llm: NarrationLLM | None = None,
-                write: bool = True, env: Mapping[str, str] | None = None, detector: Any | None = None) -> RunResult:
+                write: bool = True, env: Mapping[str, str] | None = None, detector: Any | None = None,
+                on_frame: Callable[[FrameState], None] | None = None) -> RunResult:
     """Run a whole source as fast as possible (source-time clocks: deterministic) and evaluate it.
 
     With a simulator source the result carries the truth events and the ``courtvision.eval``
@@ -2057,7 +2135,7 @@ def run_offline(cfg: AppConfig, source: FrameSource | None = None, out_dir: str 
     unless ``write=False``.
     """
     return asyncio.run(arun_offline(cfg, source, out_dir, hub=hub, jev=jev, llm=llm, write=write, env=env,
-                                    detector=detector))
+                                    detector=detector, on_frame=on_frame))
 
 
 def _default_run_dir(cfg: AppConfig) -> Path:

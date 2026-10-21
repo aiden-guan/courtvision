@@ -398,7 +398,113 @@ API notes:
 
 ---
 
-## 7. Known gaps
+## 7. The learning loop: `courtvision ingest` → `train` → `promote`
+
+The tools above are the parts. `courtvision/learning/` wires them into a loop that gets better with every
+game of footage ingested, and only ever ships an improvement that was measured on games it never trained on.
+
+```bash
+# 1. ingest each game: video + PBP -> a game dataset (perception + engine run once, tracks cached)
+courtvision ingest --video game.mp4 --pbp game_pbp.json --calibration game_cam.json \
+    --broadcast --scorebug-layout bug.json --rights research_only --out datasets/train
+courtvision ingest --video holdout.mp4 --pbp holdout_pbp.json --calibration cam.json --gold --out datasets/gold
+# 2. train a candidate bundle from the accepted, non-gold games
+courtvision train datasets/train --base models/current --out models/candidates/c1
+# 3. promote it only if it beats the current bundle on the frozen gold games
+courtvision promote models/candidates/c1 --gold datasets/gold --models models
+# 4. run with what was promoted
+courtvision serve --set pipeline.model_bundle=models/current
+```
+
+**Ingest** (`learning/ingest.py`). Each game runs once through the normal offline pipeline. Every
+`FrameState` the event engine consumed is cached in `tracks.jsonl.gz`, so training re-runs the engine
+without the video or perception. Scoreboard reads (venue board or broadcast scorebug, 5 Hz) fit the clock
+timeline. The PBP is aligned (§3) and the game gated. A rejected game is still written
+(`manifest.accepted = false`) and never trains. The dataset holds:
+
+* label events at their aligned times (snapped or anchored where possible; otherwise clock-mapped and
+  shifted by the game's median clock-vs-anchor residual);
+* clips;
+* cue rows (`calibration_source` "pbp", or "sim" for simulated games);
+* shot rows (engine shot location and nearest defender from the tracks, PBP make / miss);
+* the roster;
+* a manifest with rights, the gold flag, the alignment summary and the sha256 of every file.
+
+**Train** (`learning/train.py`):
+
+* **Engine settings.** A coordinate search over `SEARCH_SPACE` (the monocular / broadcast sensitivities in
+  `events/engine.py`). Each candidate re-runs the engine on every training game's cached tracks. It is scored
+  against the PBP labels by F1 per PBP-labelled kind (shots, makes, misses, rebounds, assists, steals,
+  turnovers, blocks: a PBP has no passes), with counts pooled over games and events matched within 2 s
+  without actors (PBP person ids are not roster ids). A value is kept only if it raises the pooled macro F1 by
+  `min_gain`. Games run in parallel processes.
+* **Cue and shot models.** The cue models are refit from the cue rows (§4.2) and the shot model from the
+  shot rows (§4.1).
+* **Glyph bank.** A scorebug glyph bank, if given, ships in the bundle.
+
+The bundle (`learning/bundle.py`) records its training games, its parent bundle and its rights:
+"shippable" only when every game is `own` / `licensed` with `training_allowed`.
+
+**Promote** (`learning/promote.py`). Gold games are ingested with `--gold`. They never train, and they must
+be unchanged since ingest (sha256). The candidate and the current bundle (or the defaults) both re-run on
+every gold game. The candidate replaces `models/current` only if it:
+
+* beats the current macro F1 by `--min-gain` (default 0.005);
+* drops no kind with at least 5 gold labels by more than 0.05;
+* for `--channel ship`, has shippable rights.
+
+The previous bundle moves to `models/history/<id>`. Every decision, promoted or not, is appended to
+`models/promotions.jsonl`.
+
+**On the simulator.** `courtvision ingest --sim-seed N --mode mono|video|broadcast` ingests a simulated game.
+Its PBP is a pseudo play-by-play built from the simulator's truth events: entered with a 1.5 s scorer lag, with
+clocks on the board's display scale. That exercises the loop end to end without any NBA data
+(`tests/test_learning_loop.py`). Simulated games are `own`, but their cue calibrations stay development-only
+(§4.2).
+
+**What does not improve yet.** The detector, the jersey reader and the court-keypoint stage have no training
+step in the loop. §5 / §6 export the detector data and the RF-DETR recipe, but fine-tuning is a manual GPU
+step outside `train`. A real 48-minute game passes the alignment gate easily: about 80 made field goals
+against the 5 needed. Simulated games of a few minutes often do not, because with fewer than 5 anchored makes
+the scorer's lag is not estimated.
+
+### 7.1 Broadcast footage (`perception/broadcast.py`)
+
+TV footage breaks two assumptions of the venue pipeline: the camera moves, and not every frame shows the game.
+`--broadcast` (`perception.broadcast`) wraps the perception pipeline with:
+
+* **Court tracking.** `court_tracker.py` handles the game camera's pan / tilt / zoom about its fixed centre.
+  The centre comes from the one operator calibration. Each frame, court-line samples are searched along their
+  normals in a white top-hat line response, then pan, tilt and focal length are fitted by robust least squares
+  with a constant-velocity prediction and per-frame motion gates. Lost frames (cuts) re-acquire by a
+  pan / zoom grid search about the known centre. On simulator broadcast renders (seed 3, 50 s) the court mapping
+  error was 0.10 ft at the 95th percentile, and replay and close-up frames stayed "lost" rather than being
+  mistaken for the game camera.
+* **Cut / replay gating.** Histogram shot boundaries reset image-space tracks. A frame is live only while the
+  court tracker holds the game camera and the scorebug is shown (replays hide it). Non-live frames give the
+  engine no players and no ball.
+* **Camera-motion compensation.** Track and ball filters move by the camera's frame-to-frame rotation
+  homography.
+* **Engine camera.** The known camera centre replaces the engine's fixed-camera ray estimate
+  (`FrameState.camera_xyz`).
+* **Scorebug OCR.** `scorebug.py` takes a per-broadcast `ScorebugLayout` of fields in image pixels. Glyphs are
+  segmented (":" kept, touching digits cut) and read by normalised correlation against a `GlyphBank`. The bank
+  is learned from crops with known text, or bootstrapped from a font, which is exact on simulator renders.
+
+`source.sim_mode=broadcast` renders a simulated broadcast to test all of this (`sim/broadcast.py`). The game
+camera pans and zooms with the play, replays and cutaways fall inside dead-ball windows, and the scorebug
+shows the operator-run board.
+
+A real broadcast still needs four things that are not in this repository:
+
+* one calibration of the game camera;
+* the scorebug layout;
+* the scorebug's glyphs, learned from a few labelled frames;
+* a person detector that works on broadcast footage (RF-DETR, §6).
+
+---
+
+## 8. Known gaps
 
 * **The entry lag** of 1.5 s, and whether PBP clocks are truncated or rounded, are unverified per league.
   Estimate the lag per game, and measure it on the gold set.

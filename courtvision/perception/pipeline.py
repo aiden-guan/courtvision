@@ -92,6 +92,7 @@ class PerceptionConfig:
     # is biased by ~0.5 ft; median court error on perceived boxes 0.54 -> 0.12 ft; design (geometry).
     foot_model: str = "cylinder"  # "cylinder" (perspective-correct, footpoint.py) | "push" (naive); design (geometry)
     body_height_ft: float = 6.5  # cylinder height; NBA average ~6 ft 6 in; sourced (league average)
+    foot_direct: bool = False  # evaluate the foot correction per box (FootModelConfig.direct; broadcast: a new homography each frame)
     coast_confidence_decay: float = 0.8  # per frame for tracks reported while lost; tuned
     duplicate_iou: float = 0.5  # a coasting track overlapping a matched same-team track this much ...
     duplicate_radius_ft: float = 1.5  # ... or this close on the court is a stale duplicate; tuned
@@ -175,6 +176,25 @@ class PerceptionPipeline:
         if self.config.mask_scoreboard and callable(add_mask):
             add_mask(roi.corners)
             self._scoreboard_mask = [list(p) for p in roi.corners]
+
+    def reset_tracks(self) -> None:
+        """Forget image-space tracking state after a cut (a broadcast replay, a close-up): player tracks end
+        (new ones get new ids; identities re-link by jersey and team), the ball track and the court-space
+        smoothing restart. Team colours and jersey memory are kept."""
+        reset = getattr(self.tracker, "reset", None)
+        if callable(reset):
+            reset()
+        self.ball_tracker.reset()
+        self._filters.clear()
+        self._last_seen.clear()
+
+    def warp_image_state(self, M: np.ndarray) -> None:
+        """Camera-motion compensation before a frame: image-space track and ball states move by the image ->
+        image homography ``M`` from the previous frame to this one (broadcast pan / zoom)."""
+        warp = getattr(self.tracker, "warp", None)
+        if callable(warp):
+            warp(M)
+        self.ball_tracker.warp(M)
 
     def process(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> FrameState:
         """Run perception on one BGR frame."""
@@ -327,7 +347,7 @@ class PerceptionPipeline:
         body = (float(self.config.foot_radius_ft), float(self.config.body_height_ft))
         if self._foot is None or self._foot[0] is not H or self._foot[1] != body:
             fm = FootModel(H, self.calibration.image_size, (self.court.length, self.court.width),
-                           FootModelConfig(radius_ft=body[0], height_ft=body[1]))
+                           FootModelConfig(radius_ft=body[0], height_ft=body[1], direct=self.config.foot_direct))
             self._foot = (H, body, fm)
         return self._foot[2]
 

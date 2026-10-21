@@ -61,7 +61,7 @@ from courtvision.types import (
 
 from .calibration import CueModelSet
 from .deadball import DeadBallConfig, DeadBallDetector, ft_formation
-from .possession import G_FTS2, BallGate, BallObs, ControlChange, HolderTracker, PlayerHistory, RayModel, ball_obs, keep_box
+from .possession import G_FTS2, BallGate, BallObs, ControlChange, HolderTracker, PlayerHistory, Ray, RayModel, ball_obs, keep_box
 from .reconcile import Action, Reconciler, ShotEntry
 from .scoreboard import ClockZeroWatch, PeriodChange, ScoreboardConfig, ScoreboardConfirmer, ScoreChange
 from .shots import Flight, FlightSample, FlightSignal, Release, shot_type_for, three_margin_ft
@@ -530,7 +530,10 @@ class EventEngine:
             self._on_scoreboard(frame)
         obs = self._gate.accept(ball_obs(frame, self.config), self._ppf)
         self._buffer.append((frame.t, frame.frame_idx, obs))
-        if obs is not None and self.config.use_ray_model:
+        if frame.camera_xyz is not None:  # the camera is known (broadcast tracking): its ground point and height
+            cx, cy, cz = frame.camera_xyz
+            self.ray_model.ray = Ray(float(cx), float(cy), float(cz)) if self.config.use_ray_model else None
+        elif obs is not None and self.config.use_ray_model:
             self.ray_model.observe(obs, self._rims)  # type: ignore[arg-type]
         self._note_live_ball(obs)
         if self._flight is not None:

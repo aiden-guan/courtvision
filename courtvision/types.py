@@ -250,6 +250,9 @@ class FrameState:
     rims: list[RimObservation] = field(default_factory=list)  # empty when there is no camera
     scoreboard: ScoreboardReading | None = None
     image_size: tuple[int, int] | None = None
+    # Camera centre (court ft, z up) when perception knows it exactly (a broadcast game camera tracked about its
+    # fixed centre); the event engine then uses it for monocular depth instead of estimating a fixed camera.
+    camera_xyz: tuple[float, float, float] | None = None
 
     def player(self, player_id: str) -> PlayerState | None:
         for p in self.players:
