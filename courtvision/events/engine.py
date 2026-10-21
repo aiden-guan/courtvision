@@ -110,6 +110,7 @@ class EventEngineConfig:
     holder_loose_free_min_z_ft: float = 3.5  # 3-D, loose ball after a miss / block (nobody dribbles it): free flight above about waist height (~0.53 x stature) is nobody's yet; tuned on sim train seeds
     holder_freefall_tol_fts2: float = 8.0  # ... a ball with |a_z + g| below this is in free flight, nobody gains it; tuned
     holder_acquire_max_speed_fts: float = 15.0  # a catch slows the ball to the catcher's speed; tuned
+    holder_lift_min_accel_fts2: float = -16.0  # 3-D, loose ball: a ball whose vertical acceleration is above this (supported, not falling at -g) is in someone's hands, so its vertical speed (a rebounder ripping a low catch up overhead, ~15 ft/s) does not count against the catch; half of g; tuned on sim train seeds
     holder_rel_speed_scale_fts: float = 10.0  # 3-D: score -= relative ball-player speed / this; tuned
     holder_rel_vertical_weight: float = 0.5  # weight of vertical motion in that speed during a pass (catch-then-dribble); tuned
     holder_rel_vertical_weight_loose: float = 1.0  # ... for a loose ball (rebounds, fumbles); tuned
@@ -213,10 +214,19 @@ class EventEngineConfig:
     retro_block_stand_lead_s: float = 0.6  # the shooter's standing box (head line) this long before the release; tuned on sim train seeds
     retro_block_min_base_s: float = 0.06  # ... over baselines of at least this (+-1.5 px jitter); tuned on sim train seeds
     retro_block_max_gap_s: float = 0.35  # velocities only between observations this close (the ball is often hidden at the touch); tuned on sim train seeds
+    retro_block_turn_rise_frac: float = 0.5  # a ball turned back from the rim has at least this much less rise after the touch than before (a swat from the side or behind keeps some of its upward speed: the ball was turned, not stopped); tuned on sim train seeds
     # Blocks of shots already inside the rim zone (layups, dunks: they enter it at the release; shots.Flight.
     # _check_rim_block). 3-D: a reversal clear of the ring (rim_contact_dist_ft) and the board is a defender's.
     backboard_half_width_ft: float = 3.0  # 72 in board (NBA rule 1 sec. II); sourced
     backboard_above_rim_ft: float = 3.5  # board top ~ 42 in board, rim ~ 6 in above its bottom edge; sourced (approx.)
+    # 3-D tip (engine._detect_tip): a loose ball after a miss redirected back up by a hand above holder height,
+    # next to a player and clear of the ring / board, is that player's touch (OREB + a release at the touch:
+    # a tip-in is a rebound and a shot attempt, NBA stat rules), as he never holds it long enough to confirm.
+    tip_min_z_ft: float = 7.0  # contact at least this high (lower catches go through the holder vote); tuned on sim train seeds
+    tip_reach_ft: float = 2.5  # a player's centre this close (horizontal) to the contact; tuned on sim train seeds
+    tip_min_dv_fts: float = 10.0  # upward velocity change beyond gravity's across the contact step; tuned on sim train seeds
+    tip_min_up_fts: float = 3.0  # ... and the ball rises at least this fast after it; tuned on sim train seeds
+    tip_max_basket_ft: float = 8.0  # contact within this of the basket (horizontal); tuned on sim train seeds
     airball_radius_ft: float = 7.0  # 3-D: descending past rim height within this of the basket; tuned
     airball_min_apex_above_ft: float = 1.0  # tuned
     airball_min_release_dist_ft: float = 6.0  # tuned
@@ -527,6 +537,8 @@ class EventEngine:
             changes = self._holder.update(frame, obs, self._gate.velocity(), self._ppf, confirm_n, release_n, prefer,
                                           opp_n, self.ray_model.ray, self._gate.vertical_accel(),
                                           loose=self._pending_miss is not None)
+            if not changes and obs is not None and obs.is3d and self._pending_miss is not None:
+                changes = self._detect_tip()
         self._note_toss(obs)
         for ch in changes:
             if ch.kind == "release":
@@ -1601,6 +1613,49 @@ class EventEngine:
                 best = boxes[pid][0]
         return best
 
+    def _detect_tip(self) -> list[ControlChange]:
+        """3-D: a loose ball after a miss tipped back up (``tip_*``). The contact is inside the step between the
+        two middle of the last four observations (the ball was falling into the hand, then rises): compare the
+        velocities either side of it. Ring and board bounces are left to the flight."""
+        cfg, court = self.config, self.court
+        if self._holder.holder is not None:
+            return []
+        pts = [(t, fi, o) for t, fi, o in list(self._buffer)[-4:] if o is not None and o.is3d]
+        if len(pts) < 4 or pts[-1][0] - pts[0][0] > 0.25:
+            return []
+        (t0, _, a), (t1, f1, b), (t2, _, c), (t3, _, d) = pts
+        if min(t1 - t0, t3 - t2) <= 1e-6 or b.z is None or c.z is None or max(b.z, c.z) < cfg.tip_min_z_ft:
+            return []
+        vz1, vz3 = (b.z - a.z) / (t1 - t0), (d.z - c.z) / (t3 - t2)  # type: ignore[operator]
+        if vz3 < cfg.tip_min_up_fts or vz3 - (vz1 - G_FTS2 * (t3 - t1)) < cfg.tip_min_dv_fts:
+            return []
+        contact = c if c.z >= b.z else b  # type: ignore[operator]
+        cx, cy = contact.xy  # type: ignore[misc]
+        side = court.nearest_basket(cx, cy)
+        bx, by = court.basket_xy(side)
+        dh = math.hypot(cx - bx, cy - by)
+        if dh > cfg.tip_max_basket_ft:
+            return []
+        near_ring = math.hypot(dh - court.rim_radius, contact.z - court.rim_height) \
+            <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft + 0.3  # type: ignore[operator]
+        board_x = court.backboard_offset if side == "left" else court.length - court.backboard_offset
+        near_board = abs(cx - board_x) <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft + 0.3 \
+            and abs(cy - by) <= cfg.backboard_half_width_ft + cfg.ball_radius_ft
+        if near_ring or near_board:
+            return []
+        best, best_d = None, cfg.tip_reach_ft
+        for pid in self._players:
+            pos = self._pos(pid, t1)
+            if pos is None:
+                continue
+            dd = math.hypot(pos[0] - cx, pos[1] - cy)
+            if dd <= best_d:
+                best, best_d = pid, dd
+        if best is None:
+            return []
+        log.debug("tip by %s at %.2f s (z %.1f ft)", best, t1, contact.z)
+        return self._holder.touch(best, t1, f1)
+
     def _retro_block(self, flight: Flight) -> bool:
         """Monocular blocked shot seen only in hindsight. With the shooter's box grown to his raised arms and
         the ball, a release is often recognised only after a block 0.07-0.15 s later has already turned the
@@ -1646,7 +1701,7 @@ class EventEngine:
             knocked_down = up2 <= -back and up3 <= -back
             sgn = 1.0 if rim is None or rim.center[0] >= b[0] else -1.0  # image direction of the rim
             turned_back = (rim is not None and sgn * v1[0] / ppf >= -back and sgn * v2[0] / ppf <= -back
-                           and sgn * v3[0] / ppf <= -back and up2 <= 0.0)
+                           and sgn * v3[0] / ppf <= -back and up2 <= cfg.retro_block_turn_rise_frac * up1)
             if not (knocked_down or turned_back):
                 continue
             # velocity change beyond gravity's (image v grows downward)

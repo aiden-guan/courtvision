@@ -145,7 +145,7 @@ def test_overtime_jump_ball_does_not_teleport_the_ball() -> None:
     """The jump ball put the ball at centre court in one frame (16 ft jumps at an NBA overtime).
     The seed is the first from 8 whose short-period game reaches overtime (re-pinned when the simulator's
     game flow changes)."""
-    r = GameSimulator(SimConfig(seconds=200.0, fps=30.0, seed=17, period_s=15.0, ot_s=10.0)).run()
+    r = GameSimulator(SimConfig(seconds=200.0, fps=30.0, seed=8, period_s=15.0, ot_s=10.0)).run()
     ot = [e for e in r.events if e.kind is K.PERIOD_START and e.attrs["period"] > r.rules.n_periods]
     assert ot and r.rules.possession == "jump"
     ball = np.array([[*f.ball.court_xy, f.ball.z] for f in r.frames])

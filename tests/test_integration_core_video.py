@@ -6,6 +6,9 @@ Measured (seed 7, 8 s window around two made free throws, this machine): MOTA 0.
 when the simulator's flow changed (round 2; seed 7's first make is now a free throw whose operator-lagged
 board change falls after the window): an 8 s window ending 1.5 s after a made 2, MOTA 0.93, the make
 confirmed by the OCR scoreboard. (Seeds 8-12 fail the same window rule; 13 is the first that fits it.)
+The window now ends 3.0 s after the make (the make wait, RESEARCH §7A.5): the operator's score lag is drawn
+from up to 2.0 s plus two 5 Hz OCR reads, so a window ending 1.5 s after the make could close before the
+board changed (round 3: seed 13's make was left provisional).
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ def sim_result():
 @pytest.fixture(scope="module")
 def video_run(sim_result, tmp_path_factory):
     makes = [e.t for e in sim_result.events if e.kind is EventKind.SHOT_MADE and e.t >= WINDOW_S]
-    start = max(0.0, makes[0] + 1.5 - WINDOW_S) if makes else 16.0
+    start = max(0.0, makes[0] + 3.0 - WINDOW_S) if makes else 16.0
     cfg = _cfg("source.sim_mode=video", f"source.start_s={start}", f"source.duration_s={WINDOW_S}")
     out = tmp_path_factory.mktemp("video")
     return run_offline(cfg, make_source(cfg, sim_result=sim_result, realtime=False), out, env=NO_KEYS)

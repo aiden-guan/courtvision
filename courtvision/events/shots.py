@@ -422,6 +422,12 @@ class Flight:
         rim = rims.get(side)
         dv = _reversal(p0, p1, p2, self._px_per_ft(), self.court.basket_xy(side),
                        rim.center[0] if rim is not None else None, cfg.block_min_toward_fts, p3)
+        if dv is None and not image and len(self.samples) >= 5:
+            # 3-D: a touch in the middle of a frame step leaves that step nearly still (the ball went on, then
+            # back), so no consecutive pair shows the reversal: compare across the contact step instead
+            p0, p1, p3 = self.samples[-5], self.samples[-4], self.samples[-1]
+            dv = _reversal(p0, p1, self.samples[-2], self._px_per_ft(), self.court.basket_xy(side), None,
+                           cfg.block_min_toward_fts, p3)
         if dv is None or dv < (cfg.block_reverse_dv_img_fts if image else cfg.block_reverse_dv_fts):
             return []
         if p1.is3d and self.release.xy is not None \

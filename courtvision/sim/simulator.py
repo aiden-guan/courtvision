@@ -3575,6 +3575,16 @@ class _Game:
                         self.target[q] = self.ball.pos[:2] + _unit(self.pos[q] - self.ball.pos[:2]) * (inside + 0.3)
             reacted = not after_block or self.t - start >= c.block_loose_s - 1e-9
             if rebounder is not None:
+                if reacted and self._reach(rebounder, 2.5, 9.5) and self.ball_out is None \
+                        and not self.court.in_bounds(float(self.pos[rebounder, 0]), float(self.pos[rebounder, 1])):
+                    # touching the ball while standing out of bounds puts it out on him (NBA Rule 8; a rebound
+                    # used to be secured from beyond the baseline)
+                    self._reach_hand(rebounder)
+                    self.last_touch = self.slot_team[rebounder]
+                    self.ball_out = self.ball.pos.copy()
+                    self._stop_dead_ball_outside()
+                    yield
+                    continue
                 if reacted and self._reach(rebounder, 2.5, 9.5):
                     self._catch_jump(rebounder)
                     self._reach_hand(rebounder)

@@ -450,6 +450,8 @@ class HolderTracker:
         free_min = cfg.holder_loose_free_min_z_ft if self._loose else cfg.holder_freefall_min_z_ft  # loose: no dribbler
         free = accel_z is not None and obs.z is not None and obs.z >= free_min \
             and abs(accel_z + G_FTS2) <= cfg.holder_freefall_tol_fts2
+        # a loose ball that is not falling (vertical acceleration well above -g) is being lifted by hands
+        lifted = self.holder is None and accel_z is not None and accel_z > cfg.holder_lift_min_accel_fts2
         if obs.z is not None and obs.z > cfg.holder_max_z_ft:
             # A ball raised above the head (layup / dunk gather, an overhead hold) stays in its holder's
             # hands until it is first seen in free flight: the release is the start of free flight, not
@@ -481,7 +483,8 @@ class HolderTracker:
                 continue
             score = 1.0 - d / cfg.holder_keep_radius_ft
             if vel is not None:
-                rel = _rel_speed_court(vel, p, self._vertical_weight(prefer_team))
+                rel = _rel_speed_court(vel, p, cfg.holder_rel_vertical_weight_held if lifted
+                                       else self._vertical_weight(prefer_team))
                 if rel > cfg.holder_acquire_max_speed_fts:
                     continue
                 score -= rel / cfg.holder_rel_speed_scale_fts
@@ -557,6 +560,16 @@ class HolderTracker:
         return (u1 - u0) / (t - t0), (v1 - v0) / (t - t0)
 
     # ------------------------------------------------------------------ transitions
+
+    def touch(self, pid: str, t: float, frame_idx: int) -> list[ControlChange]:
+        """A touch too brief to confirm (a tip): ``pid`` gains the ball and releases it at ``t``."""
+        self._cand_onset = (t, frame_idx)
+        gain = self._gain(pid, t)
+        self._after_seen = (t, frame_idx)
+        release = self._release()
+        self._votes.clear()
+        self._lift_free, self._free_from = True, None  # the tipped ball is in free flight
+        return [gain, release]
 
     def _release(self) -> ControlChange:
         assert self.holder is not None
