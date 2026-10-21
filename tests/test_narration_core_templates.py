@@ -342,3 +342,28 @@ def test_end_to_end_render_names_after_validation() -> None:
     spoken = pm.render(text, roster)
     assert "{" not in spoken
     assert "Riley Thorsen" in spoken or "Riverside" in spoken
+
+
+# --------------------------------------------------------------------------- review regressions
+
+
+def test_a_count_of_one_takes_the_singular() -> None:
+    """ "{actor} now has {pf} fouls." read "now has 1 fouls"."""
+    ctx = {"actor": "{P1}", "pf": "1", "team": "Riverside", "team_pf": "1", "blk": "1", "stl": "1", "reb": "1",
+           "reb_type": "defensive", "pts": "1", "fg": "0-1", "opp": "Lakeport", "opp_tov": "1", "tov": "1",
+           "team_tov": "1", "other_tok": "{P2}", "actor_tok": "{P1}", "value_word": "one"}
+    texts = [t for fam in ("foul", "block", "steal", "turnover", "rebound", "made")
+             for _, t in T._fill(T.COACH[fam], ctx)]
+    assert "{P1} now has 1 foul." in texts and "Foul on {P1}. Riverside 1 team foul." in texts
+    assert not [t for t in texts if re.search(r"\b1 (?:\w+ )?(?:fouls|blocks|steals|turnovers|rebounds|points)\b", t)]
+    assert "{P1} now has 2 fouls." in [t for _, t in T._fill(T.COACH["foul"], {**ctx, "pf": "2"})]
+
+
+def test_a_tie_at_zero_is_called_scoreless() -> None:
+    """ "Level at 0." / "Dead even at 0." after a 0-0 board: made calls add no tie tail, score updates say
+    it is still scoreless."""
+    zero = {"h": "0", "a": "0", "home": "Riverside", "away": "Lakeport"}
+    assert T._tail_key(zero, {}, CFG) is None
+    assert T._tail_key({**zero, "h": "4", "a": "4"}, {}, CFG) == "tail_tie"
+    assert T._tie_variants(zero) == T.ADDONS["tail_scoreless"]
+    assert all("0" not in t for _, t in T._fill(T._tie_variants(zero), zero))

@@ -122,6 +122,35 @@ async def test_scoreboard_override(result) -> None:
     assert frame["clock"]["period"] == 2 and frame["clock"]["game"] == 250.0
 
 
+async def test_scoreboard_override_holds_over_source_readings(result) -> None:
+    """A manual score / period used to be undone by the next sim (or OCR) reading: each overridden field is held
+    until the source itself shows something else for it, then the source takes over again."""
+    game = LiveGame(_cfg(), SimSource(result, "truth3d", scoreboard="truth", duration_s=40.0), realtime=False,
+                    env=NO_KEYS)
+    truth = {f.frame_idx: f.scoreboard for f in result.frames[:1200]}
+    seen: dict = {}
+
+    async def override(g: LiveGame) -> None:
+        seen["before"] = (truth[300].home_score, truth[300].away_score, truth[300].period)
+        await g.controller.set_scoreboard({"home_score": 5, "away_score": 3, "period": 2, "source": "manual"})
+
+    async def check(name: str) -> Hook:
+        async def hook(g: LiveGame) -> None:
+            b = g.latest_board
+            seen[name] = (b.home_score, b.away_score, b.period, g.engine.scoreboard.score)
+        return hook
+
+    first_change = next(i for i in range(301, 1200) if (truth[i].home_score, truth[i].away_score)
+                        != (truth[300].home_score, truth[300].away_score))
+    await _drive(game, {300: override, 600: await check("held"), 1199: await check("released")})
+    assert seen["before"] == (0, 0, 1) and first_change < 1100  # seed 7: the board changes at ~30 s
+    assert seen["held"] == (5, 3, 2, {Team.HOME: 5, Team.AWAY: 3})  # 10 s of truth readings later
+    end = truth[1199]
+    home, away, period, _ = seen["released"]
+    assert (home, away) == (end.home_score, end.away_score)  # the source scored: it leads again
+    assert period == 2  # the source never showed another period: still held
+
+
 async def test_substitution_changes_lineup_seconds(result) -> None:
     game = LiveGame(_cfg("operator.replay_kinds=[]"), SimSource(result, "truth3d", duration_s=60.0),
                     realtime=False, env=NO_KEYS)

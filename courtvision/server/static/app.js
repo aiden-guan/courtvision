@@ -554,6 +554,23 @@
     for (const k of ["period", "game", "shot"]) if (isNum(clk[k])) S.held[k] = [t, clk[k]];
   }
 
+  // A clock shown from the last stats snapshot because no reading arrived for CLOCK_HOLD_S of video (the
+  // scoreboard reader stopped, or the board left the frame) is dimmed and says how old it is.
+  function markStale(el, k, value, label) {
+    const held = S.held[k], t = S.frame && S.frame.t;
+    const stale = isNum(value) && !isNum(heldClock(k));
+    el.classList.toggle("stale", stale);
+    if (stale) {
+      const age = held && isNum(t) && t >= held[0] ? Math.round(t - held[0]) : null;
+      const why = age !== null ? `not read for ${age} s` : "not read";
+      el.title = `${label} ${why}: last known value`;
+      el.setAttribute("aria-label", `${label} ${el.textContent}, ${why}`);
+    } else {
+      el.title = label;
+      el.removeAttribute("aria-label");
+    }
+  }
+
   function heldClock(k) {
     const held = S.held[k], t = S.frame && S.frame.t;
     if (!held) return undefined;
@@ -775,10 +792,13 @@
     const game = num(heldClock("game"), st && st.game_clock);
     const shotS = num(heldClock("shot"), st && st.shot_clock);
     setText(byId("period"), periodLabel(period));
-    setText(byId("game-clock"), fmtClock(game));
+    const clock = byId("game-clock");
+    setText(clock, fmtClock(game));
+    markStale(clock, "game", game, "Game clock");
     const shot = byId("shot-clock");
     setText(shot, fmtShot(shotS));
     shot.classList.toggle("low", isNum(shotS) && shotS <= 5);
+    markStale(shot, "shot", shotS, "Shot clock");
     const poss = f && f.possession;
     byId("away-poss").classList.toggle("on", poss === "away");
     byId("home-poss").classList.toggle("on", poss === "home");

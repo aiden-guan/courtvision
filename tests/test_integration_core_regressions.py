@@ -17,10 +17,10 @@ from courtvision.pipeline import (
     EventEnricher,
     MuteableTTS,
     Pacer,
+    SpeedClock,
     VideoTimeTTS,
     VirtualClock,
     build_jev,
-    cue_priority_for_insight,
     insight_order,
 )
 from courtvision.stats.insights import InsightConfig
@@ -124,9 +124,11 @@ async def test_insight_priority_direction_is_consistent_across_consumers() -> No
     await nar.aclose()
     pri = InsightConfig().priorities
     assert pri["foul_trouble"] > pri["run"] > pri["shot_diet"]  # higher = more important
-    levels = {k: cue_priority_for_insight(v) for k, v in pri.items()}
-    assert levels["foul_trouble"] == levels["run"] == levels["team_fouls"] == 2 and levels["shot_diet"] == 3
-    assert all(lv in (2, 3) for lv in levels.values())  # cards never become P0 / P1 live calls
+    for mode in ("coach", "broadcast"):  # cards never become director cues (live calls), in any mode
+        nar = Narrator(_roster(), COURT, NarrationConfig(mode=mode, tts="none", llm_enabled=False))
+        await nar.on_insights(cards, None)  # type: ignore[arg-type]
+        assert nar.director.current is None and not nar.director._queue
+        await nar.aclose()
 
 
 # --------------------------------------------------------------------------- pacing and TTS helpers
@@ -188,3 +190,20 @@ async def test_muteable_tts_routes_muted_lines_to_the_silent_engine() -> None:
     await tts.speak("third", 1)
     assert voice.texts == ["first", "third"] and silent.texts == ["second"]
     assert voice.spoken[0].prosody == "up"
+
+
+def test_speed_clock_runs_at_the_playback_speed() -> None:
+    """At serve speed > 1 the narrator's holds and TTLs ran on wall time (a 3 s make hold spanned 6 s of video
+    at 2x): the real-time narrator clock runs at the playback speed and re-anchors on a speed change."""
+    wall = [100.0]
+    clock = SpeedClock(2.0, clock=lambda: wall[0])
+    t0 = clock()
+    wall[0] += 1.5
+    assert clock() - t0 == pytest.approx(3.0)
+    clock.set_speed(0.5)
+    t1 = clock()
+    assert t1 - t0 == pytest.approx(3.0)  # no jump at the change
+    wall[0] += 2.0
+    assert clock() - t1 == pytest.approx(1.0)
+    with pytest.raises(ValueError):
+        clock.set_speed(0.0)

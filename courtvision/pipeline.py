@@ -37,14 +37,15 @@ Integration rules honoured here (module reviewers' notes):
 * Priorities: ``Insight.priority`` is "higher = more important" in ``stats.insights``,
   ``JevDecider.pick_insight`` (fallback = max) and the narrator's coach board; the director's
   ``Cue.priority`` is 0 = highest (0..3) and speech ``Utterance.priority = 3 - cue.priority``. The
-  pipeline passes insights through unchanged and orders them with :func:`insight_order`; the only
-  place an insight becomes a director level is :func:`cue_priority_for_insight`.
+  pipeline passes insights through unchanged and orders them with :func:`insight_order`. Insights are
+  coach-board cards only: they never become director cues (live calls).
 * Claude runs rarely (timeouts, period breaks): the prompt cache uses a 1 h TTL and is pre-warmed at
   start and periodically. No Anthropic credentials => Claude disabled (template-only); no
   ``TYPESAFE_API_KEY`` => Jev "off" (deterministic fallbacks). Credentials are detected by name only,
   never read or printed.
 
-Clocks: in real time the narrator runs on ``time.monotonic``. Offline (``realtime=False``) every
+Clocks: in real time the narrator runs on a :class:`SpeedClock` (``time.monotonic`` at the playback speed,
+so its holds and TTLs stay in video seconds at any speed). Offline (``realtime=False``) every
 component runs on a :class:`VirtualClock` that follows source time, TTS lines occupy source time
 (:class:`VideoTimeTTS`) and perception runs inline, so offline runs are deterministic and their
 transcripts match what a real-time run would say.
@@ -123,12 +124,12 @@ __all__ = [
     "TieredPseudonyms",
     "VideoFileSource",
     "VideoTimeTTS",
+    "SpeedClock",
     "VirtualClock",
     "anthropic_credential_source",
     "arun_offline",
     "build_jev",
     "build_llm",
-    "cue_priority_for_insight",
     "director_overrides",
     "hub_stats_msg",
     "insight_order",
@@ -193,16 +194,6 @@ def insight_order(insights: Iterable[Insight]) -> list[Insight]:
     """Most important first: ``Insight.priority`` is higher = more important everywhere
     (``InsightEngine.active``, ``JevDecider.pick_insight`` fallback, the narrator's coach board)."""
     return sorted(insights, key=lambda i: (-(i.priority or 0), -i.t, i.insight_id))
-
-
-def cue_priority_for_insight(insight: Insight | int) -> int:
-    """Director level (``Cue.priority``: 0 = highest .. 3) for a card read aloud.
-
-    Cards are never live calls (P0/P1): alerts at or above the scoring-run level (foul trouble,
-    runs, team fouls; ``InsightConfig.priorities`` >= 70) are P2 context, everything else P3 colour.
-    """
-    p = insight.priority if isinstance(insight, Insight) else int(insight)
-    return 2 if p >= 70 else 3
 
 
 # --------------------------------------------------------------------------- frame sources
@@ -555,6 +546,38 @@ class VirtualClock:
 
     def advance(self, dt: float) -> None:
         self.t += max(0.0, float(dt))
+
+
+_BOARD_GROUPS = (("home_score", "away_score"), ("period",), ("game_clock",), ("shot_clock",))
+
+
+class SpeedClock:
+    """Real-time narrator clock that runs at the playback speed (``speed`` x monotonic time), so the
+    narrator's holds, cooldowns and TTLs keep their meaning in video seconds when a file or sim plays faster
+    or slower than real time (on wall time, at speed 2 a 3 s make hold spanned 6 s of video and the
+    narration fell behind). Speed changes re-anchor it: it never jumps or runs backwards."""
+
+    def __init__(self, speed: float = 1.0, clock: Callable[[], float] = time.monotonic) -> None:
+        if not speed > 0:
+            raise ValueError("speed must be > 0")
+        self._clock = clock
+        self._speed = float(speed)
+        self._wall0 = clock()
+        self._t0 = self._wall0
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    def __call__(self) -> float:
+        return self._t0 + (self._clock() - self._wall0) * self._speed
+
+    def set_speed(self, speed: float) -> None:
+        if not speed > 0:
+            raise ValueError("speed must be > 0")
+        now = self._clock()
+        self._t0 = self._t0 + (now - self._wall0) * self._speed
+        self._wall0, self._speed = now, float(speed)
 
 
 class Pacer:
@@ -993,7 +1016,9 @@ class LiveGame:
                                                            cfg.game.away_name)
         source.bind(self.court, self.rules, self.roster)
         self.is_sim = source.truth is not None
-        self.clock: Callable[[], float] = time.monotonic if self.realtime else VirtualClock()
+        # offline: source time; real time: monotonic time at the playback speed (a live camera plays at 1x)
+        self.clock: Callable[[], float] = SpeedClock(1.0 if source.live else source.speed) if self.realtime \
+            else VirtualClock()
         self.pacer = Pacer(enabled=self.realtime and not source.live, speed=source.speed)
 
         # --- events / stats / insights
@@ -1067,6 +1092,10 @@ class LiveGame:
         self._kept: list[FrameState] = []
         self._board: ScoreboardReading | None = None  # last confirmed reading (display / facts / hub)
         self._pending_board: ScoreboardReading | None = None
+        # manual scoreboard fields held over the source: field -> (manual value, source value when set). A field
+        # follows the source again once the source shows something else (a new basket, the clock running).
+        self._board_hold: dict[str, tuple[Any, Any]] = {}
+        self._raw_board: ScoreboardReading | None = None  # the source's own last reading
         self._latest_frame: FrameState | None = None
         self._latest_image: tuple[int, np.ndarray] | None = None
         self._snap: GameStats | None = None
@@ -1471,6 +1500,10 @@ class LiveGame:
             self._t, self._frame_idx = t, frame.frame_idx
             self._latest_frame = frame
             batch = self._operator_due(t)
+            if frame.scoreboard is not None and frame.scoreboard.source != "manual":
+                self._raw_board = frame.scoreboard
+                if self._board_hold:
+                    frame = dataclasses.replace(frame, scoreboard=self._held_board(frame.scoreboard))
             if self._pending_board is not None:
                 frame = dataclasses.replace(frame, scoreboard=self._pending_board)
                 self._pending_board = None
@@ -1605,6 +1638,17 @@ class LiveGame:
         return self._ingest(self.engine.add_manual(ev))
 
     # ------------------------------------------------------------------ scoreboard
+
+    def _held_board(self, raw: ScoreboardReading) -> ScoreboardReading:
+        """The source's reading with the operator's held fields (``_board_hold``) applied; a field whose source
+        value has changed since the override is released (the score pair together)."""
+        for group in _BOARD_GROUPS:  # the two scores are one unit: either changing releases both
+            keys = [k for k in group if k in self._board_hold]
+            if any(getattr(raw, k) is not None and getattr(raw, k) != self._board_hold[k][1] for k in keys):
+                for k in keys:
+                    del self._board_hold[k]
+        held = {k: manual for k, (manual, _) in self._board_hold.items()}
+        return dataclasses.replace(raw, **held) if held else raw
 
     def _update_board(self, reading: ScoreboardReading) -> None:
         """Keep the last confirmed reading: confirmed score / period from the engine's confirmer,
@@ -1802,6 +1846,10 @@ class GameController:
             r = ScoreboardReading(t=float(reading.get("t") if reading.get("t") is not None else g.current_t),
                                   source=str(reading.get("source") or "manual"), confidence=1.0, **values)
             g._pending_board = r  # the engine sees it with the next frame
+            raw = g._raw_board
+            for k in fields:
+                if reading.get(k) is not None:  # held over later source readings until the source changes it
+                    g._board_hold[k] = (values[k], getattr(raw, k) if raw is not None else None)
             g.stats.on_scoreboard(r)
             g._board = r
             snap = g._snapshot(force=True)
@@ -1909,6 +1957,8 @@ class GameController:
             if g.source.live:  # a camera arrives in real time: the pacer is off, the speed would only be shown
                 raise ValueError("a live camera plays in real time; speed does not apply")
             g.pacer.set_speed(float(command["value"]))
+            if isinstance(g.clock, SpeedClock):
+                g.clock.set_speed(g.pacer.speed)  # the narrator's holds and TTLs follow the video
         elif action in ("mute", "unmute"):
             await g.on_game_loop(lambda: g.tts.set_muted(action == "mute"))
         elif action == "dead_ball":

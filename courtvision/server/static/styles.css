@@ -219,6 +219,7 @@ canvas:focus-visible { outline-offset: -2px; }
   padding: 1px 5px; border-radius: 5px; background: var(--surface-3); color: var(--ink-2);
 }
 .shot-clock.low { background: var(--critical); color: #fff; }
+.game-clock.stale, .shot-clock.stale { opacity: 0.45; text-decoration: underline dotted; text-underline-offset: 3px; }
 
 .bar-right { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
 .flag {

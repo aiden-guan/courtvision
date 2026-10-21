@@ -226,6 +226,8 @@ ADDONS: dict[str, tuple[str, ...]] = {
         "Tied at {h}.", "All tied at {h}.", "We're tied at {h}.", "Even at {h}.", "Tie game, {h}-{a}.",
         "All square at {h}.", "Level at {h}.", "Dead even at {h}.",
     ),
+    # a tie at 0-0 ("Level at 0" read oddly): score updates say it is still scoreless, made calls add no tail
+    "tail_scoreless": ("Still scoreless.", "No score yet.", "Scoreless so far.", "Nothing on the board yet."),
 }
 
 # --------------------------------------------------------------------------- coach cards (flat, numeric)
@@ -610,11 +612,17 @@ def _cap_sentences(text: str) -> str:
     return re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
 
 
+# a count of one takes the singular ("now has 1 fouls"); the counted nouns the templates use
+_ONE_PLURAL_RE = re.compile(
+    r"\b(1|one) ((?:personal |team |offensive |defensive )?(?:foul|point|rebound|steal|block|turnover|assist))s\b",
+    re.IGNORECASE)
+
+
 def _fill(variants: Sequence[str], ctx: Mapping[str, str]) -> list[tuple[int, str]]:
     out = []
     for i, v in enumerate(variants):
         try:
-            out.append((i, _cap_sentences(v.format_map(ctx))))
+            out.append((i, _cap_sentences(_ONE_PLURAL_RE.sub(r"\1 \2", v.format_map(ctx)))))
         except (KeyError, IndexError, ValueError):
             continue
     return out
@@ -678,7 +686,7 @@ def _render_pbp(family: str, ctx: dict[str, str], facts: Mapping[str, Any], rng:
     cap = family_cap(family, cfg)
     line_cap = cfg.line_cap["play_by_play"]
     if family == "score_update" and "leader" not in ctx:
-        variants = ADDONS["tail_tie"]
+        variants = _tie_variants(ctx)
     else:
         variants = PBP[family]
     recent = _recent(facts)
@@ -714,12 +722,16 @@ def _tail_key(ctx: Mapping[str, str], facts: Mapping[str, Any], cfg: TemplateCon
     if "h" not in ctx:
         return None
     if "leader" not in ctx:
-        return "tail_tie"
+        return "tail_tie" if ctx.get("h") != "0" else None  # 0-0 after a make: the board has not caught up
     derived = " | ".join(str(d) for d in facts.get("derived") or ())
     if f"{ctx['leader']} takes the lead" in derived:
         return "tail_lead_change"
     score = facts.get("score") or {}
     return "tail_lead" if int(score.get("margin", 99)) <= cfg.score_tail_max_margin else None
+
+
+def _tie_variants(ctx: Mapping[str, str]) -> tuple[str, ...]:
+    return ADDONS["tail_scoreless"] if ctx.get("h") == "0" else ADDONS["tail_tie"]
 
 
 def _append(text: str, variants: Sequence[str], ctx: Mapping[str, str], rng: random.Random, cap: int) -> str:
@@ -868,7 +880,7 @@ def _render_color(facts: Mapping[str, Any], rng: random.Random, cfg: TemplateCon
             return RenderedLine(text, "color:derived", -1, cap)
     ctx = _context({}, facts, {})
     for family in ("run", "score_update"):
-        variants = PBP[family] if family == "run" or "leader" in ctx else ADDONS["tail_tie"]
+        variants = PBP[family] if family == "run" or "leader" in ctx else _tie_variants(ctx)
         picked = _pick(variants, ctx, cap, rng, f"color:{family}", history, recent, cfg)
         if picked is not None and _not_repeat(picked[1], recent, cfg.repetition_jaccard):
             return RenderedLine(picked[1], f"color:{family}", picked[0], cap)

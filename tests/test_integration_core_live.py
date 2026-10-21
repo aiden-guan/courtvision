@@ -16,6 +16,7 @@ from courtvision.narration.llm import ClaudeNarrationLLM
 from courtvision.pipeline import (
     LiveGame,
     SimSource,
+    SpeedClock,
     _prewarm_interval,
     anthropic_credential_source,
     build_jev,
@@ -108,6 +109,7 @@ async def test_realtime_pacing_pause_resume_and_speed(result) -> None:
     src = SimSource(result, "truth3d", realtime=True, speed=20.0, duration_s=3.0)
     game = LiveGame(cfg, src, realtime=None, env=NO_KEYS)
     assert game.realtime and game.pacer.enabled
+    assert isinstance(game.clock, SpeedClock) and game.clock.speed == 20.0  # the narrator clock follows the video
     t0 = time.perf_counter()
     task = asyncio.create_task(game.run())
     await asyncio.sleep(0.04)
@@ -120,6 +122,7 @@ async def test_realtime_pacing_pause_resume_and_speed(result) -> None:
     await game.controller.control({"action": "resume"})
     status = await game.controller.control({"action": "speed", "value": 40.0})
     assert status["speed"] == 40.0 and status["paused"] is False
+    assert game.clock.speed == 40.0
     await task
     wall = time.perf_counter() - t0
     assert game._frames_done == 90
