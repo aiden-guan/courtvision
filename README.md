@@ -19,7 +19,8 @@ narration and the live dashboard. Every module has its own test suite, written a
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and then adversarially reviewed. On top of those,
 the integration and CLI tests (`tests/test_integration_*.py`) drive the real stack. That includes
 a serve smoke test that runs the dashboard app and a live game on one event loop. The suite has
-2 009 tests (6 more skip when optional extras are missing), all deterministic and network-free.
+2 075 tests (6 more skip when optional extras are missing, and 3 strict expected failures document known
+monocular limitations), all deterministic and network-free.
 
 **All accuracy figures come from the seeded simulator.** No real game footage has been evaluated
 yet. On real video the system runs, but its accuracy is unmeasured (see [Limitations](#limitations)).
@@ -240,14 +241,45 @@ the code at the start of round 3 on that commit's own simulator, so it predates 
 fix. At 300 s the held-out numbers are truth3d 0.956 and mono 0.697 (session start: 0.962 and 0.737). Those
 games have only 3-5 steals and blocks in total, so one block more or less moves the mono headline by 0.04.
 
-Video (render + perception, 180 s) scores 0.740 on train seeds 1-6 (seed mean 0.796) and 0.636 on held-out
+Video (render + perception, 180 s) scored 0.740 on train seeds 1-6 (seed mean 0.796) and 0.636 on held-out
 seeds 101-104 (seed mean 0.704, MOTA 0.971, identity accuracy 0.976). The held-out pooled number counts one
-steal and two blocks, both missed, as two of its nine kinds.
+steal and two blocks, both missed, as two of its nine kinds. (Correction, round 4: the 0.740 train figure was
+measured before the last round-3 commits; the round-3 final commit `5e52881` scores 0.806 on the same games.)
 
 The round-3 targets of mono and video >= 0.85 are **not met**. The remaining monocular gaps are steals
 (held-out 1200 s mono F1 0.47), turnovers (0.57), blocks (0.18), rebounds (0.70) and possession (0.77).
 
-The end-to-end table below predates rounds 1-3.
+**Round 4 (2026-10-22).** Error-driven engine fixes, tuned on train seeds 1-6 only and checked by an independent
+review of each change (rule compliance, overfitting, reproduced numbers):
+- truth3d: a shot rises to about rim height; a throw-in restarts play when a player on the court gains it; a ring
+  bounce between two frames is not a block; the reconciler waits a moment before flipping a miss.
+- mono / video:
+  - blocks: a block is committed only once the ball's next owner shows it was knocked loose, with image-speed,
+    touch-margin and head-line gates against false detections and depth motion;
+  - steals: a gain long after the release is a loose-ball recovery, and only a dribble in the holder's hands
+    corroborates control;
+  - passes: a pass crossing a teammate's box in flight is one pass;
+  - shots: a miss the ball went back to the rim after is not flipped by the score (the points were a putback
+    the engine did not see, now inferred);
+  - dribbles are measured as the ball's height above the dribbler's feet, so drives towards or away from the
+    camera keep their bounces;
+  - rebounds: hidden holds, catches out of view and loose balls crossing a body.
+
+| Mode (s/game) | Train 1-6: round start | Train 1-6: round 4 | Held-out 101-104: round start | Held-out 101-104: round 4 | Held-out verdict |
+|---|---|---|---|---|---|
+| truth3d (1200) | 0.967 | **0.996** | 0.941 | **0.970** [0.960, 0.980] | +0.029, outside the CI |
+| mono (1200) | 0.751 | **0.829** | 0.708 | **0.742** [0.696, 0.780] | +0.034, outside the CI |
+| video (180) | 0.806 | **0.892** | 0.636 | **0.650** [0.575, 0.934] | +0.014, noise (180 s games) |
+
+"Round start" is commit `5e52881` measured on the same games (held-out reports, aggregate only:
+[`docs/bench/round4_heldout_before_5e52881.md`](docs/bench/round4_heldout_before_5e52881.md) and
+[`docs/bench/round4_heldout_after_ffe5129.md`](docs/bench/round4_heldout_after_ffe5129.md)). The truth3d gain carries over to the held-out games; the monocular gain only partly
+(+0.079 on train, +0.034 held-out): the six train games hold few rare events (23 blocks, 28 steals), so fixes to
+single plays fit them. Held-out mono per kind: steals 0.50, turnovers 0.68, blocks 0.27 (8 truth), rebounds 0.73,
+assists 0.81, missed shots 0.89, passes 0.91. The targets (mono and video >= 0.85, truth3d >= 0.98) are not met
+on held-out games.
+
+The end-to-end table below predates rounds 1-4.
 
 ## Current end-to-end numbers
 
@@ -302,8 +334,11 @@ by seed: earlier runs of seeds 11 and 23 at 120 s scored 0.62 and 0.30.
 - **Compression hurts.** Lossy video costs accuracy: on the same 60 s render, H.264 scores 0.63
   against 0.98 lossless, and OpenCV's mp4v loses the free throws entirely.
 - **Monocular gaps.** With the ball's height unknown, steals, turnovers and blocks stay weak. On held-out 1200 s
-  mono games (seeds 101-104) the F1 is 0.47 for steals, 0.57 for turnovers and 0.18 for blocks. Rebounds sit
-  near 0.70 and possession near 0.77 (round 3).
+  mono games (seeds 101-104, round 4) the F1 is 0.50 for steals, 0.68 for turnovers and 0.27 for blocks;
+  rebounds 0.73, possession 0.78. One camera cannot tell a ball high over the shooter from one in the box of a
+  player behind him on the same camera ray, nor a pump fake that draws a defender's jump from a shot he turns
+  back (both are recorded as strict expected-failure tests). The hold-time block path for a shot swatted
+  straight back into the shooter's hands is off by default for that reason (`hold_block_confirm_s`).
 - **The CV never infers some things.** Fouls, timeouts and substitutions are never inferred: they
   come from the operator (dashboard) or a feed. Minutes, +/- and lineups exist only after operator
   lineup entries. Without them, a whistle stoppage can turn into an inferred out-of-bounds turnover.
