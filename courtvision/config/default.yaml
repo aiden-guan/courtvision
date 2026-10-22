@@ -542,11 +542,13 @@ events:
   dunk_max_dist_ft: 3.0  # tuned
   catch_shoot_min_dist_ft: 10.0  # NBA catch-and-shoot uses jumpers > 10 ft (unverified)
   block_min_up_speed_fts: 6.0  # shot-like release rises at least this fast; tuned
+  shot_like_steps: 3  # 3-D: ... on the steepest of its first this many frame steps (a putback dated at the catch); tuned on sim tr...
+  block_min_apex_below_rim_ft: 1.0  # 3-D: ... and its free-flight apex reaches rim height - this (a shot goes up to the rim: sim field-goal trie...
   block_min_toward_fts: 3.0  # before a block the ball moves toward the rim at least this fast; tuned
   block_reverse_dv_fts: 8.0  # velocity change beyond ballistic for a block; tuned
   block_reverse_dv_img_fts: 18.0  # image mode: same, above the velocity noise of ~1.5 px jitter; tuned
   block_image_span: 2  # image mode: frames per velocity baseline around the contact; tuned
-  block_defender_radius_ft: 4.0  # defender this close to the ball at the reversal; tuned
+  block_defender_radius_ft: 4.5  # 3-D: defender's centre this close (horizontal) to the ball at the reversal: arm ~0.44 x stature + shoulder...
   block_min_z_ft: 5.0  # above shoulder height = block, below = steal [15]; unverified height
   block_bbox_expand: 0.4  # image: defender bbox horizontal growth for the contact test; tuned
   block_reach_frac: 0.4  # image: raised-arm reach above the head, fraction of bbox height; unverified
@@ -561,6 +563,7 @@ events:
   retro_block_turn_rise_frac: 1.0  # a ball turned back from the rim has at least this much less rise after the touch than before (a swat from t...
   backboard_half_width_ft: 3.0  # 72 in board (NBA rule 1 sec. II); sourced
   backboard_above_rim_ft: 3.5  # board top ~ 42 in board, rim ~ 6 in above its bottom edge; sourced (approx.)
+  rim_contact_step_frac: 0.5  # 3-D: a ring / board bounce falls between frames, so the contact test allows this fraction of the ball's per...
   tip_min_z_ft: 7.0  # contact at least this high (lower catches go through the holder vote); tuned on sim train seeds
   tip_reach_ft: 2.5  # a player's centre this close (horizontal) to the contact; tuned on sim train seeds
   tip_min_dv_fts: 10.0  # upward velocity change beyond gravity's across the contact step; tuned on sim train seeds
@@ -588,6 +591,7 @@ events:
   oob_margin_ft: 1.0  # ball / holder beyond the boundary by this = out of bounds; tuned
   oob_max_z_ft: 4.0  # 3-D: the ball must be this low to count as out; tuned
   inbound_holder_margin_ft: 0.5  # holder this far outside the lines = inbounder; tuned
+  inbound_needs_court_receiver: true  # design (rules: throw-in, NBA rule 8 / FIBA art. 17)
   holder_oob_frames: 3  # live holder out of bounds this many frames = stepped out; tuned
   oob_turnover_conf: 0.6  # inferred out-of-bounds turnovers (< 1 per semantics); tuned
   team_rebound_conf: 0.7  # inferred team rebounds; tuned
@@ -616,6 +620,7 @@ events:
   reconcile_match_fwd_s: 3.0  # ... or lead it (engine decides late) by this; tuned
   reconcile_flip_window_s: 15.0  # misses this old can be flipped to makes; tuned
   reconcile_hold_s: 2.0  # unmatched delta waits this long before a SCORE_CORRECTION; tuned
+  reconcile_flip_hold_s: 1.0  # ... and this long before it flips an earlier miss: a layup or dunk the board shows as it drops is released...
   reconcile_inflight_max_s: 5.0  # max wait for an in-flight shot of the scoring team; tuned
   infer_unseen_makes: true  # design
   unseen_make_window_s: 6.0  # the shooter's release / shooting foul at most this before the delta's first read (make -> board lag 0.4-2 s...

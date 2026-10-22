@@ -206,11 +206,13 @@ class EventEngineConfig:
     dunk_max_dist_ft: float = 3.0  # tuned
     catch_shoot_min_dist_ft: float = 10.0  # NBA catch-and-shoot uses jumpers > 10 ft (unverified)
     block_min_up_speed_fts: float = 6.0  # shot-like release rises at least this fast; tuned
+    shot_like_steps: int = 3  # 3-D: ... on the steepest of its first this many frame steps (a putback dated at the catch); tuned on sim train seeds
+    block_min_apex_below_rim_ft: float = 1.0  # 3-D: ... and its free-flight apex reaches rim height - this (a shot goes up to the rim: sim field-goal tries >= 9.6 ft, passes median 4.8 ft); tuned on sim train seeds
     block_min_toward_fts: float = 3.0  # before a block the ball moves toward the rim at least this fast; tuned
     block_reverse_dv_fts: float = 8.0  # velocity change beyond ballistic for a block; tuned
     block_reverse_dv_img_fts: float = 18.0  # image mode: same, above the velocity noise of ~1.5 px jitter; tuned
     block_image_span: int = 2  # image mode: frames per velocity baseline around the contact; tuned
-    block_defender_radius_ft: float = 4.0  # defender this close to the ball at the reversal; tuned
+    block_defender_radius_ft: float = 4.5  # 3-D: defender's centre this close (horizontal) to the ball at the reversal: arm ~0.44 x stature + shoulder offset + ball radius + a lean. 0.1 ft above the farthest of the 23 sim train-seed blocks (4.40 ft); 4.5 and 5.0 score alike; tuned on sim train seeds
     block_min_z_ft: float = 5.0  # above shoulder height = block, below = steal [15]; unverified height
     block_bbox_expand: float = 0.4  # image: defender bbox horizontal growth for the contact test; tuned
     block_reach_frac: float = 0.4  # image: raised-arm reach above the head, fraction of bbox height; unverified
@@ -228,6 +230,7 @@ class EventEngineConfig:
     # _check_rim_block). 3-D: a reversal clear of the ring (rim_contact_dist_ft) and the board is a defender's.
     backboard_half_width_ft: float = 3.0  # 72 in board (NBA rule 1 sec. II); sourced
     backboard_above_rim_ft: float = 3.5  # board top ~ 42 in board, rim ~ 6 in above its bottom edge; sourced (approx.)
+    rim_contact_step_frac: float = 0.5  # 3-D: a ring / board bounce falls between frames, so the contact test allows this fraction of the ball's per-frame travel (half a step: the nearer sample); geometry
     # 3-D tip (engine._detect_tip): a loose ball after a miss redirected back up by a hand above holder height,
     # next to a player and clear of the ring / board, is that player's touch (OREB + a release at the touch:
     # a tip-in is a rebound and a shot attempt, NBA stat rules), as he never holds it long enough to confirm.
@@ -264,6 +267,10 @@ class EventEngineConfig:
     oob_margin_ft: float = 1.0  # ball / holder beyond the boundary by this = out of bounds; tuned
     oob_max_z_ft: float = 4.0  # 3-D: the ball must be this low to count as out; tuned
     inbound_holder_margin_ft: float = 0.5  # holder this far outside the lines = inbounder; tuned
+    # A throw-in is a pass from out of bounds to a player on the court: a dead ball handed or tossed off the court
+    # (a player retrieving it from the stands and giving it to the inbounder, the inbounder taking it from the
+    # official) is not one, so play restarts when a player on the court gains the ball, not at the release.
+    inbound_needs_court_receiver: bool = True  # design (rules: throw-in, NBA rule 8 / FIBA art. 17)
     holder_oob_frames: int = 3  # live holder out of bounds this many frames = stepped out; tuned
     oob_turnover_conf: float = 0.6  # inferred out-of-bounds turnovers (< 1 per semantics); tuned
     team_rebound_conf: float = 0.7  # inferred team rebounds; tuned
@@ -297,6 +304,7 @@ class EventEngineConfig:
     reconcile_match_fwd_s: float = 3.0  # ... or lead it (engine decides late) by this; tuned
     reconcile_flip_window_s: float = 15.0  # misses this old can be flipped to makes; tuned
     reconcile_hold_s: float = 2.0  # unmatched delta waits this long before a SCORE_CORRECTION; tuned
+    reconcile_flip_hold_s: float = 1.0  # ... and this long before it flips an earlier miss: a layup or dunk the board shows as it drops is released (holder hysteresis) and resolved a few frames after the delta's first read; tuned on sim train seeds
     reconcile_inflight_max_s: float = 5.0  # max wait for an in-flight shot of the scoring team; tuned
     # A confirmed +2 / +3 matching no seen shot becomes an inferred attempt + make (engine._unseen_make)
     infer_unseen_makes: bool = True  # design
@@ -376,6 +384,7 @@ class _Control:
     doubtful: bool = False  # monocular: began with a change of team control that was never corroborated
     miss: ShotEntry | None = None  # the missed shot a rebound stint followed
     prev_ctrl: _Control | None = None  # the passer's stint (one level only)
+    dead_pickup: bool = False  # gained while the ball was dead (a retriever, the inbounder), not in live play
 
 
 @dataclass(slots=True)
@@ -471,6 +480,8 @@ class EventEngine:
         self._poss_team: Team | None = None
         self._flight: Flight | None = None
         self._flight_ctrl: _Control | None = None
+        # dead ball released from out of bounds: (team, t, frame, releaser, his control) until someone gains it
+        self._throw_in: tuple[Team | None, float, int, str, _Control | None] | None = None
         self._pending_miss: ShotEntry | None = None
         self._control: _Control | None = None
         self._prev_control: _Control | None = None
@@ -889,6 +900,7 @@ class EventEngine:
         self.deadball.note_stoppage(t, "period_break")
         self._pending_miss = None  # no rebound after the period-end buzzer [15]
         self._ft = None
+        self._throw_in = None
         self._enter_dead("break", t, f)  # a ball already on its way may still become an attempt / make
 
     def _start_period(self, t: float, f: int) -> None:
@@ -898,6 +910,7 @@ class EventEngine:
         self._control = self._prev_control = None
         self._ft = None
         self._dead = None
+        self._throw_in = None
         self._enter_dead("period", t, f)
 
     def _half_index(self, period: int | None) -> int:
@@ -934,16 +947,18 @@ class EventEngine:
     def _go_live(self, t: float) -> None:
         self._phase = LIVE
         self._dead = None
+        self._throw_in = None
         self._live_since = t
         self.deadball.note_live(t)
 
-    def _restart(self, team: Team | None, t: float, f: int, pid: str, how: str) -> None:
+    def _restart(self, team: Team | None, t: float, f: int, pid: str, how: str,
+                 inbounder_ctrl: _Control | None = None) -> None:
         """End a dead ball: ``team`` puts the ball in play (inbound, jump ball, live evidence)."""
         d = self._dead
         if d is None or d.cause == "break":
             return
         first = d.first_control.get(team) if team is not None else None
-        ctrl = self._control
+        ctrl = inbounder_ctrl if inbounder_ctrl is not None else self._control
         if how == "inbound" and ctrl is not None and ctrl.player_id == pid:
             first = (ctrl.onset_t, ctrl.onset_frame, pid)  # the inbounder's own control, not a stray touch
         ft, ff, fp = first if first is not None else (t, f, pid)
@@ -1038,14 +1053,24 @@ class EventEngine:
         if ft_side is not None:
             flight = Flight(rel, self.court, cfg, free_throw_side=ft_side)
         else:
+            self._throw_in = None
             if self._phase == DEAD and pos is not None and not self.court.in_bounds(*pos, margin=cfg.inbound_holder_margin_ft):
-                self._restart(team, ch.t, ch.frame_idx, pid, "inbound")
+                picked_up = ctrl.dead_pickup if ctrl is not None else (self._dead is not None and self._dead.cause == "period")
+                if cfg.inbound_needs_court_receiver and picked_up:
+                    # he picked the dead ball up (or holds it for a period-start throw-in): decided by the next gain
+                    # (_on_gain). A holder who had live control restarts at once, as before (monocular foot points
+                    # put a corner shooter out of bounds).
+                    self._throw_in = (team, ch.t, ch.frame_idx, pid, ctrl)
+                else:
+                    self._restart(team, ch.t, ch.frame_idx, pid, "inbound")
             cont = self._continuation
             continuation = cont is not None and cont[0] == pid and ch.t - cont[1] <= cfg.continuation_s
             flight = Flight(rel, self.court, cfg, context="live" if self._phase == LIVE or continuation else "dead")
             flight.continuation = continuation
             if continuation:
                 self._continuation = None
+        pre = [o for t, fi, o in self._buffer if fi < ch.frame_idx and o is not None and ch.t - t <= 2.5 * self._dt]
+        flight.pre = self._sample(pre[-1]) if pre else None
         self._flight, self._flight_ctrl = flight, ctrl
         self._prev_control, self._control = ctrl, None
         if flight.context == "live" and not flight.is_ft:
@@ -1067,6 +1092,7 @@ class EventEngine:
             assert prev is not None
             self._control = dataclasses.replace(prev, player_id=pid)
             self._flight = None
+            self._throw_in = None  # the same holder again: no throw-in reached the court
             log.info("holder id %s -> %s treated as an identity swap", prev.player_id, pid)
             return
         self._commit_retro_block(flight)  # the ball never reached the rim
@@ -1074,6 +1100,12 @@ class EventEngine:
             for sig in flight.on_control(ch.t, ch.frame_idx):
                 self._on_signal(flight, sig)
         oob = pos is not None and not self.court.in_bounds(*pos, margin=self.config.inbound_holder_margin_ft)
+        throw_in, self._throw_in = self._throw_in, None
+        if throw_in is not None and self._phase == DEAD and not oob and flight is not None \
+                and flight.release.player_id == throw_in[3]:
+            # the throw-in reached a player on the court: play restarted at its release
+            tm, t_rel, f_rel, inbounder, ictrl = throw_in
+            self._restart(tm, t_rel, f_rel, inbounder, "inbound", inbounder_ctrl=ictrl)
         if self._phase == LIVE and oob:
             self._enter_dead_from_live("oob", ch.t, ch.frame_idx, flight, before=ch.t)
         if self._phase == DEAD:
@@ -1119,7 +1151,7 @@ class EventEngine:
         d = self._dead
         assert d is not None
         flight, self._flight = self._flight, None
-        self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="inbound" if oob else "other")
+        self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="inbound" if oob else "other", dead_pickup=True)
         if d.cause == "break":
             return
         if team is not None and team not in d.first_control:
@@ -1999,7 +2031,15 @@ class EventEngine:
             # Only the confirmed holder's dribble restarts play: a dead ball bouncing loose next to
             # whoever last touched it (e.g. under the basket after a make) is not live evidence.
             jump = d is not None and d.cause == "period" and self._mono and self._jump_expected()
-            if d is not None and d.cause not in ("break",) and not jump and self._dead_for(d, t) >= self.config.dead_min_s \
+            # after a violation or a ball out the game clock stays stopped until the throw-in is touched on the
+            # court: a player bouncing the dead ball before handing it over does not restart play
+            # (only while the board is read: a clock last seen stopped before the reads stopped proves nothing)
+            held = d is not None and d.cause in ("unknown", "oob") and self.config.dead_from_clock_stop \
+                and self.scoreboard.is_streaming(t) \
+                and bool(self.scoreboard.clock_stopped(t, 2, self.config.clock_stop_min_s)) \
+                and (self.scoreboard.game_clock or 0.0) > 0.05
+            if d is not None and d.cause not in ("break",) and not jump and not held \
+                    and self._dead_for(d, t) >= self.config.dead_min_s \
                     and self._holder.holder == pid \
                     and pos is not None and self.court.in_bounds(*pos) and (self._ft is None or self._ft.shooter != pid):
                 self._restart(self._team_of(pid), t, f, pid, "live")
@@ -2081,6 +2121,7 @@ class EventEngine:
         self._emit(EventKind.TURNOVER, t0, f, team=team, player_id=holder, confidence=0.8,
                    attrs={"type": "shot_clock", "reason": "shot clock expired with the ball held"})
         self._enter_dead("shot_clock", t0, f, last_team=team, last_holder=holder)
+        self._pending_miss = None  # the violation kills the ball: no rebound follows the miss before it
 
     # ------------------------------------------------------------------ reconciliation
 

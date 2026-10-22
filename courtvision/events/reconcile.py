@@ -6,7 +6,9 @@ The scoreboard is authoritative. For each confirmed score change (team T, delta 
 1. **confirm** an unconfirmed SHOT_MADE of T worth d near the change;
 2. **fix_value** of an unconfirmed SHOT_MADE of T when d and its value are 2 and 3;
 3. (hold while T has a shot in flight, so a make the engine is still deciding can match);
-4. **flip_to_made** a recent SHOT_MISSED of T worth d (or 2 <-> 3);
+4. **flip_to_made** a recent SHOT_MISSED of T worth d (or 2 <-> 3), once the delta has waited
+   ``reconcile_flip_hold_s`` (a make the engine recognises a few frames after the delta's first read
+   confirms it instead);
 5. **correction** (SCORE_CORRECTION, needs_review) once ``reconcile_hold_s`` has passed.
 
 Separately, a SHOT_MADE with no delta within ``make_confirm_wait_s`` while a trusted scoreboard is
@@ -119,6 +121,8 @@ class Reconciler:
         age = now - ch.confirmed_t
         if not force and ch.team in busy and age < cfg.reconcile_inflight_max_s:
             return None
+        if not force and age < cfg.reconcile_flip_hold_s:
+            return None  # a make still being decided (its release recognised a few frames late) matches first
         flip_lo = ch.t - cfg.reconcile_flip_window_s
         misses = sorted((s for s in mine if s.made is False and not s.confirmed and not s.score_matched  # type: ignore[operator]
                          and flip_lo <= s.result_t <= hi  # type: ignore[operator]

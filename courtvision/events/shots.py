@@ -125,6 +125,9 @@ class Flight:
         self.target: Side | None = free_throw_side
         self.zone_t: float | None = None  # first sample inside the target's rim zone
         self.samples: list[FlightSample] = []
+        # the ball observed just before the (hysteresis-dated) release: a layup or dunk pushed through the ring is
+        # often released at or below the rim plane, so its crossing lies between this and the first sample
+        self.pre: FlightSample | None = None
         self.result_t: float | None = None
         self.result_frame: int | None = None
         self.result_reason = ""
@@ -290,6 +293,8 @@ class Flight:
         d = math.hypot(s.xy[0] - bx, s.xy[1] - by)
         if math.hypot(d - rim_r, s.z - rim_h) <= ball_r + cfg.rim_contact_dist_ft:
             self.rim_contact = True
+        if prev is None and len(self.samples) == 1:
+            prev = self.pre  # the crossing may fall between the last held frame and the first free one
         if prev is not None and prev.is3d and prev.z > rim_h >= s.z:  # type: ignore[operator]
             f = (prev.z - rim_h) / (prev.z - s.z)  # type: ignore[operator]
             cx = prev.xy[0] + f * (s.xy[0] - prev.xy[0])  # type: ignore[index]
@@ -392,7 +397,20 @@ class Flight:
         if self.court.distance_to_basket(r.xy[0], r.xy[1], side) > self.cfg.block_max_basket_dist_ft:
             return False, 0.0, None
         if a.is3d and b.is3d:
-            up = (b.z - a.z) / dt  # type: ignore[operator]
+            # 3-D: the steepest rise over the first few steps (a putback / tip released from a catch is often
+            # dated at the catch, while the ball still falls into the hands), and its free-flight apex
+            # (z + vz^2 / 2g, the same on any step of the flight) must reach about rim height: a shot goes up
+            # to the rim, a pass rising off a dribble at chest height does not (sim train seeds: every
+            # unblocked or blocked field-goal try >= 9.6 ft, median pass 4.8 ft)
+            up, apex = -math.inf, -math.inf
+            for p, q in zip(self.samples[:self.cfg.shot_like_steps], self.samples[1:self.cfg.shot_like_steps + 1]):
+                if not (p.is3d and q.is3d) or q.t <= p.t:
+                    continue
+                u = (q.z - p.z) / (q.t - p.t)  # type: ignore[operator]
+                if u > up:
+                    up, apex = u, q.z + max(u, 0.0) ** 2 / (2.0 * G_FTS2)  # type: ignore[operator]
+            if apex < self.court.rim_height - self.cfg.block_min_apex_below_rim_ft:
+                return False, max(up, 0.0), side
         elif a.uv is not None and b.uv is not None:
             up = -(b.uv[1] - a.uv[1]) / dt / self._px_per_ft()
         else:
@@ -455,7 +473,10 @@ class Flight:
         dv = _deflection3d(p0, p1, p2, p3, court.basket_xy(self.target), cfg.block_min_toward_fts)
         if dv is None or dv < cfg.block_reverse_dv_fts:
             return []
-        if self._at_ring_or_board(p1) or self._at_ring_or_board(p2):
+        # the bounce happens between frames: the ball centre is up to half a step's travel from where it touched
+        slack = cfg.rim_contact_step_frac * max(math.dist((*p0.xy, p0.z), (*p1.xy, p1.z)),  # type: ignore[misc]
+                                                math.dist((*p1.xy, p1.z), (*p2.xy, p2.z)))  # type: ignore[misc]
+        if self._at_ring_or_board(p1, slack) or self._at_ring_or_board(p2, slack):
             # the ball came off the ring or the board: no block after that. (Mere proximity is not contact:
             # a layup released over the ring passes within a ball radius of it without bouncing.)
             self._ring_bounce = True
@@ -464,17 +485,18 @@ class Flight:
         # interference), while teammates crashing the boards stand next to every layup
         return self._blocked_at(p1, dv, self.target, players, team_of, mates=False)
 
-    def _at_ring_or_board(self, s: FlightSample) -> bool:
-        """3-D: the ball touches the ring or the backboard at ``s`` (the rim-contact distance of ``_step_shot3d``)."""
+    def _at_ring_or_board(self, s: FlightSample, slack: float = 0.0) -> bool:
+        """3-D: the ball touches the ring or the backboard at ``s`` (the rim-contact distance of ``_step_shot3d``,
+        plus ``slack`` ft)."""
         cfg, court = self.cfg, self.court
         assert self.target is not None and s.xy is not None and s.z is not None
         bx, by = court.basket_xy(self.target)
         d = math.hypot(s.xy[0] - bx, s.xy[1] - by)
         rim_h = court.rim_height
-        if math.hypot(d - court.rim_radius, s.z - rim_h) <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft:
+        if math.hypot(d - court.rim_radius, s.z - rim_h) <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft + slack:
             return True
         board_x = court.backboard_offset if self.target == "left" else court.length - court.backboard_offset
-        return abs(s.xy[0] - board_x) <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft \
+        return abs(s.xy[0] - board_x) <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft + slack \
             and abs(s.xy[1] - by) <= cfg.backboard_half_width_ft + cfg.ball_radius_ft \
             and rim_h - cfg.rim_zone_below_ft <= s.z <= rim_h + cfg.backboard_above_rim_ft
 
