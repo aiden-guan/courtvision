@@ -95,7 +95,8 @@ def test_dead_ball_handed_to_the_inbounder_restarts_when_a_court_player_gains_th
     ev = live(eng.events)
     assert all(ph == "dead" for t, ph in phases if s.marks["out"] + 0.1 <= t < s.marks["catch"])
     assert eng.phase == "live"
-    p = one(ev, EventKind.PASS)
+    lost, p = live(ev, EventKind.PASS)  # home-1's pass out of bounds is an incomplete pass (round 5), then the throw-in
+    assert (lost.player_id, lost.attrs["completed"]) == ("home-1", False)
     assert (p.player_id, p.other_player_id) == ("away-2", "away-1") and abs(p.t - s.marks["release"]) < TOL
     assert eng._live_since == pytest.approx(p.t)  # the restart is dated at the throw-in's release
     poss = [e for e in live(ev, EventKind.POSSESSION) if e.team is Team.AWAY]
@@ -113,7 +114,8 @@ def test_inbounder_who_picked_up_the_dead_ball_restarts_play_when_the_throw_in_i
     ev = live(eng.events)
     assert all(ph == "dead" for t, ph in phases if s.marks["out"] + 0.1 <= t < s.marks["catch"])
     assert eng.phase == "live"
-    p = one(ev, EventKind.PASS)
+    lost, p = live(ev, EventKind.PASS)  # home-1's pass out of bounds is an incomplete pass (round 5), then the throw-in
+    assert (lost.player_id, lost.attrs["completed"]) == ("home-1", False)
     assert (p.player_id, p.other_player_id) == ("away-2", "away-1") and abs(p.t - s.marks["release"]) < TOL
     assert eng._live_since == pytest.approx(p.t)
     poss = [e for e in live(ev, EventKind.POSSESSION) if e.team is Team.AWAY]
@@ -174,7 +176,10 @@ def test_dribbling_the_dead_ball_while_the_read_clock_stays_stopped_does_not_res
     s = _dead_ball_dribble_scene()
     eng, phases = _run_tracking(s.frames_3d())
     assert all(ph == "dead" for t, ph in phases if t >= s.marks["out"] + 0.1)
-    assert kinds(eng.events) == ["possession"]  # no inferred turnover, no away possession, no shot
+    # no inferred turnover, no away possession, no shot (home-1's pass out of bounds is an incomplete pass, round 5)
+    assert kinds(eng.events) == ["possession", "pass"]
+    lost = one(eng.events, EventKind.PASS)
+    assert lost.player_id == "home-1" and lost.attrs["completed"] is False
     assert not live(eng.events, EventKind.DRIBBLE)
     # the stopped clock is what holds it: without clock-stop dead balls the same bounces restart play
     eng2 = run_engine(s.frames_3d(), EventEngineConfig(dead_from_clock_stop=False))
