@@ -522,6 +522,18 @@ class Flight:
         return [FlightSignal("blocked", p1.t, p1.frame_idx, side=side, player_id=blocker, reason=self.result_reason,
                              data=dict(self.block_data))]
 
+    def defer_block(self, sig: FlightSignal) -> None:
+        """Monocular: keep a reversal found in flight (``_check_block``) as a block candidate, like the engine's
+        retro-block, instead of turning the flight loose now; the engine commits it (``mark_blocked``) once the
+        ball's next owner is known. The first candidate is kept."""
+        self.blocker, self.state, self.block_data = None, "air", {}
+        self.result_t = self.result_frame = None
+        self.result_reason = ""
+        if self.retro_block is None and sig.player_id is not None and sig.side is not None:
+            data = {k: v for k, v in sig.data.items() if k != "basket"}
+            data.update(rise_t=self.release.t, rise_frame=self.release.frame_idx)
+            self.retro_block = (sig.t, sig.frame_idx, sig.player_id, sig.side, data)
+
     def mark_blocked(self, t: float, frame_idx: int, blocker: str, side: Side, data: dict[str, Any]) -> FlightSignal:
         """The engine found the block in hindsight (monocular retro-block): the flight is a blocked shot."""
         self.blocker, self.target, self.state = blocker, side, "loose"

@@ -54,7 +54,8 @@ SEARCH_SPACE: dict[str, list[Any]] = {
     "holder_hidden_confirm_s": [0.3, 0.4, 0.6],
     "holder_vote_loose_k": [4, 5, 6],
     "retro_block_turn_rise_frac": [0.5, 1.0],
-    "block_reverse_dv_img_fts": [14.0, 18.0, 22.0],
+    "block_reverse_dv_img_fts": [10.0, 12.0, 15.0, 18.0],
+    "retro_block_min_loose_s": [0.3, 0.4, 0.6],
 }
 
 

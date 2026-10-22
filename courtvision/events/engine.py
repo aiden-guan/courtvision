@@ -210,7 +210,7 @@ class EventEngineConfig:
     block_min_apex_below_rim_ft: float = 1.0  # 3-D: ... and its free-flight apex reaches rim height - this (a shot goes up to the rim: sim field-goal tries >= 9.6 ft, passes median 4.8 ft); tuned on sim train seeds
     block_min_toward_fts: float = 3.0  # before a block the ball moves toward the rim at least this fast; tuned
     block_reverse_dv_fts: float = 8.0  # velocity change beyond ballistic for a block; tuned
-    block_reverse_dv_img_fts: float = 18.0  # image mode: same, above the velocity noise of ~1.5 px jitter; tuned
+    block_reverse_dv_img_fts: float = 12.0  # image mode: same (sim blocks turn the ball by 8-15 ft/s); only ~2 sigma of the velocity noise of 1.5 px jitter over block_image_span baselines at ~10 px/ft, so jitter alone passes on ~10% of tests: the loose-ball gate (retro_block_min_loose_s) is what keeps it usable; tuned on sim train seeds
     block_image_span: int = 2  # image mode: frames per velocity baseline around the contact; tuned
     block_defender_radius_ft: float = 4.5  # 3-D: defender's centre this close (horizontal) to the ball at the reversal: arm ~0.44 x stature + shoulder offset + ball radius + a lean. 0.1 ft above the farthest of the 23 sim train-seed blocks (4.40 ft); 4.5 and 5.0 score alike; tuned on sim train seeds
     block_min_z_ft: float = 5.0  # above shoulder height = block, below = steal [15]; unverified height
@@ -225,6 +225,8 @@ class EventEngineConfig:
     retro_block_stand_lead_s: float = 0.6  # the shooter's standing box (head line) this long before the release; tuned on sim train seeds
     retro_block_min_base_s: float = 0.06  # ... over baselines of at least this (+-1.5 px jitter); tuned on sim train seeds
     retro_block_max_gap_s: float = 0.35  # velocities only between observations this close (the ball is often hidden at the touch); tuned on sim train seeds
+    retro_block_min_loose_s: float = 0.4  # a candidate is dropped when the shooter's team gains the ball within this of the touch (a blocked ball is knocked loose: from above head height it takes ~0.4-0.8 s to drop to a catch; a quick catch by a teammate was a pass past a contesting defender's raised arms); 0 disables; tuned on sim train seeds
+    retro_block_same_body_ft: float = 4.0  # ... and so is a quick gain by another defender, unless he stands where the blocker stood (one player's renamed track); tuned on sim train seeds
     retro_block_turn_rise_frac: float = 1.0  # a ball turned back from the rim has at least this much less rise after the touch than before (a swat from the side or behind keeps some of its upward speed: the ball was turned, not stopped); tuned on sim train seeds
     # Blocks of shots already inside the rim zone (layups, dunks: they enter it at the release; shots.Flight.
     # _check_rim_block). 3-D: a reversal clear of the ring (rim_contact_dist_ft) and the board is a defender's.
@@ -482,6 +484,7 @@ class EventEngine:
         self._flight_ctrl: _Control | None = None
         # dead ball released from out of bounds: (team, t, frame, releaser, his control) until someone gains it
         self._throw_in: tuple[Team | None, float, int, str, _Control | None] | None = None
+        self._retro_dropped_t = -math.inf  # monocular: the last block candidate the loose-ball gate dropped
         self._pending_miss: ShotEntry | None = None
         self._control: _Control | None = None
         self._prev_control: _Control | None = None
@@ -592,6 +595,7 @@ class EventEngine:
         t = self._last_t if self._last_t is not None else 0.0
         f = self._last_frame if self._last_frame is not None else 0
         if self._flight is not None:
+            self._commit_retro_block(self._flight)  # a block candidate whose next owner the stream never shows
             for sig in self._flight.finish(t, f):
                 self._on_signal(self._flight, sig)
         self._resolve_pending(end=True)
@@ -1095,7 +1099,7 @@ class EventEngine:
             self._throw_in = None  # the same holder again: no throw-in reached the court
             log.info("holder id %s -> %s treated as an identity swap", prev.player_id, pid)
             return
-        self._commit_retro_block(flight)  # the ball never reached the rim
+        self._commit_retro_block(flight, gain=(ch.t, pid))  # the ball never reached the rim
         if flight is not None:
             for sig in flight.on_control(ch.t, ch.frame_idx):
                 self._on_signal(flight, sig)
@@ -1113,17 +1117,35 @@ class EventEngine:
         else:
             self._gain_live(pid, team, ch, flight)
 
-    def _commit_retro_block(self, flight: Flight | None) -> None:
+    def _commit_retro_block(self, flight: Flight | None, gain: tuple[float, str] | None = None) -> None:
         """A monocular block candidate (``_retro_block``) becomes the block once the ball's next owner is known:
-        someone gains it, or it goes dead (a blocked ball knocked out of bounds) before reaching a rim zone."""
+        someone gains it, or it goes dead (a blocked ball knocked out of bounds) before reaching a rim zone.
+        A blocked ball is knocked loose: the shooter's team gaining it within ``retro_block_min_loose_s`` of the
+        touch caught a pass that went past a contesting defender's raised arms. (Judged by team, not by id: the
+        blocker's box is often a short track fragment with a provisional id.) A dropped touch stays dropped: a
+        later release's look-back does not find it again."""
         if flight is None or flight.retro_block is None or flight.state != "air" or flight.context != "live" \
                 or self._phase != LIVE:
+            return
+        if gain is not None and gain[0] - flight.retro_block[0] < self.config.retro_block_min_loose_s \
+                and flight.release.team is not None and gain[1] != flight.retro_block[2] \
+                and (self._team_of(gain[1]) is flight.release.team or not self._same_body(
+                    gain[1], gain[0], flight.retro_block[2], flight.retro_block[0])):
+            self._retro_dropped_t = max(self._retro_dropped_t, flight.retro_block[0])
+            flight.retro_block = None
             return
         data = flight.retro_block[4]
         r = flight.release
         if data["rise_t"] < r.t:  # the attempt is the rise the release was recognised after
             r.t, r.frame_idx = data["rise_t"], data["rise_frame"]
         self._on_block(flight, flight.mark_blocked(*flight.retro_block))
+
+    def _same_body(self, pid: str, t: float, other: str, t_other: float) -> bool:
+        """Is ``pid`` at ``t`` where ``other`` was at ``t_other`` (a renamed / fragmented track of one player)?"""
+        a, b = self._pos(pid, t), self._pos(other, t_other)
+        if a is None or b is None:
+            return False
+        return math.hypot(a[0] - b[0], a[1] - b[1]) <= self.config.retro_block_same_body_ft
 
     def _enter_dead_from_live(self, cause: str, t: float, f: int, flight: Flight | None, out: bool = True,
                               before: float | None = None) -> None:
@@ -1598,7 +1620,11 @@ class EventEngine:
             if not flight.is_ft:
                 self._emit_attempt(flight)
         elif sig.kind == "blocked":
-            self._on_block(flight, sig)
+            if self._mono and self.config.retro_block_min_loose_s > 0.0 and flight.zone_t is None \
+                    and flight.context == "live":
+                flight.defer_block(sig)  # monocular: decided like a retro-block, once the ball's next owner is known
+            else:
+                self._on_block(flight, sig)
         elif sig.kind in ("made", "missed"):
             self._on_result(flight, sig)
         elif sig.kind == "out":
@@ -1779,6 +1805,8 @@ class EventEngine:
                 continue
             if t1 - r.t > cfg.block_max_after_release_s:
                 break
+            if t1 <= self._retro_dropped_t:
+                continue  # judged already: the shooter's team caught it at once
             v1 = ((b[0] - a[0]) / (t1 - t0), (b[1] - a[1]) / (t1 - t0))
             v2 = ((c[0] - b[0]) / (t2 - t1), (c[1] - b[1]) / (t2 - t1))
             v3 = ((d[0] - c[0]) / (t3 - t2), (d[1] - c[1]) / (t3 - t2))
