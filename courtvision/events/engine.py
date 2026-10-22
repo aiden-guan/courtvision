@@ -253,9 +253,10 @@ class EventEngineConfig:
     # hands never leaves his keep box, so no release is seen; it is found while he holds the ball, with the
     # blocker's jump as extra evidence, and decided once he still holds it a moment later. OFF by default: a pump
     # fake that draws a defender's jump looks the same to one camera (the ball raised above the head and brought
-    # back down next to the defender's raised arms), the simulator has no pump fakes, so its false-positive rate
-    # is unmeasured. On sim train seeds 1-6 it finds 2 more blocks (mono headline 0.8055 -> 0.8194 at 0.5 s); the
-    # learning loop (courtvision train) may switch it on when labelled footage shows a gain.
+    # back down next to the defender's raised arms). Measured once the simulator had pump fakes (seeds 1-12, 0.5 s):
+    # 2 more true blocks but 12 more false ones, mono 0.7750 -> 0.7740 and video 0.9146 -> 0.9053 (on seeds 1-6
+    # without pump fakes it had looked like +0.014). The learning loop (courtvision train) may still switch it on
+    # when labelled footage shows a gain.
     block_jump_min_ft: float = 1.0  # monocular: the blocker's feet are this far off the floor at the touch (his box bottom vs its lowest before the take-off; sim block jumps 1.6-2.8 ft). A physical prior only the unit test exercises: the bench is identical for 0-3 ft, and the image lift is inflated by depth motion (3.1-5.5 ft on the true blocks); design, unverified
     block_jump_ref_s: float = 0.45  # ... his box bottom on the floor over the second ending this long before the touch (a 1.6-2.8 ft jump rises for ~0.3-0.4 s to its apex); physical bound
     hold_block_confirm_s: float = 0.0  # ... decided this long after the touch: the shooter still holds the ball (a release before then is judged by the look-back at it); 0 disables (the default, see above); 0.5 when enabled
