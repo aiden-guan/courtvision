@@ -143,6 +143,8 @@ class EventEngineConfig:
     holder_hidden_confirm_s: float = 0.4  # image, loose ball: a clear winner whose ball is then hidden this long (a rebound secured at the chest in traffic, covered by bodies) while he stays in view holds it; 0 disables; tuned on sim train seeds
     holder_hidden_share: float = 0.6  # ... the ball hidden on at least this share of the frames since his first win ...; tuned on sim train seeds
     holder_hidden_window_s: float = 1.0  # ... looking back this far for other winners; tuned on sim train seeds
+    holder_hidden_catch: bool = True  # image, loose ball: a rebounder whose candidacy starts right after the ball was hidden, last seen loose in nobody's reach, caught it out of view: his gain is dated at the middle of that hidden stretch, not at the reappearance (possession._hidden_catch); tuned on sim train seeds
+    holder_hidden_run_wins: int = 2  # ... or, when another player won earlier in that window, the latest winner has at least this many consecutive wins since (observed frames with no winner do not break the run; another player's win does: the ball dropped past a neighbour's box, or an overlapping box won a frame, before the rebounder's hold); 0 = the only winner in the window; 1 and 2 score alike on sim train seeds; tuned on sim train seeds
     holder_vote_loose_n: int = 6  # ... of the last this many observed frames (RESEARCH §2.4 holds a rebound 300 ms); tuned on sim train seeds
     steal_confirm_img_s: float = 0.5  # image: a change of team control must last this long (steal hold 500 ms, RESEARCH §2.4 / §4.1); sourced
     steal_vote_window_s: float = 0.8  # image: votes for a change of team control are counted over this window ...; tuned on sim train seeds
@@ -276,6 +278,9 @@ class EventEngineConfig:
     # completed pass or shot in between, was a wrong-body holder: the steal is retracted (the pass it
     # intercepted is completed) or the rebound re-credited, instead of a second change of possession.
     team_change_revert_s: float = 2.5  # tuned on sim train seeds
+    rebound_loose_s: float = 1.6  # monocular: a short (under victim_min_hold_s), dribble-less rebound stint after which the ball stayed free longer than this before anyone (either team) gained it was the loose ball crossing his box, not control: the rebound moves to that gainer at his gain (engine._loose_rebound). The sim's passes fly at most 1.27 s, but real full-court outlets fly 1.5-2.5 s: rebound_loose_max_speed_fts tells those apart; 0 disables; tuned on sim train seeds
+    rebound_loose_max_speed_fts: float = 20.0  # ... and the ball covered the ground from his touch to that gainer slower than this on average (a loose ball rolls or bounces to the next player; a pass, an outlet included, travels at ~25-45 ft/s); design, unverified
+    rebound_loose_seen_share: float = 0.5  # ... only when the ball was seen on at least this share of the frames between his release and that gain (a ball loose in the open is in view: 0.74-0.91 on the sim train-seed cases; a long pass caught and then held at the receiver's chest is mostly covered by bodies: 0.18); tuned on sim train seeds
     rebound_retime_ft: float = 4.0  # 3-D: a re-credited rebound moves to the new holder's gain when the wrong body stood farther than this from him (monocular: kept, positions too noisy); tuned on sim train seeds
     rebound_retime_mono_ft: float = 6.0  # monocular: the same, from the (noisier) floor positions; tuned on sim train seeds
     strip_max_travel_ft: float = 6.0  # opponent gains within this of the release: steal, not bad pass; tuned
@@ -1302,6 +1307,8 @@ class EventEngine:
             else:
                 self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="self")
             return
+        if self._mono and team is not None and self._loose_rebound(r, pid, team, ch):
+            return
         if ch.t - r.t > cfg.pass_max_flight_s:
             # Long loose ball: a recovery, not a pass. No steal is credited without a defender's
             # action on the ball [15]; the possession change is still recorded.
@@ -1424,6 +1431,42 @@ class EventEngine:
         self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="pass", via_pass=vp, change=xc.change,
                                  via_flight=xc.via_flight, prev_ctrl=prev)
         self._set_possession(team, ch.t, ch.frame_idx, pid, "other")
+        return True
+
+    def _loose_rebound(self, r: Release, pid: str, team: Team, ch: ControlChange) -> bool:
+        """Monocular: the releaser's stint was the rebound (first control after a missed shot), short (under
+        ``victim_min_hold_s``) and without a firm dribble, and the ball then stayed free for more than
+        ``rebound_loose_s`` before this gain (no pass flies that long: the longest outlet takes ~1.3 s). The
+        loose ball fell or bounced through his box and carried on (rolling, bouncing in the open): it was never
+        controlled, so this gain is the first control after the miss. The rebound (team, offensive / defensive,
+        its POSSESSION) moves to this player at his gain; no pass, steal or recovery."""
+        cfg = self.config
+        vc = self._prev_control
+        if cfg.rebound_loose_s <= 0.0 or vc is None or vc.player_id != r.player_id or vc.origin != "rebound" \
+                or vc.miss is None or vc.firm_dribbles > 0 or r.t - vc.onset_t >= cfg.victim_min_hold_s \
+                or ch.t - r.t <= cfg.rebound_loose_s:
+            return False
+        miss = vc.miss
+        ev = self._store.get(miss.rebound_id or "")
+        if ev is None or ev.status is EventStatus.RETRACTED or ev.player_id != r.player_id:
+            return False
+        # a loose ball in the open stays in view; a ball caught and held (a long outlet's receiver holding it at
+        # the chest) is mostly covered by bodies: only a ball seen free on most frames since the release counts
+        gap = [o for t, _, o in self._buffer if r.t < t < ch.t]
+        if not gap or sum(o is not None for o in gap) < cfg.rebound_loose_seen_share * len(gap):
+            return False
+        gpos = self._pos(pid, ch.t)
+        if r.xy is not None and gpos is not None \
+                and math.dist(r.xy, gpos) / max(ch.t - r.t, 1e-6) > cfg.rebound_loose_max_speed_fts:
+            return False  # pass speed: an outlet pass from his hands (a long one flies 1.5-2.5 s)
+        if vc.change is not None and (vc.change.kind != "rebound" or vc.change.miss is not miss):
+            return False  # his stint's change is no longer this rebound (e.g. a pending steal confirmed since)
+        # the bypassed player never had the ball: his release is no shot / pass origin for later look-backs
+        self._release_log = deque(((rr, cc) for rr, cc in self._release_log if rr is not r),
+                                  maxlen=self._release_log.maxlen)
+        chg = vc.change if vc.change is not None else _TeamChange("rebound", vc.onset_t, vc.team, miss.team, miss=miss)
+        self._revert_change(chg, pid, team, ch, retime=True,
+                            reason="the ball stayed loose after the earlier holder's touch (monocular)")
         return True
 
     def _is_id_swap(self, pid: str, team: Team | None, pos: tuple[float, float] | None) -> bool:
@@ -1630,12 +1673,13 @@ class EventEngine:
             return None
         return chg
 
-    def _revert_change(self, chg: _TeamChange, pid: str, team: Team, ch: ControlChange) -> None:
+    def _revert_change(self, chg: _TeamChange, pid: str, team: Team, ch: ControlChange, retime: bool = False,
+                       reason: str = "the other team held the ball at once: wrong-body holder (monocular)") -> None:
         """The other team holds the ball ``team_change_revert_s`` or less after a provisional change of
         team control: the earlier holder was the wrong body. A steal is retracted (its intercepted pass
         becomes a completed pass when a teammate of the passer now holds the ball); a rebound is
-        re-credited to the new holder (offensive / defensive and the POSSESSION follow)."""
-        reason = "the other team held the ball at once: wrong-body holder (monocular)"
+        re-credited to the new holder (offensive / defensive and the POSSESSION follow). ``retime``: the
+        re-credited rebound moves to the new holder's gain whatever the distance (``_loose_rebound``)."""
         for eid in chg.chain:
             self._retract(eid, reason)
         if chg.kind == "steal":
@@ -1657,16 +1701,17 @@ class EventEngine:
         # the first holder was the wrong body; the rebound keeps its time when he was next to the new holder
         # (the right moment, the wrong body), else the new holder's gain is the rebound
         old = self._store.get(miss.rebound_id or "")
-        retime = {}
-        if old is not None and old.player_id is not None:
+        when: dict[str, Any] = {"t": ch.t, "frame_idx": ch.frame_idx} if retime else {}
+        if not retime and old is not None and old.player_id is not None:
             p_old, p_new = self._pos(old.player_id, old.t), self._pos(pid, ch.t)
             far = self.config.rebound_retime_mono_ft if self._mono else self.config.rebound_retime_ft
             if p_old is not None and p_new is not None and math.dist(p_old, p_new) > far:
-                retime = {"t": ch.t, "frame_idx": ch.frame_idx}
+                when = {"t": ch.t, "frame_idx": ch.frame_idx}
         self._revise(miss.rebound_id, team=team, player_id=pid,
                      x=(self._pos(pid, ch.t) or (None, None))[0], y=(self._pos(pid, ch.t) or (None, None))[1],
-                     attrs={"offensive": offensive, "revised_by": "reversal", "reason": "first control after a "
-                            "missed shot (re-credited: the earlier holder was the wrong body)"}, **retime)
+                     attrs={"offensive": offensive, "revised_by": "loose_ball" if retime else "reversal",
+                            "reason": "first control after a missed shot (re-credited: the earlier holder "
+                            + ("never controlled the loose ball)" if retime else "was the wrong body)")}, **when)
         self._retract(miss.possession_id, reason)
         miss.possession_id = None
         self._poss_team = chg.poss_before

@@ -327,16 +327,29 @@ class HolderTracker:
         """Image, loose ball: since his first win, one player has been the only winner, for at least
         ``holder_hidden_confirm_s``, and the ball was hidden on at least ``holder_hidden_share`` of those frames
         while he stays in view: he secured it (a rebound held at the chest in traffic is covered by bodies, so
-        the k-of-n vote never completes). Dated back over his candidacy."""
+        the k-of-n vote never completes). Dated back over his candidacy.
+
+        Another player's earlier win in the window (the ball dropping past a neighbour's box, or a frame of an
+        overlapping box under the rim) does not void the latest winner's hold when the latest winner then won
+        ``holder_hidden_run_wins`` frames in a row (no other winner since his first of them): the hold is
+        judged from his run on."""
         cfg = self.cfg
         if cfg.holder_hidden_confirm_s <= 0.0 or not self._votes:
             return None
         votes = [v for v in self._votes if t - v[0] <= cfg.holder_hidden_window_s]
         winners = [v for v in votes if v[2] is not None]
-        if not winners or len({v[2] for v in winners}) != 1:
+        if not winners:
             return None
+        pid = winners[-1][2]
+        run = len(winners)
+        for i in range(len(winners) - 1, -1, -1):
+            if winners[i][2] != pid:
+                run = len(winners) - 1 - i
+                break
+        if run < len(winners) and (cfg.holder_hidden_run_wins <= 0 or run < cfg.holder_hidden_run_wins):
+            return None  # another player won in the window and the latest winner's run is too short
+        winners = winners[len(winners) - run:]
         first = winners[0]
-        pid = first[2]
         since = [v for v in votes if v[1] >= first[1]]
         frames = frame.frame_idx - first[1] + 1
         if t - first[0] < cfg.holder_hidden_confirm_s or not all(v[6] for v in since) \
@@ -345,7 +358,8 @@ class HolderTracker:
         if not any(p.player_id == pid for p in frame.players):
             return None
         allv = list(self._votes)
-        self._cand_onset = self._walk_onset(allv, first, lambda v: pid in v[5] and v[6], cfg.rebound_backdate_max_s)
+        self._cand_onset = self._hidden_catch(allv, self._walk_onset(allv, first, lambda v: pid in v[5] and v[6],
+                                                                     cfg.rebound_backdate_max_s), first)
         last = winners[-1]
         self._votes.clear()
         change = self._gain(pid, t)
@@ -377,8 +391,8 @@ class HolderTracker:
             if loose and ref_team is None:
                 # a loose ball: the rebounder's control began where he became a valid candidate (a held ball is
                 # often hidden by his own body, so k observed wins can take a second)
-                return raw, self._walk_onset(votes, hv[0], lambda v: raw in v[5] and v[6],
-                                             cfg.rebound_backdate_max_s)
+                return raw, self._hidden_catch(votes, self._walk_onset(votes, hv[0], lambda v: raw in v[5] and v[6],
+                                                                       cfg.rebound_backdate_max_s), hv[0])
             return raw, (hv[0][0], hv[0][1])
         win = [v for v in votes if t - v[0] <= cfg.steal_vote_window_s]
         first = next((i for i, v in enumerate(win) if v[3] is team), None)
@@ -397,6 +411,27 @@ class HolderTracker:
         # the contest: the new team had a valid candidate and the old team did not clearly win the frame
         return best, self._walk_onset(votes, hits[0], lambda v: team in v[4] and not (v[7] and v[3] is not team),
                                       cfg.steal_backdate_max_s)
+
+    def _hidden_catch(self, votes: list[tuple], onset: tuple[float, int], first: tuple) -> tuple[float, int]:
+        """Image, loose ball: the rebounder's candidacy starts right after a stretch with the ball hidden, and on
+        the last observation before it the ball was loose in nobody's reach (no valid candidate): it fell into the
+        bodies, was caught out of view and reappears in his hands. The catch is somewhere in that stretch; with
+        no other evidence it is dated at its middle (at most half the stretch off), not at the reappearance, and
+        not more than ``rebound_backdate_max_s`` before his first counted win. ``holder_hidden_catch``
+        off: unchanged."""
+        cfg = self.cfg
+        if not cfg.holder_hidden_catch:
+            return onset
+        k = next((i for i, v in enumerate(votes) if v[1] == onset[1]), None)
+        if k is None or k == 0:
+            return onset
+        prev = votes[k - 1]
+        if prev[5] or not prev[6] or not votes[k][6] or onset[1] - prev[1] < 2:
+            return onset  # the ball was in someone's reach, not loose, or not hidden in between
+        tm = 0.5 * (prev[0] + onset[0])
+        if first[0] - tm > cfg.rebound_backdate_max_s:
+            return onset
+        return tm, (prev[1] + onset[1]) // 2
 
     def _walk_onset(self, votes: list[tuple], first: tuple, valid: Callable[[tuple], bool],
                     cap: float) -> tuple[float, int]:
