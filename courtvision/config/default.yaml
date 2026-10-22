@@ -130,6 +130,14 @@ sim:
   make_paths: {dunk: {swish: 1.0}, layup: {swish: 0.35, rim_in: 0.2, bank: 0.45}, tip: {swish: 0.6, rim_in: 0.4}, hook: {swish: 0.55, rim_in: 0.3, bank: 0.15}, jumper: {swish: 0.6, rim_in: 0.33, bank: 0.07}, jumper3: {swish: 0.62, rim_in: 0.36, bank: 0.02}, free_throw: {swish: 0.6, rim_in: 0.4}}  # How an unblocked try plays out, as shares of the makes / misses of each shot type ("jumper3" = 3-pt jumpers...
   miss_paths: {dunk: {rim_out: 1.0}, layup: {rim_out: 0.4, rim_multi: 0.15, in_out: 0.1, board_rim: 0.35}, tip: {rim_out: 0.75, rim_multi: 0.25}, hook: {rim_out: 0.56, rim_multi: 0.2, in_out: 0.1, board_rim: 0.12, air: 0.02}, jumper: {rim_out: 0.595, rim_multi: 0.25, in_out: 0.07, board_rim: 0.06, air: 0.025}, jumper3: {rim_out: 0.61, rim_multi: 0.25, in_out: 0.06, board_rim: 0.04, air: 0.04}, free_throw: {rim_out: 0.6, rim_multi: 0.3, in_out: 0.1}}
   jumper_release_z_ft: [7.5, 9.0]  # spec
+  pump_fake_rate: 0.2  # Pump fakes (_pump_fake): a catch-and-shoot or pull-up jumper with the closest defender within pump_fake_con...
+  pump_fake_contest_ft: 6.0
+  pump_fake_bite_rate: 0.4
+  pump_fake_top_z_ft: [7.0, 8.2]
+  pump_fake_up_s: [0.2, 0.3]
+  pump_fake_down_s: [0.15, 0.25]
+  pump_fake_bite_lag_s: [0.05, 0.2]  # the defender's jump apex after the fake's top
+  pump_fake_tags: [catch, pullup]
   layup_release_z_ft: [9.0, 10.5]  # layup/dunk release (spec)
   hook_release_z_ft: [8.5, 9.5]  # unverified
   ft_release_z_ft: [7.3, 8.0]  # unverified

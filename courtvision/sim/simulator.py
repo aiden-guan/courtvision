@@ -278,6 +278,20 @@ class SimConfig:
         "jumper3": {"rim_out": 0.61, "rim_multi": 0.25, "in_out": 0.06, "board_rim": 0.04, "air": 0.04},
         "free_throw": {"rim_out": 0.6, "rim_multi": 0.3, "in_out": 0.1}})
     jumper_release_z_ft: tuple[float, float] = (7.5, 9.0)  # spec
+    # Pump fakes (_pump_fake): a catch-and-shoot or pull-up jumper with the closest defender within
+    # pump_fake_contest_ft is preceded, at pump_fake_rate, by a pump fake: the ball raised above the head as if to
+    # shoot (feet on the floor: at most standing reach) and pulled back down without a release; the defender jumps
+    # at it with his arms up at pump_fake_bite_rate. No event (the ball never leaves the hands). A common move, and
+    # one a single camera can read as a shot or a block. Rates and timings are design choices, unverified (no
+    # sourced pump-fake frequency); its own random stream, so the rest of the game's draws are unchanged.
+    pump_fake_rate: float = 0.2
+    pump_fake_contest_ft: float = 6.0
+    pump_fake_bite_rate: float = 0.4
+    pump_fake_top_z_ft: tuple[float, float] = (7.0, 8.2)
+    pump_fake_up_s: tuple[float, float] = (0.2, 0.3)
+    pump_fake_down_s: tuple[float, float] = (0.15, 0.25)
+    pump_fake_bite_lag_s: tuple[float, float] = (0.05, 0.2)  # the defender's jump apex after the fake's top
+    pump_fake_tags: tuple[str, ...] = ("catch", "pullup")
     layup_release_z_ft: tuple[float, float] = (9.0, 10.5)  # layup/dunk release (spec)
     hook_release_z_ft: tuple[float, float] = (8.5, 9.5)  # unverified
     ft_release_z_ft: tuple[float, float] = (7.3, 8.0)  # unverified
@@ -475,6 +489,8 @@ class SimResult:
     # Per frame, players reaching for the ball with a hand (player_id, hand x, y, z): their image box includes
     # the arm (SimConfig.arm_length_ratio); video renders draw the arm.
     hands: list[list[tuple[str, float, float, float]]] = field(default_factory=list)
+    # Pump fakes (no truth event): {"t" (start), "t_top", "shooter", "defender", "bite"} (diagnosis only)
+    pump_fakes: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------- camera helpers
@@ -711,6 +727,8 @@ class _Game:
         self.rng = np.random.default_rng(cfg.seed)
         # Separate stream for appearance-only draws (jump heights): they never change the game flow.
         self.vis_rng = np.random.default_rng([cfg.seed, 17])
+        self.fake_rng = np.random.default_rng([cfg.seed, 37])  # pump fakes (_pump_fake): their own stream
+        self.pump_fakes: list[dict[str, Any]] = []
         self.court = court_for(cfg.league)
         self.rules = rules_for(cfg.ruleset or cfg.league, list(cfg.rule_overrides) or None)
         self.camera = PinholeCamera.look_at(cfg.camera_position, cfg.camera_target, tuple(cfg.image_size), cfg.hfov_deg)
@@ -2739,6 +2757,10 @@ class _Game:
         z_rel = float(self.rng.uniform(lo, max(lo, hi)))
         side = self.attack[self.slot_team[s]]
         z_rel = max(z_rel, self._min_release_z(self.target[s], side))
+        if shot_type == "jumper" and tag in c.pump_fake_tags and c.pump_fake_rate > 0.0:
+            d = self._closest(self.slot_team[s].other(), self.pos[s])
+            if _dist(self.pos[d], self.pos[s]) <= c.pump_fake_contest_ft and self.fake_rng.random() < c.pump_fake_rate:
+                yield from self._pump_fake(s, d)
         z0, t0 = self.ball.held_z + self._jump_now(s), self.t  # (absolute: the shooting motion's heights)
         if shot_type == "jumper" and self.court.is_three(float(gxy[0]), float(gxy[1]), side) and \
                 self.rng.random() < c.three_foul_rate:  # fouled shooting a three, no make: 3 FTs
@@ -2768,6 +2790,32 @@ class _Game:
         self.locked[s] = False
         self.boxouts, self.shooter_next = [], None
         return self._after_shot(shot, result)
+
+    def _pump_fake(self, s: int, d: int) -> Phase:
+        """Slot ``s`` pump-fakes (``SimConfig.pump_fake_rate``): the ball rises above his head as if to shoot, his
+        feet on the floor, and comes back down into his hands without a release; defender ``d`` may jump at it
+        with his arms up (bites). No event: the ball never leaves his hands."""
+        c, rng, b = self.cfg, self.fake_rng, self.ball
+        lim = self._reach_ft() - b.r - 0.1  # feet on the floor: never above his standing reach
+        z_top = min(float(rng.uniform(*c.pump_fake_top_z_ft)), lim)
+        up_s, down_s = float(rng.uniform(*c.pump_fake_up_s)), float(rng.uniform(*c.pump_fake_down_s))
+        bite = bool(rng.random() < c.pump_fake_bite_rate)
+        if bite:
+            lo, hi = c.jump_ft.get("block", (1.6, 2.8))
+            self._schedule_jump(d, float(rng.uniform(lo, hi)), self.t + up_s + float(rng.uniform(*c.pump_fake_bite_lag_s)))
+        self.pump_fakes.append({"t": self.t, "t_top": self.t + up_s, "shooter": self._pid(s), "defender": self._pid(d),
+                                "bite": bite})
+        z0, t0 = b.held_z, self.t
+        while self.t - t0 < up_s - 1e-9:
+            self._shooting_motion(s, z0, z_top, min(1.0, (self.t + self.dt - t0) / up_s))
+            yield
+        t1 = self.t
+        while self.t - t1 < down_s - 1e-9:
+            w = min(1.0, (self.t + self.dt - t1) / down_s)
+            self._shooting_motion(s, z_top, z0, w)
+            b.aim_w = 1.0 - w  # back from the release point into his hands
+            yield
+        b.held_z, b.aim_w = z0, 0.0
 
     def _release_label(self, s: int, shot_type: str) -> str:
         """The try's label from where it is released (``dunk_max_ft`` / ``layup_max_ft``): a planned dunk or
@@ -4127,7 +4175,8 @@ class _Game:
                          truth_score=dict(self.score), referees=refs, substitutions=list(self.subs_log),
                          rules=self.rules, team_box={t: dict(v) for t, v in self.team_box.items()}, holders=holders,
                          starters={t: list(v) for t, v in self.starters.items()}, waiting=self.r_waiting,
-                         feet_z=np.round(self.r_jump, 4).tolist(), hands=self.r_hands)
+                         feet_z=np.round(self.r_jump, 4).tolist(), hands=self.r_hands,
+                         pump_fakes=list(self.pump_fakes))
 
     def _figure_tops(self) -> np.ndarray:
         """(n, 10) top of each player's image figure: head height plus the jump, raised arms (standing

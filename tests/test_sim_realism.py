@@ -140,7 +140,9 @@ def test_defenders_close_out_on_catch_and_shoot_threes() -> None:
     at the shot), and corner 3s are no longer almost always wide open (> 6 ft: 89% before). The league
     calibration (3PA buckets 1.3/20.4/42.2/36.0% vs NBA tracking 1.7/17/41.7/39.4%) runs on 18 full games."""
     rel, catch, shot, corner = [], [], [], []
-    for seed in (1, 2, 3):
+    # six games: with three (9-13 corner threes) the open share moved by 0.15 with any change of play order (ten
+    # games give 0.59 with pump fakes, 0.61 without)
+    for seed in (1, 2, 3, 4, 5, 6):
         r = GameSimulator(SimConfig(seconds=900.0, fps=15.0, seed=seed)).run()
         passes = [e for e in _kind(r, K.PASS) if e.attrs.get("completed")]
         for a in _kind(r, K.SHOT_ATTEMPT):
