@@ -244,6 +244,7 @@ class EventEngineConfig:
     retro_block_max_gap_s: float = 0.35  # velocities only between observations this close (the ball is often hidden at the touch); tuned on sim train seeds
     retro_block_min_loose_s: float = 0.4  # a candidate is dropped when the shooter's team gains the ball within this of the touch (a blocked ball is knocked loose: from above head height it takes ~0.4-0.8 s to drop to a catch; a quick catch by a teammate was a pass past a contesting defender's raised arms); 0 disables; tuned on sim train seeds
     retro_block_same_body_ft: float = 4.0  # ... and so is a quick gain by another defender, unless he stands where the blocker stood (one player's renamed track); tuned on sim train seeds
+    retro_block_phantom_hold_s: float = 0.5  # ... but not a teammate's gain the ball could not have reached from the release (steal_reach_ft + steal_max_ball_speed_fts): a ball high over the shooter lies along the camera ray in a far teammate's image box. His stint is judged when it ends: shorter than this and without a dribble in his hands, it was that phantom and the block stands. Below the shortest real catch-and-pass (securing and re-throwing a ball takes ~0.5 s, the sim's shortest 0.63 s); on train the phantom stint was 0.33 s and the nearest real hold after a candidate 1.14 s; 0 disables; design
     retro_block_turn_rise_frac: float = 1.0  # a ball turned back from the rim has at least this much less rise after the touch than before (a swat from the side or behind keeps some of its upward speed: the ball was turned, not stopped); tuned on sim train seeds
     retro_block_max_img_speed_fts: float = 45.0  # ... and the ball moves no faster than this on each velocity baseline (a shot leaves the hand at ~20-30 ft/s and a swat sends it back no faster: a faster image "ball" jumped between the real ball and a false detection); 0 disables; tuned on sim train seeds
     retro_block_head_at_touch: bool = True  # ... and above his head line at the touch too: his box bottom then less his standing height above the head (the box before the shot is from a moment earlier: a player moving away from the camera rises in the image without leaving the floor; a dribble's top stays below his head); tuned on sim train seeds
@@ -535,6 +536,8 @@ class EventEngine:
         self._retro_dropped_t = -math.inf  # monocular: the last block candidate the loose-ball gate dropped
         # monocular hold-time block candidate (_scan_hold_block): (holder, his standing box, retro_block tuple)
         self._hold_block: tuple[str, BBox, tuple[float, int, str, Side, dict[str, Any]]] | None = None
+        # monocular: a block candidate held over an unreachable teammate's quick gain (flight, candidate, gainer)
+        self._held_block: tuple[Flight, tuple[float, int, str, Side, dict[str, Any]], str] | None = None
         self._pending_miss: ShotEntry | None = None
         self._control: _Control | None = None
         self._prev_control: _Control | None = None
@@ -1008,6 +1011,9 @@ class EventEngine:
 
     def _enter_dead(self, cause: str, t: float, f: int, **kw: Any) -> _Dead:
         self._resolve_pending()
+        if self._held_block is not None:  # (the held gainer's stint ended in a dead ball: his pass stands)
+            self._retro_dropped_t = max(self._retro_dropped_t, self._held_block[1][0])
+            self._held_block = None
         self._phase = DEAD
         self._dead = _Dead(cause=cause, since_t=t, since_frame=f, entered_t=max(t, self._now), **kw)
         return self._dead
@@ -1111,6 +1117,8 @@ class EventEngine:
         cfg = self.config
         pid, team = ch.player_id, self._team_of(ch.player_id)
         ctrl = self._control if self._control is not None and self._control.player_id == pid else None
+        if self._held_block is not None and self._phantom_block(pid, ctrl, ch.t):
+            return  # he never had the ball: it is still the blocked shot's loose ball
         if self._dead is not None and self._dead.cause == "break":
             self._control = None
             return
@@ -1160,6 +1168,10 @@ class EventEngine:
         pid, team = ch.player_id, self._team_of(ch.player_id)
         pos = self._pos(pid, ch.t)
         flight = self._flight
+        if self._held_block is not None and self._held_block[2] != pid:
+            # someone else has the ball: the held candidate's stint is over (the touch stays dropped)
+            self._retro_dropped_t = max(self._retro_dropped_t, self._held_block[1][0])
+            self._held_block = None
         if self._is_id_swap(pid, team, pos):
             prev = self._prev_control
             assert prev is not None
@@ -1200,6 +1212,13 @@ class EventEngine:
                 and flight.release.team is not None and gain[1] != flight.retro_block[2] \
                 and (self._team_of(gain[1]) is flight.release.team or not self._same_body(
                     gain[1], gain[0], flight.retro_block[2], flight.retro_block[0])):
+            if self.config.retro_block_phantom_hold_s > 0.0 and self._team_of(gain[1]) is flight.release.team \
+                    and not self._reachable(flight.release, gain[1], gain[0]):
+                # the ball could not have reached him yet: a ball high over the shooter seen in a far teammate's
+                # box along the camera ray. The gain goes ahead (a pass); his release judges it (_phantom_block)
+                self._held_block = (flight, flight.retro_block, gain[1])
+                flight.retro_block = None
+                return
             self._retro_dropped_t = max(self._retro_dropped_t, flight.retro_block[0])
             flight.retro_block = None
             return
@@ -1367,7 +1386,29 @@ class EventEngine:
             return
         self._control = _Control(pid, team, ch.t, ch.frame_idx)
 
-    def _reachable(self, r: Release, pid: str, ch: ControlChange) -> bool:
+    def _phantom_block(self, pid: str, ctrl: _Control | None, t: float) -> bool:
+        """``pid`` releases the ball he gained, out of the ball's reach, right after a monocular block candidate
+        (``_commit_retro_block``). A stint shorter than ``retro_block_phantom_hold_s`` without a dribble in his hands
+        was the blocked ball high in the air seen over his box (his box alone holding the ball is no evidence: that is
+        the ambiguity): splice it out (the pass to him is retracted) and commit the block; the ball is loose from the
+        touch, so its next owner is the rebounder. Otherwise the candidate stays dropped."""
+        held, self._held_block = self._held_block, None
+        if held is None:
+            return False
+        flight, cand, gainer = held
+        if pid != gainer or ctrl is None or self._phase != LIVE or ctrl.firm_dribbles > 0 \
+                or t - ctrl.onset_t > self.config.retro_block_phantom_hold_s or ctrl.via_flight is not flight:
+            self._retro_dropped_t = max(self._retro_dropped_t, cand[0])
+            return False
+        if ctrl.via_pass is not None:
+            self._retract(ctrl.via_pass.event_id, "the ball high over the shooter lay in a far teammate's box "
+                                                  "(monocular depth ambiguity): a blocked shot, not a pass")
+        flight.retro_block = cand
+        self._flight, self._control = flight, None
+        self._commit_retro_block(flight)
+        return True
+
+    def _reachable(self, r: Release, pid: str, ch: ControlChange | float) -> bool:
         """Could the ball have gone from the releaser to the gainer ``pid`` by his gain? A gain dated before the
         release (a strip): the two players within ``steal_reach_ft`` at its onset. Otherwise from the release
         point: within that reach, or beyond it in a flight of at most ``steal_max_ball_speed_fts``. Monocular
@@ -1376,9 +1417,10 @@ class EventEngine:
         rejected, and fewer than three positions is no evidence."""
         cfg = self.config
         near = self._hist.positions_near
-        flight_s = ch.t - r.t
-        dst = near(pid, ch.t)
-        src = near(r.player_id, ch.t) if flight_s < 0.0 else ([r.xy] if r.xy is not None else [])
+        t = ch.t if isinstance(ch, ControlChange) else float(ch)
+        flight_s = t - r.t
+        dst = near(pid, t)
+        src = near(r.player_id, t) if flight_s < 0.0 else ([r.xy] if r.xy is not None else [])
         if len(dst) < 3 or not src or (flight_s < 0.0 and len(src) < 3):  # a stray box or two: unknown
             return True
         extra = min(math.dist(a, b) for a in src for b in dst) - cfg.steal_reach_ft

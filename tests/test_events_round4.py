@@ -432,7 +432,7 @@ def test_reconciler_flips_the_recent_miss_once_the_flip_hold_has_passed() -> Non
 # ---------------------------------------------------------------------------- dc30c32: monocular loose-ball block gate
 
 
-def _mono_jumper(recover: str) -> tuple[Scene, list[FrameState]]:
+def _mono_jumper(recover: str, moved: dict[str, tuple[float, float]] | None = None) -> tuple[Scene, list[FrameState]]:
     """The kit's monocular blocked jumper (as in test_events_mono_regressions): home-1 rises into a jumper and
     away-1, a step in front with his arms up, turns it back 0.1 s after the release. Then:
 
@@ -442,11 +442,14 @@ def _mono_jumper(recover: str) -> tuple[Scene, list[FrameState]]:
     * ``down_blocker_team``: swatted down and back past home-1's head (the ball in his image box ~0.27 s after
       the touch), away-4 picks it up ~1 s after the touch.
 
-    The shooter's box grows to his raised arms and the ball (as perception boxes a shooter)."""
+    The shooter's box grows to his raised arms and the ball (as perception boxes a shooter). ``moved`` places other
+    players elsewhere."""
     who, (wx, wy) = {"quick_mate": ("home-4", (24.0, 22.0)), "over_blocker_team": ("away-4", (28.5, 22.0)),
                      "over_mate": ("home-4", (28.5, 22.0)), "down_blocker_team": ("away-4", (25.5, 21.0))}[recover]
     s = two_team_scene()
     s.add("home-1", 19.0, 25.0).add("away-1", 17.6, 24.4).add("home-2", 22.0, 40.0).add(who, wx, wy)
+    for pid, (x, y) in (moved or {}).items():
+        s.add(pid, x, y)
     s.start("home-1").dribble("home-1", 1.0, 2)
     st, top = s.ball, (19.0, 24.6, 8.6)
     assert st is not None
@@ -518,6 +521,68 @@ def test_mono_block_loose_then_recovered_is_a_block(recover: str, recoverer: str
     assert reb.t - blk.t > EventEngineConfig().retro_block_min_loose_s
     assert not live(ev, EventKind.STEAL) and not live(ev, EventKind.TURNOVER)
     assert eng._retro_dropped_t == -math.inf
+
+
+def _ball_in_far_box(frames: list[FrameState], pid: str, t0: float, t1: float) -> list[FrameState]:
+    """Monocular depth ambiguity: between ``t0`` and ``t1`` the ball high over the shooter projects into the image box
+    of ``pid``, who stands far behind it along the camera ray (his floor position is kept: only the image overlaps)."""
+    out = []
+    for fr in frames:
+        if t0 <= fr.t <= t1 and fr.ball is not None and fr.ball.visible and fr.ball.image_xy is not None:
+            u, v = fr.ball.image_xy
+            ps = []
+            for p in fr.players:
+                if p.player_id == pid and p.bbox is not None:
+                    w, h = p.bbox.w, p.bbox.h  # his box, slid so the ball sits at his chest
+                    p = dataclasses.replace(p, bbox=BBox(u - w / 2.0, v - 0.4 * h, u + w / 2.0, v + 0.6 * h))
+                ps.append(p)
+            fr = dataclasses.replace(fr, players=ps)
+        out.append(fr)
+    return out
+
+
+@pytest.mark.parametrize("hold_s", [None, 0.0])
+def test_mono_block_seen_in_a_far_teammates_box_is_a_block(hold_s: float | None) -> None:
+    """Video seed-4 pattern: a jumper turned back high over the shooter lies, for ~0.3 s after the touch, in the
+    image box of home-2, the shooter's teammate 15 ft behind along the camera ray, and the engine sees home-2 gain it.
+    The ball could not have reached him from the release by then (steal_reach_ft + steal_max_ball_speed_fts), so the
+    loose-ball gate holds the block candidate instead of dropping it; home-2's dribble-less 0.3 s stint ends when the
+    ball leaves his box, and is spliced out: home-1's attempt, away-1's BLOCK, away-4's rebound, no pass to home-2.
+    With retro_block_phantom_hold_s = 0 the quick "catch" drops the block (the round-4 gate as before)."""
+    s, frames = _mono_jumper("over_blocker_team", moved={"away-2": (40.0, 8.0)})  # (no other body on the ball's path)
+    s2 = s.marks["block"]
+    frames = _ball_in_far_box(frames, "home-2", s2 + 0.02, s2 + 0.3)
+    cfg = EventEngineConfig() if hold_s is None else EventEngineConfig(retro_block_phantom_hold_s=hold_s)
+    eng = run_engine(frames, cfg)
+    ev = live(eng.events)
+    gained = [p for p in eng.events if p.kind is EventKind.PASS and p.other_player_id == "home-2"]
+    assert gained, "the scene must make the engine see home-2 gain the ball"
+    if hold_s == 0.0:
+        assert not live(ev, EventKind.BLOCK)
+        assert ("home-1", "home-2") in _passes(ev)
+        return
+    blk = one(ev, EventKind.BLOCK)
+    assert (blk.player_id, blk.other_player_id) == ("away-1", "home-1") and abs(blk.t - s2) <= 0.2
+    assert one(ev, EventKind.SHOT_ATTEMPT).player_id == "home-1"
+    assert one(ev, EventKind.SHOT_MISSED).attrs.get("blocked") is True
+    assert one(ev, EventKind.REBOUND).player_id == "away-4"
+    assert ("home-1", "home-2") not in _passes(ev)
+    assert not live(ev, EventKind.STEAL) and not live(ev, EventKind.TURNOVER)
+    assert eng._held_block is None
+
+
+def test_mono_far_teammate_who_keeps_the_ball_after_a_block_candidate_has_it() -> None:
+    """Guard for the phantom-block splice: the same far-teammate "gain" after the touch, but home-2 then really keeps
+    the ball (a dribble in his hands) past retro_block_phantom_hold_s: the pass to him stands, no BLOCK, and the
+    touch stays dropped."""
+    s, frames = _mono_jumper("over_blocker_team", moved={"away-2": (40.0, 8.0)})
+    s2 = s.marks["block"]
+    frames = _ball_in_far_box(frames, "home-2", s2 + 0.02, s2 + 2.5)  # the ball stays in his box: he has it
+    eng = run_engine(frames)
+    ev = live(eng.events)
+    assert not live(ev, EventKind.BLOCK)
+    assert ("home-1", "home-2") in _passes(ev)
+    assert eng._held_block is None and abs(eng._retro_dropped_t - s2) <= 0.1
 
 
 @pytest.mark.xfail(strict=True, reason="monocular depth ambiguity: the ball swatted down past home-1 lies in the "
