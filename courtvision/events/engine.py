@@ -570,7 +570,11 @@ class EventEngine:
                 self._retro_block(fl)  # a release recognised early: the touch after it is buffered only now
         confirm_n, release_n = self._hysteresis_frames()
         f = self._flight
-        prefer = f.release.team if f is not None and f.state == "air" and f.context == "live" else None
+        # a monocular block candidate waits for the ball's next owner (_commit_retro_block): until then the ball may
+        # be loose after a block, so the vote favours neither team, as after a miss (a pass's team preference would
+        # credit the blocked ball falling past the shooter's box to the shooter and so drop the block)
+        blocked = f is not None and f.retro_block is not None and f.state == "air"
+        prefer = f.release.team if f is not None and f.state == "air" and f.context == "live" and not blocked else None
         opp_n = max(confirm_n, round(self.config.steal_confirm_s / max(self._dt, 1e-3))) if self._phase == LIVE else None
         if obs is not None:
             self._mono = not obs.is3d and obs.uv is not None
@@ -580,7 +584,7 @@ class EventEngine:
         else:
             changes = self._holder.update(frame, obs, self._gate.velocity(), self._ppf, confirm_n, release_n, prefer,
                                           opp_n, self.ray_model.ray, self._gate.vertical_accel(),
-                                          loose=self._pending_miss is not None)
+                                          loose=self._pending_miss is not None or blocked)
             if not changes and obs is not None and obs.is3d and self._pending_miss is not None:
                 changes = self._detect_tip()
         self._note_toss(obs)
