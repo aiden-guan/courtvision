@@ -508,6 +508,8 @@ events:
   steal_confirm_s: 0.3  # 3-D / court: a change of team control needs this long (exact positions); tuned
   steal_sustain_s: 0.9  # 0 disables (immediate steals); tuned on sim train seeds
   steal_corroborate_s: 1.5  # ... counted from the confirmation of the gain; tuned on sim train seeds
+  steal_transition_s: 2.0  # physical: a fast break covers half the floor in ~2 s; design
+  steal_transition_min_fts: 2.5  # about half a walking pace (a team walking the ball up advances ~4-5 ft/s); design
   steal_reach_ft: 6.0  # stripping hand reach (~2.3 ft, sim) + both players' monocular position error; design choice, unverified
   steal_max_ball_speed_fts: 50.0  # a hard pass; design choice, unverified
   steal_max_flight_s: 1.6  # Monocular precision heuristic: an opponent's gain more than this after the (engine's) release is credited a...

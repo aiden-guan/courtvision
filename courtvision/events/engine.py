@@ -21,9 +21,11 @@ Pipeline per frame
 7. Reconciliation against the confirmed scoreboard (``reconcile.py``).
 
 Monocular evidence rules (one camera: boxes overlap, the ball hides in the hands): a change of team
-control is a STEAL only once the new team's control is corroborated (``_PendingSteal``) and the releaser
-had shown control himself (``_corroborated``); a releaser who never did is a wrong body, spliced out
-(``_correct_phantom``). A track whose label falls back to a provisional id keeps its roster identity
+control is a STEAL only once the new team's control is corroborated (``_PendingSteal``), the new team then
+advances toward the basket it attacks (``_advance_fts``, once shots show the sides) and the releaser had shown
+control himself (``_corroborated``); a releaser who never did is a wrong body, spliced out (``_correct_phantom``).
+A ball dead right after a change of team control never corroborated is no turnover of that team
+(``_inferred_turnover``). A track whose label falls back to a provisional id keeps its roster identity
 (``_canonical_ids``). A blocked shot recognised late is found in the buffered image track
 (``_retro_block``), and a score delta matching no seen shot becomes an inferred attempt + make
 (``_unseen_make``). Dead balls recognised from a clock stop are dated at the stop.
@@ -160,6 +162,19 @@ class EventEngineConfig:
     # crossing a lone defender's box, are as unambiguous.)
     steal_sustain_s: float = 0.9  # 0 disables (immediate steals); tuned on sim train seeds
     steal_corroborate_s: float = 1.5  # ... counted from the confirmation of the gain; tuned on sim train seeds
+    # Monocular transition check on such a gain (engine._advance_fts): after a steal the new offense goes the other way
+    # (a fast break, or at least the ball brought up the floor), the old offense gets back. A "stolen" ball whose new
+    # team does not advance toward the basket it attacks is still with the old offense, the "stealer" a wrong body (a
+    # defender's box over the handler or over a receiver, the commonest false change of team control with one
+    # camera; sim dev seeds: the new team's mean floor position advanced >= 9 ft in the 2 s after every true steal,
+    # <= 3 ft after those wrong bodies). So the steal is confirmed only once the new team's players have advanced
+    # toward its basket at least steal_transition_min_fts on average (mean floor position) over the
+    # steal_transition_s after the gain, and a shot by the new team at the other basket is the old offense's shot on
+    # a wrong body (no steal). Only when the basket each team attacks is known from shots; 0 disables. Known blind
+    # spot: a steal deep in the stealer's own frontcourt (a full-court press) followed by no shot and no push within
+    # steal_transition_s is rejected; the simulator has no presses, so that cost is unmeasured.
+    steal_transition_s: float = 2.0  # physical: a fast break covers half the floor in ~2 s; design
+    steal_transition_min_fts: float = 2.5  # about half a walking pace (a team walking the ball up advances ~4-5 ft/s); design
     # Monocular physical check on a change of team control (engine._reachable): the ball goes from the releaser
     # to the gainer either within a strip's reach or in flight, at most steal_max_ball_speed_fts. A gain dated
     # (backdated) before the release or farther than the ball can fly in the time is a wrong-body holder.
@@ -449,6 +464,7 @@ class _Dead:
     miss: ShotEntry | None = None
     last_team: Team | None = None
     last_holder: str | None = None
+    last_doubtful: bool = False  # monocular: the last team's control began with a change of team control never corroborated
     out_t: float | None = None
     out_frame: int | None = None
     first_control: dict[Team, tuple[float, int, str]] = field(default_factory=dict)
@@ -1011,13 +1027,23 @@ class EventEngine:
     # ------------------------------------------------------------------ phases
 
     def _enter_dead(self, cause: str, t: float, f: int, **kw: Any) -> _Dead:
-        self._resolve_pending()
+        dropped = self._resolve_pending()
         if self._held_block is not None:  # (the held gainer's stint ended in a dead ball: his pass stands)
             self._retro_dropped_t = max(self._retro_dropped_t, self._held_block[1][0])
             self._held_block = None
         self._phase = DEAD
         self._dead = _Dead(cause=cause, since_t=t, since_frame=f, entered_t=max(t, self._now), **kw)
+        last = self._dead.last_team
+        if self._mono and last is not None and (dropped is last or self._doubtful_holder(self._dead.last_holder)):
+            self._dead.last_doubtful = True
         return self._dead
+
+    def _doubtful_holder(self, pid: str | None) -> bool:
+        """Monocular: did ``pid``'s last stint begin with a change of team control that was never corroborated?"""
+        for ctrl in (self._control, self._flight_ctrl, self._prev_control):
+            if ctrl is not None and pid is not None and ctrl.player_id == pid:
+                return ctrl.doubtful
+        return False
 
     def _dead_for(self, d: _Dead, t: float) -> float:
         """How long the dead ball has lasted at ``t`` for the fallback restarts: counted from when it was
@@ -1089,6 +1115,14 @@ class EventEngine:
         last = d.last_team
         if team is None or last is None or team is last:
             if team is not None and self._poss_team is None:
+                self._set_possession(team, ft, ff, fp, "inbound")
+            return
+        if d.last_doubtful:
+            # The last team's "control" was a change of team control never corroborated (no dribble, shot or sustained
+            # hold): with one camera, mostly a defender's touch seen as a catch, the ball then going out off him. The
+            # other team throwing in keeps its possession (a ball the defence knocks out is no turnover, rules note
+            # §2a): no turnover is inferred.
+            if team is not self._poss_team:
                 self._set_possession(team, ft, ff, fp, "inbound")
             return
         t = d.out_t if d.out_t is not None else d.since_t
@@ -1618,32 +1652,66 @@ class EventEngine:
         holder = self._holder.holder
         mine = holder is None or self._team_of(holder) is pend.team
         if pend.evidence and held >= cfg.steal_sustain_s and mine and not pend.implausible:
-            self._confirm_pending()
+            if cfg.steal_transition_s <= 0.0 or self._attack_known(pend.team) is None:
+                self._confirm_pending()
+            elif held >= cfg.steal_transition_s:  # (until then: wait, the evidence stands)
+                adv = self._advance_fts(pend.team, pend.ch.t, t)
+                if adv is None or adv >= cfg.steal_transition_min_fts:
+                    self._confirm_pending()
+                else:
+                    self._settle_pending()
         elif t - pend.created_t > cfg.steal_corroborate_s:
             self._settle_pending()
+
+    def _attack_known(self, team: Team) -> Side | None:
+        """The basket ``team`` attacks now, when shot evidence (this half, or the other half flipped) shows it."""
+        half = self._half_index(self._period)
+        if self._voted_side(team, half) is None and self._voted_side(team, 1 - half) is None:
+            return None
+        return self.attacking_side.get(team)
+
+    def _advance_fts(self, team: Team, t0: float, t1: float) -> float | None:
+        """Mean speed (ft/s) at which ``team``'s players' floor positions moved toward the basket it attacks between
+        ``t0`` and ``t1`` (players seen around both times; None: unknown side or fewer than three players)."""
+        side = self._attack_known(team)
+        if side is None or t1 - t0 <= 1e-6:
+            return None
+        sgn = 1.0 if self.court.basket_xy(side)[0] > 0.5 * self.court.length else -1.0
+        moves = []
+        for pid in self._players:
+            if self._team_of(pid) is not team:
+                continue
+            a, b = self._hist.positions_near(pid, t0, 0.1), self._hist.positions_near(pid, t1, 0.1)
+            if a and b:
+                moves.append(sgn * (statistics.fmean(p[0] for p in b) - statistics.fmean(p[0] for p in a)))
+        if len(moves) < 3:
+            return None
+        return statistics.fmean(moves) / (t1 - t0)
 
     def _note_pending_evidence(self, team: Team | None, t: float) -> None:
         pend = self._pend
         if pend is not None and team is pend.team and t >= pend.ch.t - 1e-6:
             pend.evidence = True
 
-    def _resolve_pending(self, end: bool = False) -> None:
+    def _resolve_pending(self, end: bool = False) -> Team | None:
         """A dead ball while a change of control is pending: corroborated -> steal, else no steal (the inbound
         decides possession). At the end of the stream no contradiction can come any more: a change the new
-        team has held ``steal_confirm_img_s`` (the steal hold) is confirmed too."""
+        team has held ``steal_confirm_img_s`` (the steal hold) is confirmed too. Returns the new team of a change
+        dropped uncorroborated."""
         pend = self._pend
         if pend is None:
-            return
+            return None
         holder = self._holder.holder
         held = self._now - pend.ch.t >= self.config.steal_confirm_img_s and holder is not None \
             and self._team_of(holder) is pend.team
         if (pend.evidence or (end and held)) and not pend.implausible:
             self._confirm_pending()
-            return
+            return None
         self._pend = None
         if pend.kind == "bad_pass":
             self._pass(pend.flight, self._intended_receiver(pend.flight.release, pend.ch.t, pend.stealer), pend.ch,
                        completed=False)
+        return pend.team
 
     def _confirm_pending(self) -> None:
         pend, self._pend = self._pend, None
@@ -1828,7 +1896,11 @@ class EventEngine:
         cfg, court = self.config, self.court
         r, side = flight.release, flight.target
         if self._pend is not None and r.team is self._pend.team and not flight.is_ft:
-            self._confirm_pending()  # the new team shoots: its control is corroborated (the steal comes first)
+            attack = self._attack_known(self._pend.team) if self.config.steal_transition_s > 0.0 else None
+            if attack is not None and side is not None and side != attack:
+                self._settle_pending()  # a shot at the other team's basket: the old offense's, on a wrong body
+            else:
+                self._confirm_pending()  # the new team shoots: its control is corroborated (the steal comes first)
         assert side is not None
         self._shot_seq += 1
         shot_id = f"s{self._shot_seq:04d}"
