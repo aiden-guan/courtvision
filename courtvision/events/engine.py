@@ -487,6 +487,7 @@ class _FtTrip:
     total: int | None  # None = unknown (no FOUL event)
     taken: int = 0
     live_last: bool = True  # False for technical / flagrant trips (no rebound, possession kept)
+    one_and_one: bool = False  # bonus one-and-one: a missed first free throw ends the trip (the ball is live)
     ft_type: str = "shooting"
     assist_candidate: tuple[str, Team | None] | None = None
     assisted: bool = False
@@ -1339,6 +1340,9 @@ class EventEngine:
         """Fallback restart: an in-bounds pass between teammates well into a dead ball."""
         if flight is None or oob or team is None or d.cause in ("break", "period", "ft_trip"):
             return False
+        ft = self._ft
+        if d.cause == "made_ft" and ft is not None and ft.total is not None and ft.taken < ft.total:
+            return False  # between the free throws of a trip (a made first one): the ball goes back to the shooter
         r = flight.release
         if r.team is not team or r.player_id == pid or r.xy is None or not self.court.in_bounds(*r.xy):
             return False
@@ -1927,7 +1931,10 @@ class EventEngine:
         if attack is None or attack == side:
             return
         team = r.team.other()
-        s0 = next((s for s in flight.samples if s.xy is not None), None)
+        # the ball at the release: the sample just before it (a raised ball's first free-flight sample can be ~0.3 s
+        # and 3 ft into the flight), else the first sample
+        s0 = flight.pre if flight.pre is not None and flight.pre.xy is not None else \
+            next((s for s in flight.samples if s.xy is not None), None)
         bxy = s0.xy if s0 is not None else r.xy
         if bxy is None:
             return
@@ -1936,8 +1943,8 @@ class EventEngine:
             pos = self._pos(pid, r.t)
             if self._team_of(pid) is team and pos is not None and math.dist(pos, bxy) <= best_d:
                 best, best_d = pid, math.dist(pos, bxy)
-        if best is None:
-            return
+        if best is None or self._period is None or not self.scoreboard.is_streaming(r.t):
+            return  # (the half, hence the attack sides, is known only from a period read that is still current)
         reason = "a try at the basket his own team defends: the attacker nearest the ball held it (scramble)"
         miss = ctrl.miss
         reb = self._store.get(miss.rebound_id or "")
@@ -1961,6 +1968,7 @@ class EventEngine:
         r.xy = self._pos(best, r.t) or r.xy
         r.gather_xy = self._hist.position_at(best, r.t - self.config.gather_lead_s) or r.xy
         ctrl.player_id, ctrl.team = best, team
+        flight.recredited = True  # (its basket is no vote for the attack sides: the decision rested on them)
 
     def _emit_attempt(self, flight: Flight) -> ShotEntry:
         cfg, court = self.config, self.court
@@ -2004,7 +2012,8 @@ class EventEngine:
                                      and distance >= cfg.catch_shoot_min_dist_ft),
                 p_three=p3, three_cues=three_cues,
             )
-            self._vote_attack(r.team, side)
+            if not flight.recredited:
+                self._vote_attack(r.team, side)
         if self._ft is not None and flight.is_ft:
             attrs.update(ft_index=self._ft.taken + 1, ft_total=self._ft.total, ft_type=self._ft.ft_type,
                          technical=self._ft.ft_type == "technical")
@@ -2454,15 +2463,27 @@ class EventEngine:
                 and since <= r.t - cfg.clock_stop_min_s and sb.clock_stopped(self._now, 2) \
                 and (sb.game_clock or 0.0) > 0.05:
             return
-        end = next((s for s in reversed(flight.samples) if s.xy is not None), s0)
+        s1 = next((s for s in flight.samples if s.is3d and s.t > s0.t + 0.05), None)
+        if s1 is None:
+            return
+        ux, uy = s1.xy[0] - s0.xy[0], s1.xy[1] - s0.xy[1]  # type: ignore[index]
+        un = math.hypot(ux, uy)
+        if un < 1e-6:
+            return
         best, best_d = None, math.inf
         for pid in self._players:
-            pos = self._pos(pid, end.t)
-            if pid != r.player_id and self._team_of(pid) is r.team and pos is not None:
-                d = math.dist(pos, end.xy)  # type: ignore[arg-type]
-                if d < best_d:
-                    best, best_d = pid, d
-        s1 = next((s for s in flight.samples if s.is3d and s.t > s0.t), None)
+            pos = self._pos(pid, r.t)
+            if pid == r.player_id or self._team_of(pid) is not r.team or pos is None:
+                continue
+            tx, ty = pos[0] - s0.xy[0], pos[1] - s0.xy[1]  # type: ignore[index]
+            tn = math.hypot(tx, ty)
+            if tn < 1e-6 or tn > 70.0:
+                continue
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, (ux * tx + uy * ty) / (un * tn)))))
+            if ang <= 30.0 and ang < best_d:
+                best, best_d = pid, ang
+        if best is None:
+            return  # thrown at nobody: knocked loose, not a pass
         speed = math.dist(s0.xy, s1.xy) / (s1.t - s0.t) if s1 is not None else None  # type: ignore[arg-type]
         self._emit(EventKind.PASS, r.t, r.frame_idx, team=r.team, player_id=r.player_id, other=best, xy=r.xy,
                    confidence=self.config.pass_conf,
@@ -2523,6 +2544,8 @@ class EventEngine:
         if trip is None:
             trip = self._ft = _FtTrip(entry.shooter_id, entry.team, None)
         trip.taken += 1
+        if not made and trip.one_and_one and trip.taken == 1:
+            trip.total = 1  # a missed front end of a one-and-one: the trip is over, the rebound is live
         last = trip.total is not None and trip.taken >= trip.total
         unknown = trip.total is None
         if made:
@@ -2640,11 +2663,14 @@ class EventEngine:
             # it back in play itself, whatever the clock read
             held = held or (d is not None and d.cause in ("shot_clock", "turnover") and d.last_team is not None
                             and self._team_of(pid) is d.last_team)
-            # between the free throws of a trip with free throws left the ball stays dead until the next one: a
-            # lane player bouncing the missed one back to the shooter does not restart play
+            # between the free throws of a trip with free throws left (after a missed or a made one) the ball stays dead
+            # until the next one: a lane player bouncing it back to the shooter does not restart play. Not while the
+            # read game clock runs (the trip is over: a one-and-one front end missed, a free throw the camera missed)
             trip = self._ft
-            held = held or (d is not None and d.cause == "ft_trip" and trip is not None and trip.total is not None
-                            and trip.taken < trip.total)
+            sb_ = self.scoreboard
+            running = sb_.is_streaming(t) and sb_.clock_stopped(t, 2, self.config.clock_stop_min_s) is False
+            held = held or (d is not None and d.cause in ("ft_trip", "made_ft") and trip is not None
+                            and trip.total is not None and trip.taken < trip.total and not running)
             if d is not None and d.cause not in ("break",) and not jump and not held \
                     and self._dead_for(d, t) >= self.config.dead_min_s \
                     and self._holder.holder == pid \
@@ -3254,7 +3280,8 @@ class EventEngine:
             live_last = ftype not in ("technical", "bench_technical", "coach_technical", "flagrant", "disruptive",
                                       "unsportsmanlike")
             trip = _FtTrip(shooter, team, int(awarded), live_last=live_last,
-                           ft_type="technical" if technical else ("flagrant" if not live_last else "shooting"))
+                           ft_type="technical" if technical else ("flagrant" if not live_last else "shooting"),
+                           one_and_one=bool(ev.attrs.get("one_and_one")))
             ctrl = self._control
             if shooter is not None and ctrl is not None and ctrl.player_id == shooter:
                 trip.assist_candidate = self._assist_candidate(

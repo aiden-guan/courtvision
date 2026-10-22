@@ -204,6 +204,7 @@ def test_lane_player_bouncing_a_missed_first_free_throw_does_not_restart_play() 
     (after ``dead_min_s``) and passes it back to the shooter, who makes the second. The ball is dead between the two:
     no steal, no turnover, no rebound of the first."""
     s = ft_scene().start("home-1")
+    s.clock_running = False  # (the game clock is stopped during a free-throw trip)
     free_throw(s, made=False)
     s.fly(lambda pos: s.hands("away-2", pos), 0.6, apex=2.5)
     s.hold("away-2", 1.3)
@@ -414,10 +415,10 @@ def test_rebound_secured_at_the_buzzer_is_a_rebound() -> None:
 
 
 def _thrown_out(low: bool) -> Scene:
-    """home-1 throws a pass over the near sideline from his hands (``low``: the ball is knocked away from his dribble
-    near the floor instead); away-2 inbounds it to away-1."""
+    """home-1 throws a pass to home-4 by the near sideline that sails over him and out (``low``: the ball is knocked
+    away from his dribble near the floor instead); away-2 inbounds it to away-1."""
     s = two_team_scene()
-    s.add("away-2", 24.0, -2.0)
+    s.add("away-2", 24.0, -2.0).add("home-4", 25.0, 2.0)
     s.start("home-1").dribble("home-1", 1.0, 2)
     if low:
         b = s.ball
@@ -443,6 +444,9 @@ def test_pass_thrown_out_of_bounds_is_an_incomplete_pass_3d() -> None:
     assert one(ev, EventKind.TURNOVER).player_id == "home-1"
     off = live(run_engine(s.frames_3d(), EventEngineConfig(incomplete_pass_out=False)).events)
     assert not [p for p in live(off, EventKind.PASS) if p.player_id == "home-1"]
+    # a hold shorter than incomplete_pass_min_hold_s is a fumble, not a pass (home-1 held it 0.6 s after his dribble)
+    short = live(run_engine(s.frames_3d(), EventEngineConfig(incomplete_pass_min_hold_s=2.0)).events)
+    assert not [p for p in live(short, EventKind.PASS) if p.player_id == "home-1"]
 
 
 def test_dribble_knocked_out_of_bounds_near_the_floor_is_no_pass_3d() -> None:
@@ -463,6 +467,45 @@ def test_catch_fumbled_out_of_bounds_is_no_pass_by_the_receiver_3d() -> None:
     s.rest(1.0, visible=False)
     ev = live(run_engine(s.frames_3d()).events)
     assert [p.player_id for p in live(ev, EventKind.PASS)] == ["home-1"]
-    # the hold is what decides: with no minimum the fumble is an incomplete pass of home-2's
-    off = live(run_engine(s.frames_3d(), EventEngineConfig(incomplete_pass_min_hold_s=0.0)).events)
-    assert [p.player_id for p in live(off, EventKind.PASS)] == ["home-1", "home-2"]
+    # (aimed at no teammate, it is no pass whatever the hold: the hold threshold alone is tested on the aimed pass in
+    # test_pass_thrown_out_of_bounds_is_an_incomplete_pass_3d)
+
+
+
+def test_missed_front_end_of_a_one_and_one_is_a_live_rebound() -> None:
+    """A one-and-one (bonus): the first free throw misses, so the trip is over and the ball is live: away-2's catch is
+    a REBOUND and his pass is play, not a dead-ball hand-off."""
+    s = ft_scene().start("home-1")
+    s.clock_running = False
+    free_throw(s, made=False)
+    s.clock_running = True
+    s.fly(lambda pos: s.hands("away-2", pos), 0.6, apex=2.5)
+    s.hold("away-2", 0.8)
+    s.pass_to("away-1", duration=0.5)
+    s.hold("away-1", 1.0)
+    f = foul(0.0)
+    f.attrs["one_and_one"] = True
+    ev = live(run_with_foul(s, "3d", f).events)
+    reb = one(ev, EventKind.REBOUND)
+    assert reb.player_id == "away-2" and reb.attrs["offensive"] is False
+    assert [(p.player_id, p.other_player_id) for p in live(ev, EventKind.PASS)] == [("away-2", "away-1")]
+
+
+def test_lane_player_bouncing_a_made_first_free_throw_does_not_restart_play() -> None:
+    """Two free throws: the first is made, away-2 on the lane line catches it under the basket, bounces it twice and
+    hands it back to the shooter for the second. The ball stays dead between the two: no possession for away, no
+    steal or turnover."""
+    s = ft_scene().start("home-1")
+    s.clock_running = False
+    free_throw(s, made=True)
+    s.fly(lambda pos: s.hands("away-2", pos), 0.5, apex=1.0)
+    s.hold("away-2", 1.3)
+    s.dribble("away-2", 1.0, 2)
+    s.hold("away-2", 0.3)
+    s.pass_to("home-1", duration=0.5)
+    free_throw(s, made=True)
+    s.rest(0.6)
+    ev = live(run_with_foul(s, "3d", foul(0.0)).events)
+    assert len(live(ev, EventKind.SHOT_MADE)) == 2
+    assert not live(ev, EventKind.STEAL) and not live(ev, EventKind.TURNOVER) and not live(ev, EventKind.PASS)
+    assert not [e for e in live(ev, EventKind.POSSESSION) if e.team is Team.AWAY and e.t < s.marks["ft2"]]

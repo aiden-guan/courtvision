@@ -128,6 +128,7 @@ class Flight:
         # the ball observed just before the (hysteresis-dated) release: a layup or dunk pushed through the ring is
         # often released at or below the rim plane, so its crossing lies between this and the first sample
         self.pre: FlightSample | None = None
+        self.recredited = False  # engine: a 3-D try re-credited to an attacker (EventEngine._own_basket_body)
         self.result_t: float | None = None
         self.result_frame: int | None = None
         self.result_reason = ""
