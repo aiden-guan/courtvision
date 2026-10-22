@@ -204,6 +204,11 @@ class EventEngineConfig:
     drop_band: tuple[float, float] = (0.1, 0.9)  # make drop band, fraction of free fall [16]; sourced
     freefall_min_frac: float = 0.9  # >= this = air-ball free-fall signature [16]; sourced
     shot_resolve_timeout_s: float = 4.0  # unresolved shot -> missed + needs_review; tuned
+    # A released ball that has not reached a rim zone this long after its release is no shot on its way to the rim
+    # (sim train-seed field goals cross the rim 0.07-1.93 s after the release, the zone entry comes earlier): a game
+    # clock stop seen meanwhile is the dead ball (a pass thrown out of bounds, a violation), dated at the stop,
+    # instead of waiting for a flight the camera lost (with one camera the ball's way out is rarely seen).
+    shot_max_air_s: float = 2.5  # physical bound with margin; tuned on sim train seeds
     pass_max_flight_s: float = 4.0  # a "pass" flight longer than this is a loose ball; tuned
     pass_min_flight_s: float = 0.2  # monocular: a same-team change faster than this ... (engine._flicker); tuned on sim train seeds
     pass_min_dist_ft: float = 6.0  # ... between players this close, the ball moving less than a body width in the image, is no pass (2% of sim passes are under 6 ft); tuned on sim train seeds
@@ -331,6 +336,12 @@ class EventEngineConfig:
     reconcile_hold_s: float = 2.0  # unmatched delta waits this long before a SCORE_CORRECTION; tuned
     reconcile_flip_hold_s: float = 1.0  # ... and this long before it flips an earlier miss: a layup or dunk the board shows as it drops is released (holder hysteresis) and resolved a few frames after the delta's first read; tuned on sim train seeds
     reconcile_inflight_max_s: float = 5.0  # max wait for an in-flight shot of the scoring team; tuned
+    # A miss is not flipped by a score change when the ball was seen back at its rim at least this long after the miss
+    # was decided (engine._rim_revisit): the points are a later try (putback, tip-in, a shot the image did not see go
+    # in), inferred like an unseen make. A make called missed drops through the net and leaves the rim region at once
+    # (sim train seeds: last rim sighting <= 0.7 s after the result on all 41 right flips, 1.6-11 s on the 7 wrong
+    # ones); a putback needs a rebound and a new release (>= ~1 s). 0 disables; tuned on sim train seeds
+    flip_revisit_s: float = 1.0
     # A confirmed +2 / +3 matching no seen shot becomes an inferred attempt + make (engine._unseen_make)
     infer_unseen_makes: bool = True  # design
     unseen_make_window_s: float = 6.0  # the shooter's release / shooting foul at most this before the delta's first read (make -> board lag 0.4-2 s + OCR + the reconcile hold); tuned on sim train seeds
@@ -520,6 +531,8 @@ class EventEngine:
         self._shots: dict[str, ShotEntry] = {}
         self._recent: deque[ShotEntry] = deque(maxlen=48)
         self._rims: dict[Side, BBox] = {}
+        # image sightings of the ball at each rim (_note_rim_sighting): times, kept for the reconciler's windows
+        self._rim_seen: dict[Side, deque[float]] = {"left": deque(), "right": deque()}
         self._players: dict[str, PlayerState] = {}
         self._buffer: deque[tuple[float, int, BallObs | None]] = deque(maxlen=120)
         self._dt = 1.0 / 30.0
@@ -573,6 +586,7 @@ class EventEngine:
             self._on_scoreboard(frame)
         obs = self._gate.accept(ball_obs(frame, self.config), self._ppf)
         self._buffer.append((frame.t, frame.frame_idx, obs))
+        self._note_rim_sighting(frame, obs)
         if frame.camera_xyz is not None:  # the camera is known (broadcast tracking): its ground point and height
             cx, cy, cz = frame.camera_xyz
             self.ray_model.ray = Ray(float(cx), float(cy), float(cz)) if self.config.use_ray_model else None
@@ -2335,7 +2349,8 @@ class EventEngine:
         if (self.scoreboard.game_clock or 0.0) <= 0.05:
             return
         fl = self._flight
-        if fl is not None and (fl.state == "shot" or (fl.state == "air" and fl.release.t < since)):
+        if fl is not None and (fl.state == "shot" or (fl.state == "air" and fl.release.t < since
+                                                      and frame.t - fl.release.t <= cfg.shot_max_air_s)):
             return  # a ball released before the stoppage may still be a shot: wait for it to resolve
         # (a ball tossed to the official after the whistle is dead from the stoppage on: a travel or a
         # step out of bounds is dated by the clock stop, not by the inbound seconds later)
@@ -2390,7 +2405,8 @@ class EventEngine:
         f = self._flight
         if f is not None and f.context == "live" and (f.state == "shot" or (f.state == "air" and f.samples)):
             inflight.add(f.release.team)
-        actions = self.reconciler.step(now, list(self._recent), self.scoreboard.is_streaming(now), inflight, force=force)
+        actions = self.reconciler.step(now, list(self._recent), self.scoreboard.is_streaming(now), inflight, force=force,
+                                       revisited=self._rim_revisit)
         for a in actions:
             self._apply(a, now)
 
@@ -2437,6 +2453,11 @@ class EventEngine:
         known = self._voted_side(team, half) is not None or self._voted_side(team, 1 - half) is not None
         attack = self.attacking_side.get(team) if known else None  # else: the basket nearest the release
         lo = ch.t - cfg.unseen_make_window_s
+        # a miss of this team the ball went back to the rim after (_rim_revisit): the points are a later try at that
+        # rim (a putback, a tip-in), so the miss's own release is not the shooter's
+        back = self._revisited_miss(ch)
+        if back is not None:
+            lo = max(lo, back[0].result_t or lo)  # type: ignore[arg-type]
         cand: tuple[str, float, int, str] | None = None
         for ft, ff, pid in reversed(self._shoot_fouls):
             if lo <= ft <= ch.t and self._team_of(pid) is team:
@@ -2459,6 +2480,26 @@ class EventEngine:
                     rel, ctrl = r, c
                     cand = (r.player_id, r.t, r.frame_idx, "last release near its basket")
                     break
+        if cand is None and back is not None:
+            # nobody seen releasing it: the putback shooter is the miss's offensive rebounder, else the team's player
+            # nearest that basket when the ball was last at its rim (the try went in just before)
+            miss, side_b, seen_t = back
+            reb = self._store.get(miss.rebound_id or "")
+            pid_b = reb.player_id if reb is not None and reb.team is team and reb.status is not EventStatus.RETRACTED \
+                and reb.player_id else self._nearest_to_basket(team, side_b, seen_t)
+            if pid_b is not None:
+                rt_b, rf_b = seen_t - cfg.unseen_make_flight_s, None
+                # a "shot" of the other team at this rim between the miss and the make is this try on the wrong body
+                # (one camera: the rebounder's box is often an opponent's): it goes, and its release dates the try
+                for e in [e for e in self._recent if e.team is not None and e.team is not team and not e.is_ft
+                          and not e.score_matched and e.made is not True
+                          and (miss.result_t or 0.0) < e.t_release < seen_t and self._shot_basket(e) == side_b]:
+                    att = self._store.get(e.attempt_id)
+                    rt_b, rf_b = e.t_release, att.frame_idx if att is not None else None
+                    self._drop_wrong_body_shot(e, "the putback the scoreboard shows was the other team's try")
+                cand = (pid_b, rt_b, rf_b if rf_b is not None else self._frame_near(rt_b),
+                        "putback after a miss: ball back at the rim")
+                attack = side_b
         if cand is None:
             return False
         pid, rt, rf, why = cand
@@ -2494,22 +2535,121 @@ class EventEngine:
         self._shots[shot_id] = entry
         self._recent.append(entry)
         self._emit_assist(entry, made_t, mf)
+        if back is not None and why.startswith("putback"):
+            self._putback_rebound(back[0], team, pid, rt)
         self._after_unseen_make(team, made_t, entry)
         return True
 
-    def _rim_sighting(self, side: Side, t0: float, t1: float) -> float | None:
-        """Last buffered ball observation at ``side``'s rim (image box, a rim width around it) in (t0, t1]:
-        a made ball leaves that region downward through the net, so it is about the crossing."""
-        rim = self._rims.get(side)
-        if rim is None:
-            return None
-        w = max(rim.w, 1.0)
-        last = None
-        for t, _, o in self._buffer:
-            if o is None or o.uv is None or not t0 < t <= t1:
+    def _rim_revisit(self, miss: ShotEntry, ch: ScoreChange) -> bool:
+        """Was the ball back at the missed shot's rim ``flip_revisit_s`` or more after the miss was decided, before the
+        score change's first read? A miss leaves the rim zone and comes back only with a new try (a putback, a tip-in,
+        a later shot the engine did not see as a make): the change is that try's, not the miss's. (A make called
+        missed drops through the net and is taken out below the rim.) Image sightings only."""
+        cfg = self.config
+        if cfg.flip_revisit_s <= 0.0 or miss.made is not False or miss.result_t is None or miss.team is not ch.team \
+                or ch.delta == 1:
+            return False  # (a +1 is a free throw: an unseen make would not infer it, the flip must stand)
+        att = self._store.get(miss.attempt_id)
+        side = att.attrs.get("basket") if att is not None else None
+        if side is None:
+            return False
+        return self._rim_sighting(side, miss.result_t + cfg.flip_revisit_s, ch.t) is not None
+
+    def _revisited_miss(self, ch: ScoreChange) -> tuple[ShotEntry, Side, float] | None:
+        """The latest recent miss of the scoring team that ``_rim_revisit`` rules out, its basket and the ball's last
+        sighting at that rim before the change."""
+        cfg = self.config
+        for e in reversed(self._recent):
+            if e.team is not ch.team or e.made is not False or e.result_t is None \
+                    or not ch.t - cfg.reconcile_flip_window_s <= e.result_t <= ch.t or not self._rim_revisit(e, ch):
                 continue
-            if rim.x1 - w <= o.uv[0] <= rim.x2 + w and rim.y1 - 2.0 * w <= o.uv[1] <= rim.y2 + w:
+            att = self._store.get(e.attempt_id)
+            side = att.attrs.get("basket") if att is not None else None
+            seen = self._rim_sighting(side, e.result_t + cfg.flip_revisit_s, ch.t) if side else None
+            if seen is not None:
+                return e, side, seen
+        return None
+
+    def _shot_basket(self, entry: ShotEntry) -> Side | None:
+        att = self._store.get(entry.attempt_id)
+        return att.attrs.get("basket") if att is not None else None
+
+    def _drop_wrong_body_shot(self, entry: ShotEntry, reason: str) -> None:
+        """Retract a shot (attempt, result, assist, block, rebound) the engine credited to the wrong team's body."""
+        for eid in (entry.attempt_id, entry.result_id, entry.assist_id, entry.block_id, entry.rebound_id):
+            self._retract(eid, reason)
+        entry.confirmed = entry.score_matched = True  # never matched or flipped again
+        if self._pending_miss is entry:
+            self._pending_miss = None
+        if entry in self._recent:
+            self._recent.remove(entry)
+
+    def _nearest_to_basket(self, team: Team, side: Side, t: float) -> str | None:
+        """The player of ``team`` nearest ``side``'s basket (floor positions) at ``t``."""
+        bx, by = self.court.basket_xy(side)
+        best, best_d = None, math.inf
+        for pid in self._players:
+            if self._team_of(pid) is not team:
+                continue
+            pos = self._pos(pid, t)
+            if pos is None:
+                continue
+            d = math.hypot(pos[0] - bx, pos[1] - by)
+            if d < best_d:
+                best, best_d = pid, d
+        return best
+
+    def _putback_rebound(self, miss: ShotEntry, team: Team, pid: str, rt: float) -> None:
+        """A putback follows an offensive rebound of the miss: a rebound of it by the other team dated after the try was
+        the pickup after the make (retracted); without a rebound by the shooting team, its putback shooter's is dated
+        between the miss and the try (a tip is both at once, a catch and putback takes ~1 s)."""
+        reb = self._store.get(miss.rebound_id or "")
+        if reb is not None and reb.status is not EventStatus.RETRACTED:
+            if reb.team is team:
+                return
+            if reb.t < rt:
+                return  # a rebound before the try: kept (its time is evidence; the body may be the wrong one)
+            self._retract(reb.event_id, "the putback after the miss was made: this was the pickup after the score")
+            miss.rebound_id = None
+        if self._pending_miss is miss:
+            self._pending_miss = None
+        if self._dead is not None and self._dead.miss is miss:
+            self._dead.miss = None  # (no team rebound for it at the inbound)
+        t = 0.5 * ((miss.result_t if miss.result_t is not None else rt) + rt)
+        cues = {"control_duration_s": 0.0, "track_conf": self._player_conf(pid), "team_margin": 1.0}
+        p, status = self._p("rebound", cues)
+        ev = self._emit(EventKind.REBOUND, t, self._frame_near(t), team=team, player_id=pid, xy=self._pos(pid, t),
+                        shot_id=miss.shot_id, confidence=min(p, self.config.unseen_make_conf),
+                        attrs={"offensive": True, "p_status": status, "inferred": "scoreboard", "needs_review": True,
+                               "reason": "offensive rebound implied by a putback the scoreboard shows"})
+        miss.rebound_id = ev.event_id
+
+    def _note_rim_sighting(self, frame: FrameState, obs: BallObs | None) -> None:
+        """Record an accepted ball observation at a rim (image box, a rim width around it), judged against that
+        frame's own rim box (a panning broadcast camera moves the rims), and keep the last
+        ``rim_sighting_keep_s`` of them: the reconciler looks that far back (flip window, in-flight wait, hold)."""
+        keep = self.config.reconcile_flip_window_s + self.config.reconcile_inflight_max_s \
+            + self.config.reconcile_hold_s + 2.0
+        for dq in self._rim_seen.values():
+            while dq and frame.t - dq[0] > keep:
+                dq.popleft()
+        if obs is None or obs.uv is None:
+            return
+        rims = {r.side: r.bbox for r in frame.rims} or self._rims  # (a frame without rim boxes: the last seen)
+        for side, bb in rims.items():
+            w = max(bb.w, 1.0)
+            if bb.x1 - w <= obs.uv[0] <= bb.x2 + w and bb.y1 - 2.0 * w <= obs.uv[1] <= bb.y2 + w:
+                self._rim_seen[side].append(frame.t)
+
+    def _rim_sighting(self, side: Side, t0: float, t1: float) -> float | None:
+        """Last ball observation at ``side``'s rim (``_note_rim_sighting``) in (t0, t1]: a made ball leaves that
+        region downward through the net, so it is about the crossing."""
+        last = None
+        for t in self._rim_seen.get(side, ()):
+            if t0 < t <= t1:
                 last = t
+            elif t > t1:
+                break
         return last
 
     def _after_unseen_make(self, team: Team, made_t: float, entry: ShotEntry) -> None:
@@ -2526,8 +2666,8 @@ class EventEngine:
                 for tv in list(self._store.values()):
                     if tv.kind is EventKind.TURNOVER and tv.team is team and abs(tv.t - ev.t) < 1e-6:
                         self._retract(tv.event_id, reason)
-            elif ev.kind is EventKind.POSSESSION and ev.team is other and ev.attrs.get("cause") in ("turnover", "steal",
-                                                                                                    "other"):
+            elif ev.kind is EventKind.POSSESSION and ev.team is other and ev.attrs.get("cause") in (
+                    "turnover", "steal", "other", "defensive_rebound"):
                 self._revise(ev.event_id, attrs={"cause": "made_shot", "reason": reason})
                 entry.possession_id = ev.event_id
         d = self._dead

@@ -8,7 +8,8 @@ The scoreboard is authoritative. For each confirmed score change (team T, delta 
 3. (hold while T has a shot in flight, so a make the engine is still deciding can match);
 4. **flip_to_made** a recent SHOT_MISSED of T worth d (or 2 <-> 3), once the delta has waited
    ``reconcile_flip_hold_s`` (a make the engine recognises a few frames after the delta's first read
-   confirms it instead);
+   confirms it instead), unless the engine's ``revisited`` test says the ball went back to that rim
+   after the miss (the points came from a later try the engine did not see as a make: a putback, a tip-in);
 5. **correction** (SCORE_CORRECTION, needs_review) once ``reconcile_hold_s`` has passed.
 
 Separately, a SHOT_MADE with no delta within ``make_confirm_wait_s`` while a trusted scoreboard is
@@ -19,7 +20,7 @@ rebound retraction, assist re-derivation) because it owns the event store.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -78,16 +79,17 @@ class Reconciler:
         self.pending.append(change)
 
     def step(self, now: float, shots: Sequence[ShotEntry], streaming: bool, inflight: Iterable[Team | None] = (),
-             force: bool = False) -> list[Action]:
+             force: bool = False, revisited: Callable[[ShotEntry, ScoreChange], bool] | None = None) -> list[Action]:
         """Decide what to do with pending changes and stale makes at time ``now``.
 
         ``inflight``: teams with an unresolved shot. ``force``: end of stream, no more holding.
+        ``revisited(miss, change)``: the ball was back at the miss's rim after it, before the change (no flip).
         """
         actions: list[Action] = []
         busy = set(inflight)
         used: set[str] = set()
         for ch in list(self.pending):
-            act = self._match(ch, shots, now, busy, used, force)
+            act = self._match(ch, shots, now, busy, used, force, revisited)
             if act is not None:
                 actions.append(act)
                 self.pending.remove(ch)
@@ -102,7 +104,8 @@ class Reconciler:
         return actions
 
     def _match(self, ch: ScoreChange, shots: Sequence[ShotEntry], now: float, busy: set[Team | None],
-               used: set[str], force: bool) -> Action | None:
+               used: set[str], force: bool,
+               revisited: Callable[[ShotEntry, ScoreChange], bool] | None = None) -> Action | None:
         cfg = self.cfg
         d = ch.delta
         if ch.needs_review or d not in (1, 2, 3):
@@ -126,7 +129,8 @@ class Reconciler:
         flip_lo = ch.t - cfg.reconcile_flip_window_s
         misses = sorted((s for s in mine if s.made is False and not s.confirmed and not s.score_matched  # type: ignore[operator]
                          and flip_lo <= s.result_t <= hi  # type: ignore[operator]
-                         and (s.value == d or {s.value, d} == {2, 3})),
+                         and (s.value == d or {s.value, d} == {2, 3})
+                         and (revisited is None or not revisited(s, ch))),
                         key=lambda s: (s.value != d, -s.result_t))  # type: ignore[operator]
         if misses:
             return Action("flip_to_made", misses[0].shot_id, ch, new_value=d)
