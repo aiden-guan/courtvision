@@ -285,9 +285,16 @@ class EventEngineConfig:
     dribble_min_amp_ft: float = 0.8  # 3-D reversal amplitude of a bounce; tuned
     dribble_radius_ft: float = 4.0  # bounce within this of the dribbler; tuned
     dribble_foot_band: float = 0.35  # image: lowest observed point of a bounce within this fraction of bbox height of the feet (the floor-contact frames are often missed: the ball is hidden by the legs); tuned on sim train seeds
-    dribble_min_amp_h: float = 0.15  # image: reversal amplitude as a fraction of bbox height; tuned
+    # image: reversal amplitude of a bounce in the ball's height above the dribbler's feet, as a fraction of his box
+    # height (also the fall into the low point, ``_came_down``). The torso hides the top of a dribble on the far side of
+    # the body, so often only the floor-to-hip part (~0.2-0.3 of the box) is seen. This signal adds the box-bottom
+    # jitter to the ball's (~0.03-0.04 of the box per frame), and a hysteresis extremum detector needs several sigma:
+    # at 0.08 a ball held still at hip height (triple threat) dribbled falsely under the sim's noise model and lost
+    # real assists, so the old raw-row value stays; the bench is flat from 0.06 to 0.15; design, tuned on sim train
+    # seeds
+    dribble_min_amp_h: float = 0.15
     dribble_min_interval_s: float = 0.2  # tuned
-    dribble_max_rise_s: float = 0.6  # a bounce is back up by the reversal amplitude within this of its low point (floor to hand ~0.2-0.3 s); unverified
+    dribble_max_rise_s: float = 0.6  # a bounce is back up by the reversal amplitude within this of its low point (floor to hand ~0.2-0.3 s), and (image) came down into it within this before it; unverified
     # --- assists (ARCHITECTURE shared semantics)
     assist_window_s: float = 5.0  # catch -> release; sourced (project rule)
     assist_max_dribbles: int = 2  # sourced (project rule)
@@ -1793,6 +1800,8 @@ class EventEngine:
         cfg = self.config
         if ctrl is None or ctrl.via_pass is None or ctrl.via_pass.team is not r.team or r.team is None:
             return None
+        if ctrl.via_pass.passer == r.player_id:
+            return None  # a pass from a teammate (a stint re-addressed to the passer himself is no assist)
         if r.t - ctrl.onset_t > cfg.assist_window_s or ctrl.dribbles > cfg.assist_max_dribbles:
             return None
         return ctrl.via_pass.passer, ctrl.via_pass.team
@@ -2267,7 +2276,10 @@ class EventEngine:
             h = max(p.bbox.h, 1.0)
             box = keep_box(p.bbox, cfg)
             aux = abs(obs.uv[1] - p.bbox.y2) / h if box.x1 <= obs.uv[0] <= box.x2 else math.inf
-            hit = self._bounce.push(-obs.uv[1], obs.t, obs.frame_idx, cfg.dribble_min_amp_h * h, aux)
+            # The ball's height above the dribbler's feet in box heights, not its raw image row: a player driving
+            # towards or away from the camera moves his floor point up or down the image by about a box height per
+            # second, which in raw rows cancels the rise after each bounce (and hides the bounce) or fakes one.
+            hit = self._bounce.push((p.bbox.y2 - obs.uv[1]) / h, obs.t, obs.frame_idx, cfg.dribble_min_amp_h, aux)
             ok = hit is not None and hit[3] <= cfg.dribble_foot_band
         else:
             return
@@ -2276,12 +2288,35 @@ class EventEngine:
         _, t, f, _ = hit
         if obs.t - t > cfg.dribble_max_rise_s:
             return  # back up long after the low point: a ball rolled and then picked up, not a bounce
+        if not obs.is3d and not self._came_down(pid, t, hit[0]):
+            return
         if t - self._last_dribble_t.get(pid, -math.inf) < cfg.dribble_min_interval_s:
             return
         self._last_dribble_t[pid] = t
         # a bounce while nobody holds the ball (after a release, credited to the releaser for a dribble excursion)
         # does not show his control: it is as often the bounce of the player about to gain it, or a bounce pass
         self._on_dribble(pid, t, f, firm=self._holder.holder == pid)
+
+    def _came_down(self, pid: str, t: float, low: float) -> bool:
+        """Image: the ball was seen falling into the low point of ``pid``'s bounce at ``t`` (height ``low`` above his
+        feet in box heights): within ``dribble_max_rise_s`` before it, it was at least ``dribble_min_amp_h`` higher
+        above his feet and within his reach (``keep_box``), whoever the holder was then.
+
+        A dribble comes down from the hand before it bounces. The bounce detector restarts with each new holder, so
+        without this a low point seen only on the first frames of a stint (no fall into it) counts as a bounce: as
+        often a ball high in the air in front of a wrong body whose box moved under it. Looked up across holders
+        because the fall is often seen while the holder is still the passer (a catch confirmed late)."""
+        cfg = self.config
+        lo = t - cfg.dribble_max_rise_s
+        boxes = {bt: bx[pid][0] for bt, bx in self._boxes if lo - 1e-9 <= bt < t and pid in bx}
+        for bt, _, o in self._buffer:
+            box = boxes.get(bt)
+            if box is None or o is None or o.uv is None:
+                continue
+            reach = keep_box(box, cfg)
+            if reach.x1 <= o.uv[0] <= reach.x2 and (box.y2 - o.uv[1]) / max(box.h, 1.0) >= low + cfg.dribble_min_amp_h:
+                return True
+        return False
 
     def _on_dribble(self, pid: str, t: float, f: int, firm: bool = True) -> None:
         """``firm``: he held the ball when it bounced. Only a firm bounce shows that this player controls the ball
