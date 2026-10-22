@@ -207,6 +207,8 @@ class EventEngineConfig:
     pass_max_flight_s: float = 4.0  # a "pass" flight longer than this is a loose ball; tuned
     pass_min_flight_s: float = 0.2  # monocular: a same-team change faster than this ... (engine._flicker); tuned on sim train seeds
     pass_min_dist_ft: float = 6.0  # ... between players this close, the ball moving less than a body width in the image, is no pass (2% of sim passes are under 6 ft); tuned on sim train seeds
+    pass_transit_max_s: float = 0.35  # monocular: a teammate's dribble-less stint between a pass to him and his own release shorter than this is the pass crossing his box in flight, not a catch-and-pass (securing and re-throwing a ball takes ~0.5 s; the sim's shortest is 0.63 s): one pass to the next holder (engine._transit); 0 disables; tuned on sim train seeds
+    pass_transit_flight_s: float = 1.5  # ... only when the next holder gained it within this of the first release (one pass flies at most ~1.3 s: 50 ft at ~40 ft/s; the sim's longest 1.27 s); physical bound, unverified
     gather_lead_s: float = 0.35  # last grounded foot position ~ this before release (D8 proxy); unverified
     tip_max_control_s: float = 0.35  # shorter control near the rim = tip; tuned
     layup_max_dist_ft: float = 6.0  # tuned
@@ -1260,6 +1262,8 @@ class EventEngine:
             self._control = dataclasses.replace(prev, player_id=pid) if prev is not None and prev.player_id == r.player_id \
                 else _Control(pid, team, ch.t, ch.frame_idx)
             return
+        if team is not None and team is r.team and self._mono and self._transit(r, pid, team, ch):
+            return
         if team is not None and team is r.team:
             ev = self._pass(flight, pid, ch, completed=True)
             chg = self._carried_change(r.player_id, ch.t)
@@ -1336,6 +1340,39 @@ class EventEngine:
         if len(pts) < 2:
             return False
         return max(math.dist(pts[0], q) for q in pts[1:]) < r.bbox.w
+
+    def _transit(self, r: Release, pid: str, team: Team, ch: ControlChange) -> bool:
+        """Monocular: the releaser's stint began with a pass from a teammate and ended, without a dribble, within
+        ``pass_transit_max_s``. No catch-and-pass is that quick (the ball must be secured and thrown again): it was
+        the pass crossing his box in flight (a teammate between passer and receiver, or right beside the
+        receiver): one pass from the first passer, re-addressed to this gainer. (A ball that comes straight back
+        to the first passer is left as two passes: the image cannot tell that from a quick give-and-go.)"""
+        cfg = self.config
+        xc = self._prev_control
+        if cfg.pass_transit_max_s <= 0.0 or xc is None or xc.player_id != r.player_id or xc.origin != "pass" \
+                or xc.via_pass is None or xc.via_pass.team is not team or xc.dribbles > 0 \
+                or r.t - xc.onset_t >= cfg.pass_transit_max_s \
+                or ch.t - xc.via_pass.release_t > cfg.pass_transit_flight_s:
+            return False  # (a longer "flight" hid a real hold: the ball was hidden in someone's hands)
+        vp = xc.via_pass
+        ev = self._store.get(vp.event_id)
+        if ev is None or ev.status is EventStatus.RETRACTED or ev.kind is not EventKind.PASS:
+            return False
+        if pid == vp.passer:
+            return False
+        prev = xc.prev_ctrl
+        rpos = self._pos(pid, ch.t)
+        dist = math.dist((ev.x, ev.y), rpos) if ev.x is not None and ev.y is not None and rpos is not None else None
+        # the bypassed player never had the ball: his release is no shot / pass origin for later look-backs
+        self._release_log = deque(((rr, cc) for rr, cc in self._release_log if rr is not r),
+                                  maxlen=self._release_log.maxlen)
+        self._revise(vp.event_id, other_player_id=pid,
+                     attrs={"distance_ft": dist, "transit": [*(ev.attrs.get("transit") or []), r.player_id],
+                            "reason": "teammate gained control (the ball crossed a teammate's box in flight)"})
+        self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="pass", via_pass=vp, change=xc.change,
+                                 via_flight=xc.via_flight, prev_ctrl=prev)
+        self._set_possession(team, ch.t, ch.frame_idx, pid, "other")
+        return True
 
     def _is_id_swap(self, pid: str, team: Team | None, pos: tuple[float, float] | None) -> bool:
         prev = self._prev_control
