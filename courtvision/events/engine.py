@@ -163,6 +163,14 @@ class EventEngineConfig:
     # (backdated) before the release or farther than the ball can fly in the time is a wrong-body holder.
     steal_reach_ft: float = 6.0  # stripping hand reach (~2.3 ft, sim) + both players' monocular position error; design choice, unverified
     steal_max_ball_speed_fts: float = 50.0  # a hard pass; design choice, unverified
+    # Monocular precision heuristic: an opponent's gain more than this after the (engine's) release is credited as a
+    # change of possession, not a steal. Most such gains follow a loose ball the camera did not see as a shot or
+    # block (a miss, a fumble) or a wrong-body holder. It knowingly gives up long poke-loose steals (ARCHITECTURE
+    # STEAL: the first deflector of a ball recovered by the defence gets the steal), which the image cannot tell
+    # from loose-ball recoveries. Sim train seeds: bad-pass interceptions reach ~1.0 s, strip steals 1.4 s from the
+    # victim's last hold, the wrong-body / loose-ball gains 1.7-3.1 s; headline smooth in it (1.4-2.0 s);
+    # design choice, tuned on sim train seeds
+    steal_max_flight_s: float = 1.6
     holder_clear_margin: float = 0.3  # image: a frame is unambiguous when no other candidate scores within this of the pick (keep bonus left out); tuned on sim train seeds
     holder_clear_frames: int = 6  # image: unambiguous observed frames that corroborate a releaser's control (victim_min_hold_s); tuned on sim train seeds
     victim_min_hold_s: float = 1.5  # monocular: a releaser without a dribble held the ball at least this long, or his "loss" to an opponent is a wrong-body correction, not a steal; tuned on sim train seeds
@@ -367,6 +375,7 @@ class _PendingSteal:
     chain: list[str] = field(default_factory=list)  # completed passes inside the new team since
     evidence: bool = False  # a dribble / shot / foul on the new team since the onset
     implausible: bool = False  # the ball could not have reached him in time (``_reachable``): never a steal
+    ctrl: _Control | None = None  # the stealer's stint that the gain started
 
 
 @dataclass(slots=True)
@@ -380,6 +389,7 @@ class _Control:
     origin: str = "other"  # "pass" | "rebound" | "steal" | "inbound" | "self" | "other"
     via_pass: _PassRec | None = None
     dribbles: int = 0
+    firm_dribbles: int = 0  # ... of which he held the ball at the bounce (``_on_dribble``)
     change: _TeamChange | None = None  # monocular: provisional change of team control that started this stint
     via_flight: Flight | None = None  # the pass flight that started it (monocular: spliced out if a wrong body)
     clear: int = 0  # monocular: observed frames on which the ball was unambiguously his (HolderTracker.clear_n)
@@ -1277,13 +1287,18 @@ class EventEngine:
             if (self._mono or (vc is not None and vc.origin == "rebound")) and not self._corroborated(vc, r.t):
                 self._correct_phantom(vc, pid, team, ch)
                 return
+            if self._mono and ch.t - r.t > cfg.steal_max_flight_s:
+                # too long in the air for an interception: a loose-ball recovery (no steal, the possession changes)
+                self._set_possession(team, ch.t, ch.frame_idx, pid, "other")
+                self._control = _Control(pid, team, ch.t, ch.frame_idx)
+                return
             travel = math.dist(r.xy, self._pos(pid, ch.t) or r.xy) if r.xy is not None else 0.0
             strip = travel <= cfg.strip_max_travel_ft and ch.t - r.t <= cfg.strip_max_flight_s
             kind = "steal" if strip else "bad_pass"
             if self._mono and cfg.steal_sustain_s > 0.0:
-                self._pend = _PendingSteal(pid, team, ch, flight, kind, self._prev_control, created_t=self._now,
-                                           implausible=not self._reachable(r, pid, ch))
                 self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="steal")
+                self._pend = _PendingSteal(pid, team, ch, flight, kind, self._prev_control, created_t=self._now,
+                                           implausible=not self._reachable(r, pid, ch), ctrl=self._control)
                 return
             self._steal(pid, team, ch, flight, kind)
             return
@@ -1380,7 +1395,7 @@ class EventEngine:
         handler)."""
         if ctrl is None:
             return False
-        if ctrl.dribbles > 0:
+        if ctrl.firm_dribbles > 0:
             return True
         cfg = self.config
         if ctrl.doubtful:
@@ -1481,9 +1496,11 @@ class EventEngine:
                                       conf=0.5 * self.config.possession_conf)
             if ev is not None:
                 ev.attrs["needs_review"] = True
-            ctrl = self._control
-            if ctrl is not None and ctrl.team is pend.team:
-                ctrl.doubtful = True  # the old team taking it back is a correction, not a steal
+        # the old team taking it back is a correction, not a steal: the new team's stints since the gain (still
+        # held, or released since, e.g. a pass in the air) show control only by a dribble
+        for ctrl in (pend.ctrl, self._control, self._prev_control):
+            if ctrl is not None and ctrl.team is pend.team and ctrl.onset_t >= pend.ch.t - 1e-6:
+                ctrl.doubtful = True
 
     def _drop_pending(self, pid: str, team: Team, ch: ControlChange) -> None:
         """The releaser's team holds the ball again before the change of control was corroborated: the
@@ -2047,9 +2064,13 @@ class EventEngine:
         if t - self._last_dribble_t.get(pid, -math.inf) < cfg.dribble_min_interval_s:
             return
         self._last_dribble_t[pid] = t
-        self._on_dribble(pid, t, f)
+        # a bounce while nobody holds the ball (after a release, credited to the releaser for a dribble excursion)
+        # does not show his control: it is as often the bounce of the player about to gain it, or a bounce pass
+        self._on_dribble(pid, t, f, firm=self._holder.holder == pid)
 
-    def _on_dribble(self, pid: str, t: float, f: int) -> None:
+    def _on_dribble(self, pid: str, t: float, f: int, firm: bool = True) -> None:
+        """``firm``: he held the ball when it bounced. Only a firm bounce shows that this player controls the ball
+        (``_corroborated``, pending-steal evidence)."""
         ctrl = self._control if self._control is not None and self._control.player_id == pid else None
         if ctrl is None and self._prev_control is not None and self._prev_control.player_id == pid:
             ctrl = self._prev_control
@@ -2075,7 +2096,9 @@ class EventEngine:
                 return
         if ctrl is not None:
             ctrl.dribbles += 1
-        self._note_pending_evidence(self._team_of(pid), t)
+            ctrl.firm_dribbles += int(firm)
+        if firm:
+            self._note_pending_evidence(self._team_of(pid), t)
         self._emit(EventKind.DRIBBLE, t, f, team=self._team_of(pid), player_id=pid, xy=self._pos(pid, t),
                    confidence=self.config.dribble_conf, attrs={"reason": "ball bounced next to the holder"})
 
