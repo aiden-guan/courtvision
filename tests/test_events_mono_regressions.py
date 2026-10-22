@@ -13,7 +13,7 @@ import math
 import pytest
 
 from courtvision.events.deadball import DeadBallConfig, DeadBallDetector
-from courtvision.events.engine import EventEngine
+from courtvision.events.engine import EventEngine, EventEngineConfig
 from courtvision.geometry.court import court_for
 from courtvision.types import BallState, BBox, Event, EventKind, FrameState, PlayerState, Team
 
@@ -351,6 +351,172 @@ def test_jumper_blocked_inside_the_shooters_box_is_a_block() -> None:
     reb = one(ev, EventKind.REBOUND)
     assert reb.player_id == "away-1" and reb.attrs["offensive"] is False
     assert not live(ev, EventKind.STEAL) and not live(ev, EventKind.TURNOVER)
+
+
+def _swatted_back_jumper() -> Scene:
+    """home-1 rises into a jumper; away-1, a step in front, swats it 0.1 s after the release straight back down
+    into home-1's raised hands (0.25 s later), and home-1 keeps it."""
+    g = 32.174
+    s = two_team_scene()
+    s.add("home-1", 19.0, 25.0).add("away-1", 17.6, 24.4).add("home-2", 22.0, 40.0)
+    s.start("home-1").dribble("home-1", 1.0, 2)
+    st, top = s.ball, (19.0, 24.6, 8.6)
+    s.run(0.3, lambda a, pos: tuple(st[i] + a * (top[i] - st[i]) for i in range(3)))  # the shooting motion
+    s.mark("release")
+    s.run(0.1, lambda a, pos: (top[0] - 1.4 * a, top[1], top[2] + 1.5 * a - 0.5 * g * (0.1 * a) ** 2))
+    s.mark("block")
+    b, back = s.ball, (19.0, 24.6, 7.4)
+    s.run(0.25, lambda a, pos: tuple(b[i] + a * (back[i] - b[i]) for i in range(3)))  # knocked back into his hands
+    s.mark("regain")
+    e = s.ball
+    s.run(0.4, lambda a, pos: tuple(e[i] + a * (s.hands("home-1", pos)[i] - e[i]) for i in range(3)))
+    s.dribble("home-1", 1.5, 3)
+    return s
+
+
+def _jump(frames: list[FrameState], pid: str, t_apex: float, height_ft: float) -> list[FrameState]:
+    """As a camera sees a jump: ``pid``'s box lifted off the floor by a ballistic jump peaking at ``t_apex``."""
+    g, out = 32.174, []
+    for fr in frames:
+        h = height_ft - 0.5 * g * (fr.t - t_apex) ** 2
+        if h > 0.0:
+            ps = []
+            for p in fr.players:
+                bb = p.bbox
+                if p.player_id == pid and bb is not None:
+                    dy = h * bb.h / 6.7
+                    p = dataclasses.replace(p, bbox=BBox(bb.x1, bb.y1 - dy, bb.x2, bb.y2 - dy))
+                ps.append(p)
+            fr = dataclasses.replace(fr, players=ps)
+        out.append(fr)
+    return out
+
+
+@pytest.mark.parametrize("jump_ft", [2.0, 0.0])
+def test_jumper_swatted_back_to_the_shooter_is_a_block(jump_ft: float) -> None:
+    """Defect (mono 1200 s: 5 of 17 block FNs): a shot swatted straight back into the shooter's raised hands
+    never left his box (it grows to his raised arms and the ball), so no release was seen and the look-back at
+    a release never ran: one continuous hold, no attempt, no block, no rebound. While he holds the ball the
+    newest image observations are now tested like the look-back, with the blocker's jump (his box lifted off
+    the floor) as extra evidence. A defender who does not leave the floor (the ball raised and pulled back
+    down next to his raised arms) blocks nothing."""
+    s = _swatted_back_jumper()
+    frames = _raised_ball_in_box(s.frames_mono(), "home-1", s.marks["release"] - 0.3, s.marks["regain"] + 0.4)
+    frames = _jump(frames, "away-1", s.marks["block"], jump_ft)
+    # the hold-time path is off by default (pump fakes, see test_pump_fake_drawing_a_jump_is_no_block)
+    assert not live(run_engine(frames).events, EventKind.BLOCK)
+    ev = live(run_engine(frames, EventEngineConfig(hold_block_confirm_s=0.5)).events)
+    if jump_ft == 0.0:
+        assert not live(ev, EventKind.BLOCK) and not live(ev, EventKind.SHOT_ATTEMPT)
+        return
+    blk = one(ev, EventKind.BLOCK)
+    assert (blk.player_id, blk.other_player_id) == ("away-1", "home-1") and abs(blk.t - s.marks["block"]) <= 0.2
+    att = one(ev, EventKind.SHOT_ATTEMPT)
+    assert att.player_id == "home-1" and abs(att.t - s.marks["release"]) <= 0.2
+    assert one(ev, EventKind.SHOT_MISSED).attrs.get("blocked") is True
+    reb = one(ev, EventKind.REBOUND)
+    assert reb.player_id == "home-1" and reb.attrs["offensive"] is True and abs(reb.t - s.marks["regain"]) <= 0.5
+    assert not live(ev, EventKind.STEAL) and not live(ev, EventKind.TURNOVER)
+
+
+
+def _pump_fake() -> Scene:
+    """home-1 raises the ball above his head as if to shoot and pulls it back down into his hands without letting
+    go (a pump fake); away-1, a step in front with his arms up, jumps at it."""
+    s = two_team_scene()
+    s.add("home-1", 19.0, 25.0).add("away-1", 17.6, 24.4).add("home-2", 22.0, 40.0)
+    s.start("home-1").dribble("home-1", 1.0, 2)
+    st, top = s.ball, (19.0, 24.6, 8.6)
+    s.run(0.3, lambda a, pos: tuple(st[i] + a * (top[i] - st[i]) for i in range(3)))  # the fake shooting motion
+    s.mark("top")
+    back = (19.0, 24.6, 7.0)
+    s.run(0.15, lambda a, pos: tuple(top[i] + a * (back[i] - top[i]) for i in range(3)))  # pulled back down
+    s.mark("back")
+    e = s.ball
+    s.run(0.4, lambda a, pos: tuple(e[i] + a * (s.hands("home-1", pos)[i] - e[i]) for i in range(3)))
+    s.dribble("home-1", 1.5, 3)
+    return s
+
+
+@pytest.mark.parametrize("enabled", [
+    pytest.param(False, marks=pytest.mark.xfail(
+        strict=True, reason="known monocular failure (pre-existing, f47ea37 too): the jumping defender's lifted box "
+                            "takes the faked ball, so the release look-back reads the fake's rise and pull-back next "
+                            "to his raised arms as a shot turned back (attempt + blocked miss + block)")),
+    pytest.param(True, marks=pytest.mark.xfail(
+        strict=True, reason="known failure mode of the hold-time block path too (one reason it is off by default): "
+                            "a pump fake that draws a jump looks like a shot swatted back into the shooter's hands")),
+])
+def test_pump_fake_drawing_a_jump_is_no_block(enabled: bool) -> None:
+    """A pump fake is not a shot: no attempt, no block. One camera does not tell it from a shot turned back by a
+    jumping defender; the simulator has no pump fakes, so the bench does not measure this false-positive source."""
+    s = _pump_fake()
+    frames = _raised_ball_in_box(s.frames_mono(), "home-1", s.marks["top"] - 0.3, s.marks["back"] + 0.3)
+    frames = _jump(frames, "away-1", s.marks["top"], 2.0)
+    cfg = EventEngineConfig(hold_block_confirm_s=0.5 if enabled else 0.0)
+    ev = live(run_engine(frames, cfg).events)
+    assert not live(ev, EventKind.BLOCK) and not live(ev, EventKind.SHOT_ATTEMPT)
+
+_STAND = BBox(100.0, 200.0, 130.0, 265.0)  # 65 px tall: 10 px/ft at the 6.5 ft nominal height; head line v 209.75
+
+
+def _turn_track(after: tuple[float, float] = (0.0, 100.0),
+                jump_px: float = 0.0) -> list[tuple[float, int, tuple[float, float]]]:
+    """An image ball track at 30 fps (t, frame, uv): rising at 20 ft/s (200 px/s) to a touch at index 2, then moving
+    at ``after`` px/s; ``jump_px`` moves every observation after the touch that much further down (a false
+    detection)."""
+    dt, out = 1.0 / 30.0, []
+    for i in range(7):
+        if i <= 2:
+            uv = (150.0, 190.0 - 200.0 * dt * i)
+        else:
+            uv = (150.0 + after[0] * dt * (i - 2), 190.0 - 400.0 * dt + after[1] * dt * (i - 2) + jump_px)
+        out.append((i * dt, i, uv))
+    return out
+
+
+def test_image_block_turn_ignores_a_jump_to_a_false_detection() -> None:
+    """Defect (mono 1200 s: all 3 remaining block FPs): the image "ball" jumped between the real ball and a false
+    detection (a static clutter blob or another ball-like track) 2-10 ft away, so the velocity baselines across the
+    jump showed an 80-600 ft/s "turn" next to a defender's raised arms. No baseline of a real touch is faster than a
+    shot or a swat (retro_block_max_img_speed_fts)."""
+    eng = EventEngine(court_for("nba"))
+    assert eng._image_block_turn(_turn_track(), 2, _STAND, None) == pytest.approx(27.86, abs=0.05)  # a swat down
+    jumped = _turn_track(jump_px=60.0)  # every observation after the touch is a blob 6 ft lower
+    assert eng._image_block_turn(jumped, 2, _STAND, None) is None
+    eng.config.retro_block_max_img_speed_fts = 0.0  # (the gate is what decides)
+    assert eng._image_block_turn(jumped, 2, _STAND, None) is not None
+
+
+def test_image_block_turn_needs_the_ball_above_the_head_at_the_touch() -> None:
+    """Defect (mono 1200 s: a hold-time block FP in a dribble): the head line came from the holder's box 0.6 s
+    earlier; walking away from the camera since, his box had risen 2-3 ft in the image, so a dribble's top looked
+    above his head. His head line at the touch is now also taken from his box bottom then (feet_v)."""
+    eng = EventEngine(court_for("nba"))
+    track = _turn_track()
+    assert eng._image_block_turn(track, 2, _STAND, None, feet_v=_STAND.y2) is not None  # standing where he stood
+    assert eng._image_block_turn(track, 2, _STAND, None, feet_v=_STAND.y2 + 20.0) is not None  # came closer
+    assert eng._image_block_turn(track, 2, _STAND, None, feet_v=_STAND.y2 - 45.0) is None  # 4.5 ft up the image
+    eng.config.retro_block_head_at_touch = False
+    assert eng._image_block_turn(track, 2, _STAND, None, feet_v=_STAND.y2 - 45.0) is not None
+
+
+@pytest.mark.parametrize(("u", "margin_r", "found"), [
+    (156.0, 0.0, True),  # inside the raised-arm box (x 154-196)
+    (151.0, 0.0, False),  # the ball's centre 3 px outside it
+    (151.0, 1.0, True),  # ... but its surface (radius 3.9 px at his scale) touches it
+    (149.0, 1.0, False),  # beyond a ball radius
+])
+def test_raised_arm_opponent_touches_the_balls_surface(u: float, margin_r: float, found: bool) -> None:
+    """Defect (mono 1200 s: 2 block FNs): the blocker's raised-arm box had to hold the ball's centre, but a hand
+    touches the ball's surface: a ball centre 1-6 px outside his box was "nobody's". The box now grows by
+    retro_block_touch_margin_r ball radii at the defender's own scale."""
+    eng = EventEngine(court_for("nba"))
+    eng.config.retro_block_touch_margin_r = margin_r
+    eng._boxes.append((0.0, {"away-1": (BBox(160.0, 200.0, 190.0, 265.0), Team.AWAY),
+                             "home-2": (BBox(140.0, 200.0, 158.0, 265.0), Team.HOME)}))
+    got = eng._raised_arm_opponent(Team.HOME, (u, 210.0), 0.0)
+    assert got == ("away-1" if found else None)
 
 
 def test_pass_after_a_hidden_hold_is_dated_at_the_release() -> None:

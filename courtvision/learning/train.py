@@ -56,6 +56,7 @@ SEARCH_SPACE: dict[str, list[Any]] = {
     "retro_block_turn_rise_frac": [0.5, 1.0],
     "block_reverse_dv_img_fts": [10.0, 12.0, 15.0, 18.0],
     "retro_block_min_loose_s": [0.3, 0.4, 0.6],
+    "hold_block_confirm_s": [0.0, 0.5],  # the monocular hold-time block path: off unless labelled games show a gain
 }
 
 

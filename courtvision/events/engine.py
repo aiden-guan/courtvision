@@ -238,6 +238,19 @@ class EventEngineConfig:
     retro_block_min_loose_s: float = 0.4  # a candidate is dropped when the shooter's team gains the ball within this of the touch (a blocked ball is knocked loose: from above head height it takes ~0.4-0.8 s to drop to a catch; a quick catch by a teammate was a pass past a contesting defender's raised arms); 0 disables; tuned on sim train seeds
     retro_block_same_body_ft: float = 4.0  # ... and so is a quick gain by another defender, unless he stands where the blocker stood (one player's renamed track); tuned on sim train seeds
     retro_block_turn_rise_frac: float = 1.0  # a ball turned back from the rim has at least this much less rise after the touch than before (a swat from the side or behind keeps some of its upward speed: the ball was turned, not stopped); tuned on sim train seeds
+    retro_block_max_img_speed_fts: float = 45.0  # ... and the ball moves no faster than this on each velocity baseline (a shot leaves the hand at ~20-30 ft/s and a swat sends it back no faster: a faster image "ball" jumped between the real ball and a false detection); 0 disables; tuned on sim train seeds
+    retro_block_head_at_touch: bool = True  # ... and above his head line at the touch too: his box bottom then less his standing height above the head (the box before the shot is from a moment earlier: a player moving away from the camera rises in the image without leaving the floor; a dribble's top stays below his head); tuned on sim train seeds
+    retro_block_touch_margin_r: float = 1.0  # ... the ball's centre may lie this many ball radii outside the blocker's raised-arm box (a hand touches the ball's surface, not its centre); tuned on sim train seeds
+    # Monocular hold-time block (engine._scan_hold_block): a shot swatted straight back into the shooter's raised
+    # hands never leaves his keep box, so no release is seen; it is found while he holds the ball, with the
+    # blocker's jump as extra evidence, and decided once he still holds it a moment later. OFF by default: a pump
+    # fake that draws a defender's jump looks the same to one camera (the ball raised above the head and brought
+    # back down next to the defender's raised arms), the simulator has no pump fakes, so its false-positive rate
+    # is unmeasured. On sim train seeds 1-6 it finds 2 more blocks (mono headline 0.8055 -> 0.8194 at 0.5 s); the
+    # learning loop (courtvision train) may switch it on when labelled footage shows a gain.
+    block_jump_min_ft: float = 1.0  # monocular: the blocker's feet are this far off the floor at the touch (his box bottom vs its lowest before the take-off; sim block jumps 1.6-2.8 ft). A physical prior only the unit test exercises: the bench is identical for 0-3 ft, and the image lift is inflated by depth motion (3.1-5.5 ft on the true blocks); design, unverified
+    block_jump_ref_s: float = 0.45  # ... his box bottom on the floor over the second ending this long before the touch (a 1.6-2.8 ft jump rises for ~0.3-0.4 s to its apex); physical bound
+    hold_block_confirm_s: float = 0.0  # ... decided this long after the touch: the shooter still holds the ball (a release before then is judged by the look-back at it); 0 disables (the default, see above); 0.5 when enabled
     # Blocks of shots already inside the rim zone (layups, dunks: they enter it at the release; shots.Flight.
     # _check_rim_block). 3-D: a reversal clear of the ring (rim_contact_dist_ft) and the board is a defender's.
     backboard_half_width_ft: float = 3.0  # 72 in board (NBA rule 1 sec. II); sourced
@@ -497,6 +510,8 @@ class EventEngine:
         # dead ball released from out of bounds: (team, t, frame, releaser, his control) until someone gains it
         self._throw_in: tuple[Team | None, float, int, str, _Control | None] | None = None
         self._retro_dropped_t = -math.inf  # monocular: the last block candidate the loose-ball gate dropped
+        # monocular hold-time block candidate (_scan_hold_block): (holder, his standing box, retro_block tuple)
+        self._hold_block: tuple[str, BBox, tuple[float, int, str, Side, dict[str, Any]]] | None = None
         self._pending_miss: ShotEntry | None = None
         self._control: _Control | None = None
         self._prev_control: _Control | None = None
@@ -534,6 +549,7 @@ class EventEngine:
         self._last_poss: tuple[str, Team | None, float] | None = None  # (POSSESSION id, team before, t)
         self._release_log: deque[tuple[Release, _Control | None]] = deque(maxlen=24)  # live releases
         self._boxes: deque[tuple[float, dict[str, tuple[BBox, Team | None]]]] = deque(maxlen=45)  # image boxes
+        self._feet: deque[tuple[float, dict[str, float]]] = deque(maxlen=90)  # image box bottoms (jumps: _jump_lift)
         self._shoot_fouls: deque[tuple[float, int, str]] = deque(maxlen=8)  # (t, frame, fouled shooter)
         self.ray_model = RayModel(court.rim_height, {s: court.basket_xy(s) for s in ("left", "right")})
 
@@ -549,6 +565,7 @@ class EventEngine:
         self._players = {p.player_id: p for p in frame.players}
         if any(p.bbox is not None for p in frame.players):
             self._boxes.append((frame.t, {p.player_id: (p.bbox, p.team) for p in frame.players if p.bbox is not None}))
+            self._feet.append((frame.t, {p.player_id: p.bbox.y2 for p in frame.players if p.bbox is not None}))
         for rim in frame.rims:
             self._rims[rim.side] = rim.bbox
         self._ppf = _px_per_ft(frame.players, self.config.player_height_ft)
@@ -597,6 +614,10 @@ class EventEngine:
                 self._on_release(ch)
             else:
                 self._on_gain(ch)
+        if self._mono and self.config.hold_block_confirm_s > 0.0:
+            self._step_hold_block()
+            if self._hold_block is None:
+                self._scan_hold_block()
         self._check_jump_pending(frame.t)
         self._detect_dribble(obs)
         ctrl = self._control
@@ -925,6 +946,7 @@ class EventEngine:
         self._pending_miss = None  # no rebound after the period-end buzzer [15]
         self._ft = None
         self._throw_in = None
+        self._hold_block = None
         self._enter_dead("break", t, f)  # a ball already on its way may still become an attempt / make
 
     def _start_period(self, t: float, f: int) -> None:
@@ -935,6 +957,7 @@ class EventEngine:
         self._ft = None
         self._dead = None
         self._throw_in = None
+        self._hold_block = None
         self._enter_dead("period", t, f)
 
     def _half_index(self, period: int | None) -> int:
@@ -1850,74 +1873,207 @@ class EventEngine:
             r.player_id, r.t - cfg.retro_block_stand_lead_s, r.t) or r.bbox  # (a track renamed since: his first box)
         if stand is None:
             return False
-        ppf = max(stand.h / cfg.player_height_ft, 1e-6)
-        head_v = stand.y1 + cfg.holder_head_frac * stand.h
         lo = r.t - cfg.retro_block_lookback_s
         if r.control_onset_t is not None:
             lo = max(lo, r.control_onset_t)  # the shot rises from his hands: not the pass that reached him
         pts = [(t, f, o.uv) for t, f, o in self._buffer if o is not None and o.uv is not None and lo <= t]
         rim = self._rims.get(side)
-        span, base = cfg.block_image_span, cfg.retro_block_min_base_s
-        g_px = G_FTS2 * ppf
+        span = cfg.block_image_span
         for k in range(span, len(pts) - 2 * span):
-            (t0, _, a), (t1, f1, b) = pts[k - span], pts[k]
-            (t2, _, c), (t3, _, d) = pts[k + span], pts[k + 2 * span]
-            if b[1] > head_v or not (base <= t1 - t0 <= cfg.retro_block_max_gap_s) \
-                    or not (base <= t2 - t1 <= cfg.retro_block_max_gap_s) or t3 - t2 < base:
-                continue
+            t1, f1 = pts[k][0], pts[k][1]
             if t1 - r.t > cfg.block_max_after_release_s:
                 break
             if t1 <= self._retro_dropped_t:
-                continue  # judged already: the shooter's team caught it at once
-            v1 = ((b[0] - a[0]) / (t1 - t0), (b[1] - a[1]) / (t1 - t0))
-            v2 = ((c[0] - b[0]) / (t2 - t1), (c[1] - b[1]) / (t2 - t1))
-            v3 = ((d[0] - c[0]) / (t3 - t2), (d[1] - c[1]) / (t3 - t2))
-            up1, up2, up3 = -v1[1] / ppf, -v2[1] / ppf, -v3[1] / ppf
-            back = cfg.block_min_toward_fts
-            if up1 < cfg.block_min_up_speed_fts:
-                continue  # a touch on the way up only
-            knocked_down = up2 <= -back and up3 <= -back
-            sgn = 1.0 if rim is None or rim.center[0] >= b[0] else -1.0  # image direction of the rim
-            turned_back = (rim is not None and sgn * v1[0] / ppf >= -back and sgn * v2[0] / ppf <= -back
-                           and sgn * v3[0] / ppf <= -back and up2 <= cfg.retro_block_turn_rise_frac * up1)
-            if not (knocked_down or turned_back):
+                # judged already: the shooter's team caught it at once
                 continue
-            # velocity change beyond gravity's (image v grows downward)
-            dv = math.hypot(v2[0] - v1[0], v2[1] - v1[1] - g_px * 0.5 * (t2 - t0)) / ppf
-            if dv < cfg.block_reverse_dv_img_fts:
+            now = self._box_at(r.player_id, t1)
+            dv = self._image_block_turn(pts, k, stand, rim, now.y2 if now is not None else None)
+            if dv is None:
                 continue
-            if rim is not None:
-                w = max(rim.w, 1.0)
-                if rim.x1 - w <= b[0] <= rim.x2 + w and rim.y1 - 2.0 * w <= b[1] <= rim.y2 + w:
-                    continue  # at the rim: the rim-zone logic decides (ring bounces look the same here)
-            blocker = self._raised_arm_opponent(r, b, t1)
+            blocker = self._raised_arm_opponent(r.team, pts[k][2], t1)
             if blocker is None:
                 continue
             # a candidate: committed when someone gains the ball before it reached a rim zone (a ball that
             # then goes to the rim was a shot after all; the flight drops the candidate on zone entry)
             t_rise, f_rise = pts[k - span][0], pts[k - span][1]
-            flight.retro_block = (t1, f1, blocker, side, {"reversal_dv": dv, "retro": True, "rise_t": t_rise,
-                                                          "rise_frame": f_rise})
+            flight.retro_block = (t1, f1, blocker, side, {
+                "reversal_dv": dv, "retro": True, "rise_t": t_rise, "rise_frame": f_rise,
+                "blocker_lift_ft": self._jump_lift(blocker, t1, stand.h / cfg.player_height_ft)})
             return True
         return False
 
-    def _raised_arm_opponent(self, r: Release, uv: tuple[float, float], t: float) -> str | None:
-        """An opponent of the releaser whose raised-arm box (``block_reach_frac`` above his head, the top
-        ``block_shoulder_frac`` of his body) holds the ball at ``t``; the one nearest its centre line."""
+    def _image_block_turn(self, pts: Sequence[tuple[float, int, tuple[float, float]]], k: int, stand: BBox,
+                          rim: BBox | None, feet_v: float | None = None) -> float | None:
+        """Monocular: the velocity change beyond gravity's (ft/s) when the image ball track ``pts`` (t, frame, uv)
+        shows a shot turned back by a touch at ``pts[k]`` (``_retro_block``), else None: the ball rising above the
+        shooter's standing head line (``stand``: his box before the shot) at ``block_min_up_speed_fts`` or more,
+        then knocked down or turned back from the rim abruptly (``block_reverse_dv_img_fts``) away from the rim,
+        on baselines of ``block_image_span`` observations either side. ``feet_v``: his box bottom at the touch (the
+        head line is then also taken from it: ``retro_block_head_at_touch``)."""
+        cfg = self.config
+        span, base = cfg.block_image_span, cfg.retro_block_min_base_s
+        ppf = max(stand.h / cfg.player_height_ft, 1e-6)
+        head_v = stand.y1 + cfg.holder_head_frac * stand.h
+        (t0, _, a), (t1, _, b) = pts[k - span], pts[k]
+        (t2, _, c), (t3, _, d) = pts[k + span], pts[k + 2 * span]
+        if cfg.retro_block_head_at_touch and feet_v is not None:
+            head_v = min(head_v, feet_v - (1.0 - cfg.holder_head_frac) * stand.h)
+        if b[1] > head_v or not (base <= t1 - t0 <= cfg.retro_block_max_gap_s) \
+                or not (base <= t2 - t1 <= cfg.retro_block_max_gap_s) or t3 - t2 < base:
+            return None
+        v1 = ((b[0] - a[0]) / (t1 - t0), (b[1] - a[1]) / (t1 - t0))
+        v2 = ((c[0] - b[0]) / (t2 - t1), (c[1] - b[1]) / (t2 - t1))
+        v3 = ((d[0] - c[0]) / (t3 - t2), (d[1] - c[1]) / (t3 - t2))
+        up1, up2, up3 = -v1[1] / ppf, -v2[1] / ppf, -v3[1] / ppf
+        back = cfg.block_min_toward_fts
+        if up1 < cfg.block_min_up_speed_fts:
+            return None  # a touch on the way up only
+        knocked_down = up2 <= -back and up3 <= -back
+        sgn = 1.0 if rim is None or rim.center[0] >= b[0] else -1.0  # image direction of the rim
+        turned_back = (rim is not None and sgn * v1[0] / ppf >= -back and sgn * v2[0] / ppf <= -back
+                       and sgn * v3[0] / ppf <= -back and up2 <= cfg.retro_block_turn_rise_frac * up1)
+        if not (knocked_down or turned_back):
+            return None
+        # velocity change beyond gravity's (image v grows downward)
+        dv = math.hypot(v2[0] - v1[0], v2[1] - v1[1] - G_FTS2 * ppf * 0.5 * (t2 - t0)) / ppf
+        if dv < cfg.block_reverse_dv_img_fts:
+            return None
+        vmax = cfg.retro_block_max_img_speed_fts
+        if vmax > 0.0 and max(math.hypot(*v1), math.hypot(*v2), math.hypot(*v3)) / ppf > vmax:
+            return None  # the image "ball" jumped between the ball and a false detection: no touch
+        if rim is not None:
+            w = max(rim.w, 1.0)
+            if rim.x1 - w <= b[0] <= rim.x2 + w and rim.y1 - 2.0 * w <= b[1] <= rim.y2 + w:
+                return None  # at the rim: the rim-zone logic decides (ring bounces look the same here)
+        return dv
+
+    def _jump_lift(self, pid: str, t: float, ppf: float) -> float | None:
+        """Monocular: how far (ft) ``pid``'s feet are off the floor at ``t``: his image box bottom then (its
+        highest within a couple of frames) against its lowest in the image over the second before his take-off
+        (``block_jump_ref_s`` before ``t`` and earlier: a 1.6-2.8 ft jump takes ~0.3-0.4 s to its apex). None
+        without boxes in either window."""
+        lead = self.config.block_jump_ref_s
+        now, ref = [], []
+        for bt, feet in self._feet:
+            y2 = feet.get(pid)
+            if y2 is None:
+                continue
+            if abs(bt - t) <= 2.5 * self._dt:
+                now.append(y2)
+            elif t - lead - 1.0 <= bt <= t - lead:
+                ref.append(y2)
+        if not now or not ref or ppf <= 1e-6:
+            return None
+        return (max(ref) - min(now)) / ppf
+
+    def _scan_hold_block(self) -> None:
+        """Monocular: a shot blocked straight back to the shooter. He catches it again ~0.2-0.4 s after the touch
+        (a ball swatted back into his raised hands), and the ball never leaves his keep box (his person box grows
+        to his raised arms and a ball above his head), so no release is seen and the look-back at a release
+        (``_retro_block``) never runs. While he holds the ball, the newest image observations are tested like the
+        look-back (``_image_block_turn``), with the blocker's jump as extra evidence (``block_jump_min_ft``: a
+        blocker leaves the floor to reach a ball above a shooter's head; a defender standing with raised arms
+        does not turn a held ball back). The candidate is decided later (``_step_hold_block``).
+
+        Known failure mode (why ``hold_block_confirm_s`` defaults to 0): a pump fake that draws the defender's jump
+        (the ball raised above the head and pulled back into the hands next to his raised arms) passes the same
+        tests and becomes attempt + blocked miss + block + the shooter's rebound."""
+        cfg, court = self.config, self.court
+        pid, ctrl = self._holder.holder, self._control
+        if self._phase != LIVE or pid is None or ctrl is None or ctrl.player_id != pid or self._flight is not None \
+                or self._ft is not None:
+            return
+        team, pos = self._team_of(pid), self._pos(pid)
+        if team is None or pos is None:
+            return
+        side = court.nearest_basket(*pos)
+        if court.distance_to_basket(pos[0], pos[1], side) > cfg.block_max_basket_dist_ft:
+            return
+        span = cfg.block_image_span
+        pts = [(t, f, o.uv) for t, f, o in list(self._buffer)[-(6 * span + 2):] if o is not None and o.uv is not None]
+        if len(pts) < 3 * span + 1 or pts[-1][0] < self._now - 1e-6:
+            return  # the newest quadruple only: each is tested once, when its last observation arrives
+        k = len(pts) - 1 - 2 * span
+        t0, t1, f1 = pts[k - span][0], pts[k][0], pts[k][1]
+        if t0 < ctrl.onset_t:
+            return  # the shot rises from his hands
+        stand = self._box_at(pid, t1 - cfg.retro_block_stand_lead_s) or self._first_box(
+            pid, t1 - cfg.retro_block_stand_lead_s, t1)
+        if stand is None:
+            return
+        now = self._box_at(pid, t1)
+        dv = self._image_block_turn(pts, k, stand, self._rims.get(side), now.y2 if now is not None else None)
+        if dv is None:
+            return
+        blocker = self._raised_arm_opponent(team, pts[k][2], t1)
+        if blocker is None:
+            return
+        lift = self._jump_lift(blocker, t1, stand.h / cfg.player_height_ft)
+        if lift is None or lift < cfg.block_jump_min_ft:
+            return
+        data = {"reversal_dv": dv, "retro": True, "held": True, "rise_t": t0, "rise_frame": pts[k - span][1],
+                "blocker_lift_ft": lift}
+        self._hold_block = (pid, stand, (t1, f1, blocker, side, data))
+
+    def _step_hold_block(self) -> None:
+        """Decide a hold-time block candidate (``_scan_hold_block``). Dropped when the holder changes (a release:
+        the look-back at it judges the touch) or the ball goes dead. Once he still holds the ball
+        ``hold_block_confirm_s`` after the touch, and it came back down into his standing box (he caught it), it
+        is his blocked shot (the attempt at the rise, the miss and the block at the touch) and his own rebound."""
+        hb = self._hold_block
+        if hb is None:
+            return
+        pid, stand, cand = hb
+        t1 = cand[0]
+        ctrl = self._control
+        if self._phase != LIVE or self._holder.holder != pid or self._flight is not None \
+                or ctrl is None or ctrl.player_id != pid:
+            self._hold_block = None
+            return
+        if self._now - t1 < self.config.hold_block_confirm_s:
+            return
+        self._hold_block = None
+        back = next(((t, f) for t, f, o in self._buffer if t > t1 and o is not None and o.uv is not None
+                     and o.uv[1] >= stand.y1), None)
+        if back is None:
+            return  # never seen back in his hands
+        cfg, team = self.config, self._team_of(pid)
+        data = cand[4]
+        t_rise, f_rise = data["rise_t"], data["rise_frame"]
+        pos = self._pos(pid, t_rise)
+        gather = self._hist.position_at(pid, t_rise - cfg.gather_lead_s, not_before=ctrl.onset_t) or pos
+        flight = Flight(Release(pid, team, t_rise, f_rise, pos, gather, stand, ctrl.onset_t), self.court, cfg)
+        self._flight_ctrl = ctrl
+        self._on_block(flight, flight.mark_blocked(*cand))
+        miss = self._pending_miss
+        if miss is None:
+            return
+        poss_before = self._poss_team
+        ch = ControlChange("gain", pid, back[0], back[1])
+        self._rebound(pid, team, ch, miss)
+        self._control = _Control(pid, team, back[0], back[1], origin="rebound",
+                                 change=self._provisional("rebound", back[0], team, poss_before, miss=miss), miss=miss)
+
+    def _raised_arm_opponent(self, team: Team | None, uv: tuple[float, float], t: float) -> str | None:
+        """An opponent of ``team`` (the releaser's) whose raised-arm box (``block_reach_frac`` above his head, the
+        top ``block_shoulder_frac`` of his body, grown by ``retro_block_touch_margin_r`` ball radii at his scale:
+        the hand touches the ball's surface) holds the ball's centre ``uv`` at ``t``; the one nearest its centre
+        line."""
         cfg = self.config
         boxes = None
         for bt, bx in self._boxes:
             if bt > t + 1e-6:
                 break
             boxes = bx
-        if boxes is None or r.team is None:
+        if boxes is None or team is None:
             return None
         best, best_d = None, math.inf
-        for pid, (bb, team) in boxes.items():
-            if (team or self._team_of(pid)) is not r.team.other():
+        for pid, (bb, tm) in boxes.items():
+            if (tm or self._team_of(pid)) is not team.other():
                 continue
-            dx = bb.w * cfg.block_bbox_expand / 2.0
-            if not (bb.x1 - dx <= uv[0] <= bb.x2 + dx and bb.y1 - cfg.block_reach_frac * bb.h <= uv[1]
+            r_px = cfg.retro_block_touch_margin_r * cfg.ball_radius_ft * bb.h / cfg.player_height_ft
+            dx = bb.w * cfg.block_bbox_expand / 2.0 + r_px
+            if not (bb.x1 - dx <= uv[0] <= bb.x2 + dx and bb.y1 - cfg.block_reach_frac * bb.h - r_px <= uv[1]
                     <= bb.y1 + cfg.block_shoulder_frac * bb.h):
                 continue
             d = abs(uv[0] - (bb.x1 + bb.x2) / 2.0)
