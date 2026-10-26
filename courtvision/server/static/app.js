@@ -129,6 +129,7 @@
     clock: [], // [t, period, game_clock] samples for event time labels
     held: {}, // clock field -> [video t, value] of its last scoreboard reading
     paused: false,
+    finished: false,
     muted: false,
     speed: 1,
     shotFilter: "all",
@@ -508,7 +509,7 @@
       case "reset":
         resetLiveState();
         S.frame = null; S.stats = null; S.clock = []; S.held = {};
-        S.meta = null; S.roster.clear(); S.paused = false;
+        S.meta = null; S.roster.clear(); S.paused = false; S.finished = false;
         CAL.points = [];
         if (CAL.tool) { CAL.tool.img = null; CAL.tool.empty.hidden = false; CAL.tool.draw(); }
         ROI.corners = []; ROI.cells.clear(); ROI.history = [];
@@ -628,6 +629,7 @@
 
   function onStatus(msg) {
     if (typeof msg.paused === "boolean") S.paused = msg.paused;
+    if (typeof msg.finished === "boolean") S.finished = msg.finished;
     if (typeof msg.muted === "boolean") S.muted = msg.muted;
     if (isNum(msg.speed)) S.speed = msg.speed;
     mark("status");
@@ -2055,7 +2057,7 @@
     const age = (performance.now() - S.frameAt) / 1000;
     if (age > 5) {
       overlay.hidden = false;
-      setText(overlay, S.paused ? "Paused" : `No tracking data for ${Math.round(age)} s`);
+      setText(overlay, S.finished ? "Analysis complete" : S.paused ? "Paused" : `No tracking data for ${Math.round(age)} s`);
     } else {
       overlay.hidden = true;
     }
