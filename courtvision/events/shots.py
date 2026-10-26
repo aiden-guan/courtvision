@@ -128,6 +128,7 @@ class Flight:
         # the ball observed just before the (hysteresis-dated) release: a layup or dunk pushed through the ring is
         # often released at or below the rim plane, so its crossing lies between this and the first sample
         self.pre: FlightSample | None = None
+        self.recredited = False  # engine: a 3-D try re-credited to an attacker (EventEngine._own_basket_body)
         self.result_t: float | None = None
         self.result_frame: int | None = None
         self.result_reason = ""
@@ -167,6 +168,11 @@ class Flight:
     @property
     def made(self) -> bool:
         return self.state == "made"
+
+    @property
+    def touched_rim(self) -> bool:
+        """3-D: the ball has come off the ring or the board (no block after that)."""
+        return self.rim_contact or self._ring_bounce
 
     def last_sample(self) -> FlightSample | None:
         return self.samples[-1] if self.samples else None
@@ -446,6 +452,13 @@ class Flight:
             p0, p1, p3 = self.samples[-5], self.samples[-4], self.samples[-1]
             dv = _reversal(p0, p1, self.samples[-2], self._px_per_ft(), self.court.basket_xy(side), None,
                            cfg.block_min_toward_fts, p3)
+            if dv is None:
+                # ... or leave the contact step out altogether: its chord mixes the approach and the return, so a
+                # fast approach and a slower return leave it barely moving either way, and the velocity across two
+                # steps (above) still half of it short of the return speed. The clean step before the contact step
+                # (p0 -> p1) against the clean step after it (samples[-3] -> [-2]).
+                dv = _reversal(p0, p1, self.samples[-2], self._px_per_ft(), self.court.basket_xy(side), None,
+                               cfg.block_min_toward_fts, p3, after_from=self.samples[-3])
         if dv is None or dv < (cfg.block_reverse_dv_img_fts if image else cfg.block_reverse_dv_fts):
             return []
         if p1.is3d and self.release.xy is not None \
@@ -473,10 +486,11 @@ class Flight:
         dv = _deflection3d(p0, p1, p2, p3, court.basket_xy(self.target), cfg.block_min_toward_fts)
         if dv is None or dv < cfg.block_reverse_dv_fts:
             return []
-        # the bounce happens between frames: the ball centre is up to half a step's travel from where it touched
-        slack = cfg.rim_contact_step_frac * max(math.dist((*p0.xy, p0.z), (*p1.xy, p1.z)),  # type: ignore[misc]
-                                                math.dist((*p1.xy, p1.z), (*p2.xy, p2.z)))  # type: ignore[misc]
-        if self._at_ring_or_board(p1, slack) or self._at_ring_or_board(p2, slack):
+        # the bounce happens between frames, in the step before or after the reversal vertex p1: the ball comes into
+        # the contact and leaves it on straight paths, followed from the samples either side of each step
+        pm = self.samples[-5] if len(self.samples) >= 5 else None
+        if self._at_ring_or_board(p1) or self._at_ring_or_board(p2) \
+                or self._contact_between(pm, p0, p1, p2) or self._contact_between(p0, p1, p2, p3):
             # the ball came off the ring or the board: no block after that. (Mere proximity is not contact:
             # a layup released over the ring passes within a ball radius of it without bouncing.)
             self._ring_bounce = True
@@ -484,6 +498,33 @@ class Flight:
         # no teammate test: a shooter's teammate under the rim touching the ball in flight is rare (basket
         # interference), while teammates crashing the boards stand next to every layup
         return self._blocked_at(p1, dv, self.target, players, team_of, mates=False)
+
+    def _contact_between(self, a_prev: FlightSample | None, a: FlightSample, b: FlightSample,
+                         b_next: FlightSample) -> bool:
+        """3-D: did the ball touch the ring or the board inside the frame step a -> b? Into a contact the ball moves
+        on the straight path it came on (the velocity of a_prev -> a) and out of it on the path it leaves on (b ->
+        b_next), so follow each from its sample for ``rim_contact_step_frac`` of the step: with 0.5 the two halves
+        cover the step whatever the contact time. (A ball-sized radius around the samples instead is too wide
+        when the step after a contact is a fast swat: a block at the ring then looked like a ring bounce.) Without
+        the sample before ``a`` its half is the old isotropic test: within that fraction of the step's chord."""
+        frac = self.cfg.rim_contact_step_frac
+        dt = b.t - a.t
+        if frac <= 0.0 or dt <= 1e-6:
+            return False
+        n = 6
+        for p, q, base, sign in ((a_prev, a, a, 1.0), (b, b_next, b, -1.0)):
+            if p is None or not (p.is3d and q.is3d) or q.t - p.t <= 1e-6:
+                if self._at_ring_or_board(base, frac * math.dist((*a.xy, a.z), (*b.xy, b.z))):  # type: ignore[misc]
+                    return True
+                continue
+            v = [(y - x) / (q.t - p.t) for x, y in zip((*p.xy, p.z), (*q.xy, q.z), strict=True)]  # type: ignore[misc]
+            for k in range(1, n + 1):
+                u = sign * frac * dt * k / n
+                pt = FlightSample(base.t, base.frame_idx, None, (base.xy[0] + v[0] * u, base.xy[1] + v[1] * u),  # type: ignore[index]
+                                  base.z + v[2] * u, None)  # type: ignore[operator]
+                if self._at_ring_or_board(pt):
+                    return True
+        return False
 
     def _at_ring_or_board(self, s: FlightSample, slack: float = 0.0) -> bool:
         """3-D: the ball touches the ring or the backboard at ``s`` (the rim-contact distance of ``_step_shot3d``,
@@ -707,20 +748,25 @@ class Flight:
 
 def _reversal(p0: FlightSample, p1: FlightSample, p2: FlightSample, px_per_ft: float,
               target_xy: tuple[float, float], target_u: float | None, min_toward_fts: float,
-              p3: FlightSample | None = None) -> float | None:
+              p3: FlightSample | None = None, after_from: FlightSample | None = None) -> float | None:
     """Velocity change (ft/s) at p1 when the ball was turned back: it moved toward the target
     basket (3-D) / rim (image) and then away from it, or rose and then dropped sharply. With
     ``p3`` the reversal must last: from p2 to p3 the ball must not head back toward the target at
     shot speed (turned back) or rise again (knocked down), and it must still be in flight: moving
     away (turned back) or falling (knocked down) at >= ``min_toward_fts``, as a ball caught and
-    lowered into a receiver's hands next to a defender is not."""
-    dt1, dt2 = p1.t - p0.t, p2.t - p1.t
+    lowered into a receiver's hands next to a defender is not. ``after_from`` (3-D): the velocity
+    after the contact is taken from it to p2 instead of from p1 (the step p1 -> ``after_from``, which
+    holds the contact, left out)."""
+    a2 = p1 if after_from is None else after_from
+    dt1, dt2 = p1.t - p0.t, p2.t - a2.t
     dt3 = p3.t - p2.t if p3 is not None else 1.0
-    if dt1 <= 0 or dt2 <= 0 or dt3 <= 0:
+    if dt1 <= 0 or dt2 <= 0 or dt3 <= 0 or a2.t < p1.t:
+        return None
+    if after_from is not None and not after_from.is3d:
         return None
     if p0.is3d and p1.is3d and p2.is3d and (p3 is None or p3.is3d):
         v1 = [(b - a) / dt1 for a, b in zip((*p0.xy, p0.z), (*p1.xy, p1.z), strict=True)]  # type: ignore[misc]
-        v2 = [(b - a) / dt2 for a, b in zip((*p1.xy, p1.z), (*p2.xy, p2.z), strict=True)]  # type: ignore[misc]
+        v2 = [(b - a) / dt2 for a, b in zip((*a2.xy, a2.z), (*p2.xy, p2.z), strict=True)]  # type: ignore[misc]
         tx, ty = target_xy[0] - p1.xy[0], target_xy[1] - p1.xy[1]  # type: ignore[index]
         n = math.hypot(tx, ty)
         if n < 1e-6:
@@ -735,7 +781,12 @@ def _reversal(p0: FlightSample, p1: FlightSample, p2: FlightSample, px_per_ft: f
             knocked_down = knocked_down and v3[2] <= -min_toward_fts
         if not (turned_back or knocked_down):
             return None
-        return math.dist(v2, [v1[0], v1[1], v1[2] - G_FTS2 * dt2])
+        # gravity between the two velocities: from the middle of one baseline to the middle of the other (a step
+        # apart for consecutive baselines, as before)
+        dtg = dt2 if after_from is None else 0.5 * (a2.t + p2.t) - 0.5 * (p0.t + p1.t)
+        return math.dist(v2, [v1[0], v1[1], v1[2] - G_FTS2 * dtg])
+    if after_from is not None:
+        return None
     if p0.uv is None or p1.uv is None or p2.uv is None or (p3 is not None and p3.uv is None):
         return None
     v1 = ((p1.uv[0] - p0.uv[0]) / dt1, (p1.uv[1] - p0.uv[1]) / dt1)

@@ -21,9 +21,11 @@ Pipeline per frame
 7. Reconciliation against the confirmed scoreboard (``reconcile.py``).
 
 Monocular evidence rules (one camera: boxes overlap, the ball hides in the hands): a change of team
-control is a STEAL only once the new team's control is corroborated (``_PendingSteal``) and the releaser
-had shown control himself (``_corroborated``); a releaser who never did is a wrong body, spliced out
-(``_correct_phantom``). A track whose label falls back to a provisional id keeps its roster identity
+control is a STEAL only once the new team's control is corroborated (``_PendingSteal``), the new team then
+advances toward the basket it attacks (``_advance_fts``, once shots show the sides) and the releaser had shown
+control himself (``_corroborated``); a releaser who never did is a wrong body, spliced out (``_correct_phantom``).
+A ball dead right after a change of team control never corroborated is no turnover of that team
+(``_inferred_turnover``). A track whose label falls back to a provisional id keeps its roster identity
 (``_canonical_ids``). A blocked shot recognised late is found in the buffered image track
 (``_retro_block``), and a score delta matching no seen shot becomes an inferred attempt + make
 (``_unseen_make``). Dead balls recognised from a clock stop are dated at the stop.
@@ -112,6 +114,7 @@ class EventEngineConfig:
     holder_freefall_tol_fts2: float = 8.0  # ... a ball with |a_z + g| below this is in free flight, nobody gains it; tuned
     holder_acquire_max_speed_fts: float = 15.0  # a catch slows the ball to the catcher's speed; tuned
     holder_lift_min_accel_fts2: float = -16.0  # 3-D, loose ball: a ball whose vertical acceleration is above this (supported, not falling at -g) is in someone's hands, so its vertical speed (a rebounder ripping a low catch up overhead, ~15 ft/s) does not count against the catch; half of g; tuned on sim train seeds
+    holder_high_catch: bool = True  # 3-D: a loose ball (no flight on its way: after a ring / board contact, a block or the shot's result) nobody holds above holder_max_z_ft (up to holder_reach_z_ft) that is supported (vertical acceleration above holder_lift_min_accel_fts2) and not over a ring (horizontally beyond rim radius + ball radius + rim_contact_dist_ft of both baskets: a ball rolling on the ring or in the net is supported too) can be gained like a low one: a rebound or a blocked ball caught overhead, a tip held for a moment (before, only the current holder could keep a raised ball, so these were never gained); rule
     holder_rel_speed_scale_fts: float = 10.0  # 3-D: score -= relative ball-player speed / this; tuned
     holder_rel_vertical_weight: float = 0.5  # weight of vertical motion in that speed during a pass (catch-then-dribble); tuned
     holder_rel_vertical_weight_loose: float = 1.0  # ... for a loose ball (rebounds, fumbles); tuned
@@ -160,6 +163,19 @@ class EventEngineConfig:
     # crossing a lone defender's box, are as unambiguous.)
     steal_sustain_s: float = 0.9  # 0 disables (immediate steals); tuned on sim train seeds
     steal_corroborate_s: float = 1.5  # ... counted from the confirmation of the gain; tuned on sim train seeds
+    # Monocular transition check on such a gain (engine._advance_fts): after a steal the new offense goes the other way
+    # (a fast break, or at least the ball brought up the floor), the old offense gets back. A "stolen" ball whose new
+    # team does not advance toward the basket it attacks is still with the old offense, the "stealer" a wrong body (a
+    # defender's box over the handler or over a receiver, the commonest false change of team control with one
+    # camera; sim dev seeds: the new team's mean floor position advanced >= 9 ft in the 2 s after every true steal,
+    # <= 3 ft after those wrong bodies). So the steal is confirmed only once the new team's players have advanced
+    # toward its basket at least steal_transition_min_fts on average (mean floor position) over the
+    # steal_transition_s after the gain, and a shot by the new team at the other basket is the old offense's shot on
+    # a wrong body (no steal). Only when the basket each team attacks is known from shots; 0 disables. Known blind
+    # spot: a steal deep in the stealer's own frontcourt (a full-court press) followed by no shot and no push within
+    # steal_transition_s is rejected; the simulator has no presses, so that cost is unmeasured.
+    steal_transition_s: float = 2.0  # physical: a fast break covers half the floor in ~2 s; design
+    steal_transition_min_fts: float = 2.5  # about half a walking pace (a team walking the ball up advances ~4-5 ft/s); design
     # Monocular physical check on a change of team control (engine._reachable): the ball goes from the releaser
     # to the gainer either within a strip's reach or in flight, at most steal_max_ball_speed_fts. A gain dated
     # (backdated) before the release or farther than the ball can fly in the time is a wrong-body holder.
@@ -253,9 +269,10 @@ class EventEngineConfig:
     # hands never leaves his keep box, so no release is seen; it is found while he holds the ball, with the
     # blocker's jump as extra evidence, and decided once he still holds it a moment later. OFF by default: a pump
     # fake that draws a defender's jump looks the same to one camera (the ball raised above the head and brought
-    # back down next to the defender's raised arms), the simulator has no pump fakes, so its false-positive rate
-    # is unmeasured. On sim train seeds 1-6 it finds 2 more blocks (mono headline 0.8055 -> 0.8194 at 0.5 s); the
-    # learning loop (courtvision train) may switch it on when labelled footage shows a gain.
+    # back down next to the defender's raised arms). Measured once the simulator had pump fakes (seeds 1-12, 0.5 s):
+    # 2 more true blocks but 12 more false ones, mono 0.7750 -> 0.7740 and video 0.9146 -> 0.9053 (on seeds 1-6
+    # without pump fakes it had looked like +0.014). The learning loop (courtvision train) may still switch it on
+    # when labelled footage shows a gain.
     block_jump_min_ft: float = 1.0  # monocular: the blocker's feet are this far off the floor at the touch (his box bottom vs its lowest before the take-off; sim block jumps 1.6-2.8 ft). A physical prior only the unit test exercises: the bench is identical for 0-3 ft, and the image lift is inflated by depth motion (3.1-5.5 ft on the true blocks); design, unverified
     block_jump_ref_s: float = 0.45  # ... his box bottom on the floor over the second ending this long before the touch (a 1.6-2.8 ft jump rises for ~0.3-0.4 s to its apex); physical bound
     hold_block_confirm_s: float = 0.0  # ... decided this long after the touch: the shooter still holds the ball (a release before then is judged by the look-back at it); 0 disables (the default, see above); 0.5 when enabled
@@ -263,7 +280,7 @@ class EventEngineConfig:
     # _check_rim_block). 3-D: a reversal clear of the ring (rim_contact_dist_ft) and the board is a defender's.
     backboard_half_width_ft: float = 3.0  # 72 in board (NBA rule 1 sec. II); sourced
     backboard_above_rim_ft: float = 3.5  # board top ~ 42 in board, rim ~ 6 in above its bottom edge; sourced (approx.)
-    rim_contact_step_frac: float = 0.5  # 3-D: a ring / board bounce falls between frames, so the contact test allows this fraction of the ball's per-frame travel (half a step: the nearer sample); geometry
+    rim_contact_step_frac: float = 0.5  # 3-D: a ring / board bounce falls between frames, so the contact test follows the ball's straight paths into and out of each frame step next to the reversal (the velocities of the steps before and after it) for this fraction of the step from either sample (half a step: the two halves cover the step whatever the contact time); without the step before, an isotropic slack of this fraction of the step's chord (train: 0 takes one ring bounce for a block, 0.25-1.0 score alike); geometry
     # 3-D tip (engine._detect_tip): a loose ball after a miss redirected back up by a hand above holder height,
     # next to a player and clear of the ring / board, is that player's touch (OREB + a release at the touch:
     # a tip-in is a rebound and a shot attempt, NBA stat rules), as he never holds it long enough to confirm.
@@ -272,6 +289,10 @@ class EventEngineConfig:
     tip_min_dv_fts: float = 10.0  # upward velocity change beyond gravity's across the contact step; tuned on sim train seeds
     tip_min_up_fts: float = 3.0  # ... and the ball rises at least this fast after it; tuned on sim train seeds
     tip_max_basket_ft: float = 8.0  # contact within this of the basket (horizontal); tuned on sim train seeds
+    incomplete_pass_out: bool = True  # 3-D: a live pass that goes out of bounds before anyone controls it (thrown away, deflected or fumbled out) is an incomplete PASS at its release (engine._thrown_away: no shot, released at least holder_loose_free_min_z_ft high, the read game clock running); rule
+    incomplete_pass_min_hold_s: float = 0.4  # ... thrown by a player who held the ball at least this long: securing and re-throwing a ball takes time (the sim's earliest pass is 0.3 s after control; the engine's stint, gain onset to hysteresis release, adds ~0.1 s), a fumble knocked away at the catch is a touch (train: fumbles 0.23-0.27 s, thrown-away passes >= 0.67 s; 0.2 lets the 3 fumbles through, 0.3-0.6 score alike); design
+    own_basket_recredit: bool = True  # 3-D: a try at the basket the shooter's own team defends (attack sides from the tries this half, else the other half's swapped; never the default) by a rebounder re-credits the try and the rebound to the nearest attacker within holder_keep_radius_ft of the ball at the release (engine._own_basket_body); rule
+    tip_in_shot: bool = True  # ... also while a shot that has touched the ring or the board is still unresolved (the 3-D rim zone is 4.5 ft wide: a miss tapped back up inside it, before it left the zone, used to play on as the first shot, its putback made credited to the first shooter); rule
     airball_radius_ft: float = 7.0  # 3-D: descending past rim height within this of the basket; tuned
     airball_min_apex_above_ft: float = 1.0  # tuned
     airball_min_release_dist_ft: float = 6.0  # tuned
@@ -448,6 +469,7 @@ class _Dead:
     miss: ShotEntry | None = None
     last_team: Team | None = None
     last_holder: str | None = None
+    last_doubtful: bool = False  # monocular: the last team's control began with a change of team control never corroborated
     out_t: float | None = None
     out_frame: int | None = None
     first_control: dict[Team, tuple[float, int, str]] = field(default_factory=dict)
@@ -465,6 +487,7 @@ class _FtTrip:
     total: int | None  # None = unknown (no FOUL event)
     taken: int = 0
     live_last: bool = True  # False for technical / flagrant trips (no rebound, possession kept)
+    one_and_one: bool = False  # bonus one-and-one: a missed first free throw ends the trip (the ball is live)
     ft_type: str = "shooting"
     assist_candidate: tuple[str, Team | None] | None = None
     assisted: bool = False
@@ -616,7 +639,11 @@ class EventEngine:
                 self._retro_block(fl)  # a release recognised early: the touch after it is buffered only now
         confirm_n, release_n = self._hysteresis_frames()
         f = self._flight
-        prefer = f.release.team if f is not None and f.state == "air" and f.context == "live" else None
+        # a throw-in in the air (released from out of bounds, play restarts when it reaches the court) is a pass like
+        # any other: the thrower's team is preferred and an opponent's gain needs the steal confirmation
+        throw_in = f is not None and f.state == "air" and self._throw_in is not None \
+            and f.release.player_id == self._throw_in[3]
+        prefer = f.release.team if f is not None and f.state == "air" and (f.context == "live" or throw_in) else None
         hframe = frame
         if f is not None and f.retro_block is not None and f.state == "air" \
                 and frame.t - f.retro_block[0] < self.config.retro_block_min_loose_s:
@@ -625,7 +652,8 @@ class EventEngine:
             # shot within the loose-ball time (that "gain" would make the gate drop a real block)
             hframe = dataclasses.replace(frame, players=[p for p in frame.players
                                                          if p.player_id != f.release.player_id])
-        opp_n = max(confirm_n, round(self.config.steal_confirm_s / max(self._dt, 1e-3))) if self._phase == LIVE else None
+        opp_n = max(confirm_n, round(self.config.steal_confirm_s / max(self._dt, 1e-3))) \
+            if self._phase == LIVE or throw_in else None
         if obs is not None:
             self._mono = not obs.is3d and obs.uv is not None
         if self._await_toss(obs, frame.t):
@@ -634,8 +662,8 @@ class EventEngine:
         else:
             changes = self._holder.update(hframe, obs, self._gate.velocity(), self._ppf, confirm_n, release_n, prefer,
                                           opp_n, self.ray_model.ray, self._gate.vertical_accel(),
-                                          loose=self._pending_miss is not None)
-            if not changes and obs is not None and obs.is3d and self._pending_miss is not None:
+                                          loose=self._pending_miss is not None, high_ok=self._high_catch_ok(obs))
+            if not changes and obs is not None and obs.is3d and self._tip_watch():
                 changes = self._detect_tip()
         self._note_toss(obs)
         for ch in changes:
@@ -972,11 +1000,13 @@ class EventEngine:
         self._emit(EventKind.PERIOD_END, t, f, value=self._period, source="scoreboard", status=EventStatus.CONFIRMED,
                    attrs={"period": self._period, "reason": reason})
         self.deadball.note_stoppage(t, "period_break")
-        self._pending_miss = None  # no rebound after the period-end buzzer [15]
+        miss, self._pending_miss = self._pending_miss, None  # no rebound after the period-end buzzer [15] ...
         self._ft = None
         self._throw_in = None
         self._hold_block = None
-        self._enter_dead("break", t, f)  # a ball already on its way may still become an attempt / make
+        # (a ball already on its way may still become an attempt / make) ... but control gained by the buzzer
+        # (a gain confirmed after it, dated at or before it) is the miss's rebound (_gain_dead)
+        self._enter_dead("break", t, f, miss=miss)
 
     def _start_period(self, t: float, f: int) -> None:
         self._poss_team = None
@@ -1010,13 +1040,23 @@ class EventEngine:
     # ------------------------------------------------------------------ phases
 
     def _enter_dead(self, cause: str, t: float, f: int, **kw: Any) -> _Dead:
-        self._resolve_pending()
+        dropped = self._resolve_pending()
         if self._held_block is not None:  # (the held gainer's stint ended in a dead ball: his pass stands)
             self._retro_dropped_t = max(self._retro_dropped_t, self._held_block[1][0])
             self._held_block = None
         self._phase = DEAD
         self._dead = _Dead(cause=cause, since_t=t, since_frame=f, entered_t=max(t, self._now), **kw)
+        last = self._dead.last_team
+        if self._mono and last is not None and (dropped is last or self._doubtful_holder(self._dead.last_holder)):
+            self._dead.last_doubtful = True
         return self._dead
+
+    def _doubtful_holder(self, pid: str | None) -> bool:
+        """Monocular: did ``pid``'s last stint begin with a change of team control that was never corroborated?"""
+        for ctrl in (self._control, self._flight_ctrl, self._prev_control):
+            if ctrl is not None and pid is not None and ctrl.player_id == pid:
+                return ctrl.doubtful
+        return False
 
     def _dead_for(self, d: _Dead, t: float) -> float:
         """How long the dead ball has lasted at ``t`` for the fallback restarts: counted from when it was
@@ -1088,6 +1128,14 @@ class EventEngine:
         last = d.last_team
         if team is None or last is None or team is last:
             if team is not None and self._poss_team is None:
+                self._set_possession(team, ft, ff, fp, "inbound")
+            return
+        if d.last_doubtful:
+            # The last team's "control" was a change of team control never corroborated (no dribble, shot or sustained
+            # hold): with one camera, mostly a defender's touch seen as a catch, the ball then going out off him. The
+            # other team throwing in keeps its possession (a ball the defence knocks out is no turnover, rules note
+            # §2a): no turnover is inferred.
+            if team is not self._poss_team:
                 self._set_possession(team, ft, ff, fp, "inbound")
             return
         t = d.out_t if d.out_t is not None else d.since_t
@@ -1263,6 +1311,10 @@ class EventEngine:
         flight, self._flight = self._flight, None
         self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="inbound" if oob else "other", dead_pickup=True)
         if d.cause == "break":
+            miss, d.miss = d.miss, None
+            if miss is not None and not oob and ch.t <= d.since_t + 1e-6 and miss.rebound_id is None \
+                    and (flight is None or flight.is_shot):
+                self._rebound(pid, team, ch, miss)  # control dated by the buzzer: rebounded before the period ended
             return
         if team is not None and team not in d.first_control:
             d.first_control[team] = (ch.t, ch.frame_idx, pid)
@@ -1288,6 +1340,9 @@ class EventEngine:
         """Fallback restart: an in-bounds pass between teammates well into a dead ball."""
         if flight is None or oob or team is None or d.cause in ("break", "period", "ft_trip"):
             return False
+        ft = self._ft
+        if d.cause == "made_ft" and ft is not None and ft.total is not None and ft.taken < ft.total:
+            return False  # between the free throws of a trip (a made first one): the ball goes back to the shooter
         r = flight.release
         if r.team is not team or r.player_id == pid or r.xy is None or not self.court.in_bounds(*r.xy):
             return False
@@ -1617,32 +1672,66 @@ class EventEngine:
         holder = self._holder.holder
         mine = holder is None or self._team_of(holder) is pend.team
         if pend.evidence and held >= cfg.steal_sustain_s and mine and not pend.implausible:
-            self._confirm_pending()
+            if cfg.steal_transition_s <= 0.0 or self._attack_known(pend.team) is None:
+                self._confirm_pending()
+            elif held >= cfg.steal_transition_s:  # (until then: wait, the evidence stands)
+                adv = self._advance_fts(pend.team, pend.ch.t, t)
+                if adv is None or adv >= cfg.steal_transition_min_fts:
+                    self._confirm_pending()
+                else:
+                    self._settle_pending()
         elif t - pend.created_t > cfg.steal_corroborate_s:
             self._settle_pending()
+
+    def _attack_known(self, team: Team) -> Side | None:
+        """The basket ``team`` attacks now, when shot evidence (this half, or the other half flipped) shows it."""
+        half = self._half_index(self._period)
+        if self._voted_side(team, half) is None and self._voted_side(team, 1 - half) is None:
+            return None
+        return self.attacking_side.get(team)
+
+    def _advance_fts(self, team: Team, t0: float, t1: float) -> float | None:
+        """Mean speed (ft/s) at which ``team``'s players' floor positions moved toward the basket it attacks between
+        ``t0`` and ``t1`` (players seen around both times; None: unknown side or fewer than three players)."""
+        side = self._attack_known(team)
+        if side is None or t1 - t0 <= 1e-6:
+            return None
+        sgn = 1.0 if self.court.basket_xy(side)[0] > 0.5 * self.court.length else -1.0
+        moves = []
+        for pid in self._players:
+            if self._team_of(pid) is not team:
+                continue
+            a, b = self._hist.positions_near(pid, t0, 0.1), self._hist.positions_near(pid, t1, 0.1)
+            if a and b:
+                moves.append(sgn * (statistics.fmean(p[0] for p in b) - statistics.fmean(p[0] for p in a)))
+        if len(moves) < 3:
+            return None
+        return statistics.fmean(moves) / (t1 - t0)
 
     def _note_pending_evidence(self, team: Team | None, t: float) -> None:
         pend = self._pend
         if pend is not None and team is pend.team and t >= pend.ch.t - 1e-6:
             pend.evidence = True
 
-    def _resolve_pending(self, end: bool = False) -> None:
+    def _resolve_pending(self, end: bool = False) -> Team | None:
         """A dead ball while a change of control is pending: corroborated -> steal, else no steal (the inbound
         decides possession). At the end of the stream no contradiction can come any more: a change the new
-        team has held ``steal_confirm_img_s`` (the steal hold) is confirmed too."""
+        team has held ``steal_confirm_img_s`` (the steal hold) is confirmed too. Returns the new team of a change
+        dropped uncorroborated."""
         pend = self._pend
         if pend is None:
-            return
+            return None
         holder = self._holder.holder
         held = self._now - pend.ch.t >= self.config.steal_confirm_img_s and holder is not None \
             and self._team_of(holder) is pend.team
         if (pend.evidence or (end and held)) and not pend.implausible:
             self._confirm_pending()
-            return
+            return None
         self._pend = None
         if pend.kind == "bad_pass":
             self._pass(pend.flight, self._intended_receiver(pend.flight.release, pend.ch.t, pend.stealer), pend.ch,
                        completed=False)
+        return pend.team
 
     def _confirm_pending(self) -> None:
         pend, self._pend = self._pend, None
@@ -1823,11 +1912,75 @@ class EventEngine:
         elif sig.kind == "out":
             self._on_out(flight, sig)
 
+    def _own_basket_body(self, flight: Flight) -> None:
+        """3-D: nobody shoots at the basket his own team defends. A try at it by a player whose stint began as a
+        rebound was a scramble the holder vote gave to the defender nearer the ball while an attacker took it (or a
+        tip credited to the nearer defender): the try and the rebound go to the attacking player nearest the ball at
+        the release, within ``holder_keep_radius_ft``; the rebound becomes offensive and a defensive POSSESSION it
+        made is retracted. The basket a team attacks is taken from the tries this half (else the other half's, the
+        baskets swapped): evidence only, never the configured default."""
+        r, side, ctrl = flight.release, flight.target, self._flight_ctrl
+        if r.team is None or side is None or ctrl is None or ctrl.player_id != r.player_id \
+                or ctrl.origin != "rebound" or ctrl.miss is None:
+            return
+        half = self._half_index(self._period)
+        attack = self._voted_side(r.team, half)
+        if attack is None:  # (no try this half yet: the other half's evidence, the baskets swapped)
+            other = self._voted_side(r.team, 1 - half)
+            attack = self.court.other_side(other) if other is not None else None
+        if attack is None or attack == side:
+            return
+        team = r.team.other()
+        # the ball at the release: the sample just before it (a raised ball's first free-flight sample can be ~0.3 s
+        # and 3 ft into the flight), else the first sample
+        s0 = flight.pre if flight.pre is not None and flight.pre.xy is not None else \
+            next((s for s in flight.samples if s.xy is not None), None)
+        bxy = s0.xy if s0 is not None else r.xy
+        if bxy is None:
+            return
+        best, best_d = None, self.config.holder_keep_radius_ft
+        for pid in self._players:
+            pos = self._pos(pid, r.t)
+            if self._team_of(pid) is team and pos is not None and math.dist(pos, bxy) <= best_d:
+                best, best_d = pid, math.dist(pos, bxy)
+        if best is None or self._period is None or not self.scoreboard.is_streaming(r.t):
+            return  # (the half, hence the attack sides, is known only from a period read that is still current)
+        reason = "a try at the basket his own team defends: the attacker nearest the ball held it (scramble)"
+        miss = ctrl.miss
+        reb = self._store.get(miss.rebound_id or "")
+        if reb is not None and reb.status is not EventStatus.RETRACTED and reb.player_id == r.player_id:
+            rpos = self._pos(best, reb.t) or (None, None)
+            self._revise(miss.rebound_id, team=team, player_id=best, x=rpos[0], y=rpos[1],
+                         attrs={"offensive": team is miss.team, "revised_by": "own_basket", "reason": reason})
+            if miss.possession_id is not None:
+                lp = self._last_poss
+                if lp is not None and lp[0] == miss.possession_id:
+                    self._poss_team = lp[1]
+                self._retract(miss.possession_id, reason)
+                miss.possession_id = None
+            if team is not miss.team:
+                pev = self._set_possession(team, reb.t, reb.frame_idx, best, "defensive_rebound")
+                if pev is not None:
+                    miss.possession_id = pev.event_id
+        self._set_possession(team, r.t, r.frame_idx, best, "other")  # (no-op when his team had the ball)
+        log.info("try at %s's own basket re-credited %s -> %s", r.team.value, r.player_id, best)
+        r.player_id, r.team = best, team
+        r.xy = self._pos(best, r.t) or r.xy
+        r.gather_xy = self._hist.position_at(best, r.t - self.config.gather_lead_s) or r.xy
+        ctrl.player_id, ctrl.team = best, team
+        flight.recredited = True  # (its basket is no vote for the attack sides: the decision rested on them)
+
     def _emit_attempt(self, flight: Flight) -> ShotEntry:
         cfg, court = self.config, self.court
+        if not flight.is_ft and not self._mono and cfg.own_basket_recredit:
+            self._own_basket_body(flight)
         r, side = flight.release, flight.target
         if self._pend is not None and r.team is self._pend.team and not flight.is_ft:
-            self._confirm_pending()  # the new team shoots: its control is corroborated (the steal comes first)
+            attack = self._attack_known(self._pend.team) if self.config.steal_transition_s > 0.0 else None
+            if attack is not None and side is not None and side != attack:
+                self._settle_pending()  # a shot at the other team's basket: the old offense's, on a wrong body
+            else:
+                self._confirm_pending()  # the new team shoots: its control is corroborated (the steal comes first)
         assert side is not None
         self._shot_seq += 1
         shot_id = f"s{self._shot_seq:04d}"
@@ -1859,7 +2012,8 @@ class EventEngine:
                                      and distance >= cfg.catch_shoot_min_dist_ft),
                 p_three=p3, three_cues=three_cues,
             )
-            self._vote_attack(r.team, side)
+            if not flight.recredited:
+                self._vote_attack(r.team, side)
         if self._ft is not None and flight.is_ft:
             attrs.update(ft_index=self._ft.taken + 1, ft_total=self._ft.total, ft_type=self._ft.ft_type,
                          technical=self._ft.ft_type == "technical")
@@ -1921,6 +2075,30 @@ class EventEngine:
                 return boxes[pid][0]
         return None
 
+    def _high_catch_ok(self, obs: BallObs | None) -> bool:
+        """3-D: may a supported ball above holder height be gained here (``holder_high_catch``)? Only once the ball is
+        loose: no flight, or a shot that has touched the ring or the board, been blocked or resolved. And not over a
+        ring: a ball rolling on the ring or slowed in the net is supported too, and nobody holds it."""
+        cfg, court = self.config, self.court
+        if not cfg.holder_high_catch or obs is None or not obs.is3d or obs.xy is None:
+            return False
+        fl = self._flight
+        if fl is not None and (fl.state == "air" or (fl.state == "shot" and not fl.touched_rim)):
+            # the ball is still on its way (no ring, board or block in between): a supported ball then never left the
+            # hands (a dunker's carry dated a release at a free-flight-like rise); the flight goes on as before
+            return False
+        clear = court.rim_radius + cfg.ball_radius_ft + cfg.rim_contact_dist_ft
+        return all(court.distance_to_basket(obs.xy[0], obs.xy[1], side) > clear for side in ("left", "right"))
+
+    def _tip_watch(self) -> bool:
+        """3-D: is a tip possible now? After a miss (the loose ball), or while a shot that has touched the ring or the
+        board is still unresolved (``tip_in_shot``): it is a rebound in the making, a player who taps it back up
+        has controlled it (the shot is then a miss, decided at his touch)."""
+        if self._pending_miss is not None:
+            return True
+        fl = self._flight
+        return self.config.tip_in_shot and fl is not None and fl.state == "shot" and fl.touched_rim
+
     def _detect_tip(self) -> list[ControlChange]:
         """3-D: a loose ball after a miss tipped back up (``tip_*``). The contact is inside the step between the
         two middle of the last four observations (the ball was falling into the hand, then rises): compare the
@@ -1944,13 +2122,17 @@ class EventEngine:
         dh = math.hypot(cx - bx, cy - by)
         if dh > cfg.tip_max_basket_ft:
             return []
-        near_ring = math.hypot(dh - court.rim_radius, contact.z - court.rim_height) \
-            <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft + 0.3  # type: ignore[operator]
         board_x = court.backboard_offset if side == "left" else court.length - court.backboard_offset
-        near_board = abs(cx - board_x) <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft + 0.3 \
-            and abs(cy - by) <= cfg.backboard_half_width_ft + cfg.ball_radius_ft
-        if near_ring or near_board:
-            return []
+        # the upward kick happened inside the step b -> c: it was the ring or the board if either sample is at them
+        # (a ring bounce dips into its lower sample, the one the higher-sample contact above leaves out)
+        for q in (b, c):
+            qd = math.hypot(q.xy[0] - bx, q.xy[1] - by)  # type: ignore[index]
+            near_ring = math.hypot(qd - court.rim_radius, q.z - court.rim_height) \
+                <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft + 0.3  # type: ignore[operator]
+            near_board = abs(q.xy[0] - board_x) <= cfg.ball_radius_ft + cfg.rim_contact_dist_ft + 0.3 \
+                and abs(q.xy[1] - by) <= cfg.backboard_half_width_ft + cfg.ball_radius_ft  # type: ignore[index]
+            if near_ring or near_board:
+                return []
         best, best_d = None, cfg.tip_reach_ft
         for pid in self._players:
             pos = self._pos(pid, t1)
@@ -2259,9 +2441,59 @@ class EventEngine:
                         attrs={"reason": "last pass to the scorer within the assist window"})
         entry.assist_id = ev.event_id
 
+    def _thrown_away(self, flight: Flight) -> None:
+        """3-D: a live pass that left the court before anyone controlled it (thrown away, or deflected or fumbled out
+        of bounds) is an incomplete PASS at its release (ARCHITECTURE: completed = a teammate gains control; the
+        simulator emits these). Only a thrown ball: no shot, the releaser held it at least
+        ``incomplete_pass_min_hold_s`` (not a touch: a receiver's fumble knocked away at the catch is the passer's
+        incomplete pass, not his) and it left his hands at least ``holder_loose_free_min_z_ft`` high (waist height:
+        a dribble poked away near the floor is no pass), and not while the read game clock was stopped (a dead ball
+        tossed to the official)."""
+        cfg, r, ctrl = self.config, flight.release, self._flight_ctrl
+        if not cfg.incomplete_pass_out or self._mono or flight.context != "live" or flight.is_shot \
+                or flight.is_ft or flight.blocker is not None or r.team is None:
+            return
+        if ctrl is None or ctrl.player_id != r.player_id or r.t - ctrl.onset_t < cfg.incomplete_pass_min_hold_s:
+            return
+        s0 = next((s for s in flight.samples if s.is3d), None)
+        if s0 is None or s0.z < cfg.holder_loose_free_min_z_ft:  # type: ignore[operator]
+            return
+        sb, since = self.scoreboard, self.scoreboard.clock_stopped_since
+        if cfg.dead_from_clock_stop and sb.is_streaming(self._now) and since is not None \
+                and since <= r.t - cfg.clock_stop_min_s and sb.clock_stopped(self._now, 2) \
+                and (sb.game_clock or 0.0) > 0.05:
+            return
+        s1 = next((s for s in flight.samples if s.is3d and s.t > s0.t + 0.05), None)
+        if s1 is None:
+            return
+        ux, uy = s1.xy[0] - s0.xy[0], s1.xy[1] - s0.xy[1]  # type: ignore[index]
+        un = math.hypot(ux, uy)
+        if un < 1e-6:
+            return
+        best, best_d = None, math.inf
+        for pid in self._players:
+            pos = self._pos(pid, r.t)
+            if pid == r.player_id or self._team_of(pid) is not r.team or pos is None:
+                continue
+            tx, ty = pos[0] - s0.xy[0], pos[1] - s0.xy[1]  # type: ignore[index]
+            tn = math.hypot(tx, ty)
+            if tn < 1e-6 or tn > 70.0:
+                continue
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, (ux * tx + uy * ty) / (un * tn)))))
+            if ang <= 30.0 and ang < best_d:
+                best, best_d = pid, ang
+        if best is None:
+            return  # thrown at nobody: knocked loose, not a pass
+        speed = math.dist(s0.xy, s1.xy) / (s1.t - s0.t) if s1 is not None else None  # type: ignore[arg-type]
+        self._emit(EventKind.PASS, r.t, r.frame_idx, team=r.team, player_id=r.player_id, other=best, xy=r.xy,
+                   confidence=self.config.pass_conf,
+                   attrs={"completed": False, "out_of_bounds": True, "hold_s": r.t - ctrl.onset_t,
+                          "speed_fts": speed, "reason": "the pass left the court before anyone controlled it"})
+
     def _on_out(self, flight: Flight, sig: FlightSignal) -> None:
         if self._phase != LIVE or self._flight is not flight:
             return
+        self._thrown_away(flight)
         d = self._enter_dead("oob", sig.t, sig.frame_idx, last_team=flight.release.team,
                              last_holder=flight.release.player_id, miss=self._pending_miss)
         d.out_t, d.out_frame = sig.t, sig.frame_idx
@@ -2312,6 +2544,8 @@ class EventEngine:
         if trip is None:
             trip = self._ft = _FtTrip(entry.shooter_id, entry.team, None)
         trip.taken += 1
+        if not made and trip.one_and_one and trip.taken == 1:
+            trip.total = 1  # a missed front end of a one-and-one: the trip is over, the rebound is live
         last = trip.total is not None and trip.taken >= trip.total
         unknown = trip.total is None
         if made:
@@ -2417,13 +2651,26 @@ class EventEngine:
             # Only the confirmed holder's dribble restarts play: a dead ball bouncing loose next to
             # whoever last touched it (e.g. under the basket after a make) is not live evidence.
             jump = d is not None and d.cause == "period" and self._mono and self._jump_expected()
-            # after a violation or a ball out the game clock stays stopped until the throw-in is touched on the
-            # court: a player bouncing the dead ball before handing it over does not restart play
-            # (only while the board is read: a clock last seen stopped before the reads stopped proves nothing)
-            held = d is not None and d.cause in ("unknown", "oob") and self.config.dead_from_clock_stop \
-                and self.scoreboard.is_streaming(t) \
+            # after a violation (a shot-clock violation, an offensive foul: "turnover") or a ball out the game clock
+            # stays stopped until the throw-in is touched on the court: a player bouncing the dead ball before handing
+            # it over does not restart play (only while the board is read: a clock last seen stopped before the
+            # reads stopped proves nothing)
+            held = d is not None and d.cause in ("unknown", "oob", "shot_clock", "turnover") \
+                and self.config.dead_from_clock_stop and self.scoreboard.is_streaming(t) \
                 and bool(self.scoreboard.clock_stopped(t, 2, self.config.clock_stop_min_s)) \
                 and (self.scoreboard.game_clock or 0.0) > 0.05
+            # ... and after a violation the ball is awarded to the other team: the team that lost it never puts
+            # it back in play itself, whatever the clock read
+            held = held or (d is not None and d.cause in ("shot_clock", "turnover") and d.last_team is not None
+                            and self._team_of(pid) is d.last_team)
+            # between the free throws of a trip with free throws left (after a missed or a made one) the ball stays dead
+            # until the next one: a lane player bouncing it back to the shooter does not restart play. Not while the
+            # read game clock runs (the trip is over: a one-and-one front end missed, a free throw the camera missed)
+            trip = self._ft
+            sb_ = self.scoreboard
+            running = sb_.is_streaming(t) and sb_.clock_stopped(t, 2, self.config.clock_stop_min_s) is False
+            held = held or (d is not None and d.cause in ("ft_trip", "made_ft") and trip is not None
+                            and trip.total is not None and trip.taken < trip.total and not running)
             if d is not None and d.cause not in ("break",) and not jump and not held \
                     and self._dead_for(d, t) >= self.config.dead_min_s \
                     and self._holder.holder == pid \
@@ -3033,7 +3280,8 @@ class EventEngine:
             live_last = ftype not in ("technical", "bench_technical", "coach_technical", "flagrant", "disruptive",
                                       "unsportsmanlike")
             trip = _FtTrip(shooter, team, int(awarded), live_last=live_last,
-                           ft_type="technical" if technical else ("flagrant" if not live_last else "shooting"))
+                           ft_type="technical" if technical else ("flagrant" if not live_last else "shooting"),
+                           one_and_one=bool(ev.attrs.get("one_and_one")))
             ctrl = self._control
             if shooter is not None and ctrl is not None and ctrl.player_id == shooter:
                 trip.assist_candidate = self._assist_candidate(

@@ -550,3 +550,111 @@ def test_holder_flicker_between_overlapping_teammates_is_no_pass() -> None:
     ev = live(run_engine(m.frames).events)
     assert not live(ev, EventKind.PASS)
     assert [e.team for e in live(ev, EventKind.POSSESSION)] == [Team.HOME]
+
+
+# ---------------------------------------------------------------------------- round 5: steals and turnovers
+
+
+def _run_sides(frames: list[FrameState], home_attacks: str | None = "left",
+               config: EventEngineConfig | None = None) -> EventEngine:
+    """Run the engine with the attacking sides known from earlier shots (home attacks ``home_attacks``)."""
+    eng = EventEngine(court_for("nba"), config=config)
+    if home_attacks is not None:
+        eng._attack_votes[(Team.HOME, 0)] = {home_attacks: 3}  # as three home shots at that basket would
+    for fr in frames:
+        eng.process(fr)
+    eng.flush()
+    return eng
+
+
+def _strip_then(transition: bool) -> Scene:
+    """home-1 (home attacks the left basket) dribbles with away-1 at his shoulder; away-1 takes the ball and
+    dribbles for 2.6 s. ``transition``: the away players run toward the right basket (a fast break) and home-1
+    chases; else the ball goes on toward the left basket with the other players set (the half-court play goes on:
+    to one camera, a defender's box over the handler driving left looks the same)."""
+    from test_events_kit import BALL_R, HANDS_Z
+
+    s = two_team_scene()
+    s.add("home-1", 30.0, 25.0).add("away-1", 30.8, 26.5)
+    s.start("home-1").dribble("home-1", 1.5, 3)
+    s.mark("strip")
+    s.fly(lambda pos: s.hands("away-1", pos), 0.15, apex=0.1)
+    moves = {"away-1": (44.0, 26.5), "away-2": (32.0, 34.0), "away-3": (26.0, 14.0), "home-1": (42.0, 24.5)} \
+        if transition else {"away-1": (24.0, 27.5)}
+
+    def ball(a: float, pos: dict[str, tuple[float, float]]) -> tuple[float, float, float]:
+        x, y = pos["away-1"]
+        return (x, y - 1.0, BALL_R + (HANDS_Z - BALL_R) * abs(math.cos(math.pi * 5 * a)))
+
+    s.run(2.6, ball, moves)
+    s.hold("away-1", 1.0)
+    return s
+
+
+@pytest.mark.parametrize("transition", [True, False])
+def test_change_of_control_without_a_transition_is_no_steal(transition: bool) -> None:
+    """Defect (mono 1200 s, dev seeds 1-12: 24 of 47 steal FPs): a defender's box over the handler (or over a
+    pass receiver) held and "dribbled" the ball long enough to corroborate a steal, while the play went on the
+    same way. After a real steal the new offense advances toward its basket (sim dev seeds: its players' mean
+    floor position advanced >= 9 ft in 2 s after every true steal, <= 3 ft after those wrong bodies). The steal now
+    needs that advance (steal_transition_min_fts over steal_transition_s) once the attacking sides are known."""
+    s = _strip_then(transition)
+    ev = live(_run_sides(s.frames_mono()).events)
+    if transition:
+        st, to = one(ev, EventKind.STEAL), one(ev, EventKind.TURNOVER)
+        assert (st.player_id, st.other_player_id, to.player_id) == ("away-1", "home-1", "home-1")
+        assert abs(st.t - s.marks["strip"]) <= 1.0
+    else:
+        assert not live(ev, EventKind.STEAL) and not live(ev, EventKind.TURNOVER)
+    # unknown attacking sides (no shot seen yet), or the check off: corroboration alone, as before
+    for eng in (_run_sides(s.frames_mono(), home_attacks=None),
+                _run_sides(s.frames_mono(), config=EventEngineConfig(steal_transition_s=0.0))):
+        st = one(live(eng.events), EventKind.STEAL)
+        assert (st.player_id, st.other_player_id) == ("away-1", "home-1")
+
+
+def test_new_team_advance_is_measured_toward_its_own_basket() -> None:
+    """_advance_fts: the mean floor advance of a team toward the basket it attacks (ft/s), None while the side is
+    unknown or fewer than three of its players are seen at both times."""
+    s = two_team_scene().start("home-1").hold("home-1", 0.1)
+    s.run(2.0, lambda a, pos: s.hands("home-1", pos),
+          {"away-1": (36.0, 25.0), "away-2": (28.0, 34.0), "away-3": (22.0, 14.0), "home-1": (24.0, 25.0)})
+    frames = s.frames_3d()
+    eng = _run_sides(frames)  # home attacks left, so away attacks right (+x)
+    t1 = frames[-1].t
+    assert eng._advance_fts(Team.AWAY, 0.0, t1) == pytest.approx(10.0 / t1, rel=0.05)
+    assert eng._advance_fts(Team.HOME, 0.0, t1) == pytest.approx(6.0 / 3.0 / t1, rel=0.05)  # home-1 6 ft left
+    assert _run_sides(frames, home_attacks=None)._advance_fts(Team.AWAY, 0.0, t1) is None
+
+
+def _deflected_out_of_bounds() -> Scene:
+    """home-1's pass is deflected by away-1: the ball shows in away-1's hands for 0.8 s (no dribble), then goes
+    out over the near sideline and the game clock stops. home-3, out of bounds, throws it in to home-2."""
+    from test_events_kit import BALL_R
+
+    s = two_team_scene(clock=600.0)
+    s.start("home-1").hold("home-1", 1.0)
+    s.pass_to("away-1", duration=0.3)
+    s.hold("away-1", 0.8)
+    s.fly((26.0, -3.0, BALL_R), 0.4, apex=0.5)
+    s.mark("out")
+    s.clock_running = False
+    s.run(3.0, lambda a, pos: (26.0, -3.0, BALL_R), moves={"home-3": (24.0, -2.0)}, visible=False)
+    s.run(0.05, lambda a, pos: s.hands("home-3", pos))
+    s.hold("home-3", 1.2)
+    s.clock_running = True
+    s.pass_to("home-2")
+    s.hold("home-2", 1.5)
+    return s
+
+
+def test_ball_out_after_an_uncorroborated_change_of_control_is_no_turnover() -> None:
+    """Defect (mono 1200 s, dev seeds 1-12: 6 of 14 inferred-turnover FPs): a defender's touch on a pass, seen as
+    his catch (a change of team control never corroborated), was the "last holder" when the ball went out, so
+    the offense's throw-in inferred a turnover by the defence. A ball the defence knocks out is no turnover (rules
+    note §2a): with the last team's control never corroborated, the other team's throw-in continues its
+    possession."""
+    s = _deflected_out_of_bounds()
+    ev = live(run_engine(s.frames_mono()).events)
+    assert not live(ev, EventKind.TURNOVER) and not live(ev, EventKind.STEAL)
+    assert all(e.team is Team.HOME for e in live(ev, EventKind.POSSESSION))

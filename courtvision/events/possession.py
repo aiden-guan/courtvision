@@ -241,10 +241,13 @@ class HolderTracker:
     def update(self, frame: FrameState, obs: BallObs | None, vel: tuple[float, ...] | None,
                px_per_ft: float | None, confirm_n: int, release_n: int,
                prefer_team: Team | None = None, confirm_opp_n: int | None = None,
-               ray: Ray | None = None, accel_z: float | None = None, loose: bool = False) -> list[ControlChange]:
+               ray: Ray | None = None, accel_z: float | None = None, loose: bool = False,
+               high_ok: bool = False) -> list[ControlChange]:
         """Advance one frame; returns releases before gains.
 
         ``loose``: a loose ball after a missed shot (image mode: a rebounder needs a longer vote).
+        ``high_ok``: 3-D, a supported ball above holder height nobody holds may be gained (a high catch: the
+        engine passes it when the ball is not over a ring).
 
         ``prefer_team``: the passer's team while a pass is in the air. A candidate of the other team
         than the holder (or than ``prefer_team``) is a change of team control and needs
@@ -267,7 +270,7 @@ class HolderTracker:
         image = _image_mode(frame.players, obs)
         self._loose = loose and self.holder is None
         self._obs_tf.append((t, fi))
-        raw = self.candidate(frame.players, obs, vel, prefer_team, t, ray, accel_z)
+        raw = self.candidate(frame.players, obs, vel, prefer_team, t, ray, accel_z, high_ok)
         self._remember_centres(frame)
         ref_team = self._holder_team if self.holder is not None else prefer_team  # before any release below
         if image:
@@ -462,13 +465,13 @@ class HolderTracker:
 
     def candidate(self, players: Sequence[PlayerState], obs: BallObs, vel: tuple[float, ...] | None,
                   prefer_team: Team | None = None, t: float | None = None, ray: Ray | None = None,
-                  accel_z: float | None = None) -> str | None:
+                  accel_z: float | None = None, high_ok: bool = False) -> str | None:
         """Best holder candidate for this observation, or None (nobody, or contested by opponents)."""
         if not obs.is3d and obs.uv is not None and any(p.bbox is not None for p in players):
             scored = self._scores_image(players, obs, vel, prefer_team, t, ray)
             opp_margin = self.cfg.holder_switch_margin_opp
         elif obs.xy is not None:
-            scored = self._scores_court(players, obs, vel, prefer_team, accel_z)
+            scored = self._scores_court(players, obs, vel, prefer_team, accel_z, high_ok and obs.is3d)
             opp_margin = self.cfg.holder_switch_margin_opp_court
         else:
             return None
@@ -513,7 +516,8 @@ class HolderTracker:
         return best
 
     def _scores_court(self, players: Sequence[PlayerState], obs: BallObs, vel: tuple[float, ...] | None,
-                      prefer_team: Team | None, accel_z: float | None = None) -> list[tuple[float, str, Team | None]]:
+                      prefer_team: Team | None, accel_z: float | None = None,
+                      high_ok: bool = False) -> list[tuple[float, str, Team | None]]:
         cfg = self.cfg
         # 3-D: a ball in free flight above dribble height (vertical acceleration ~ -g) is not in
         # anyone's hands yet, e.g. a loose bounce drifting past a player at chest height
@@ -531,9 +535,13 @@ class HolderTracker:
             if not self._lift_free and free and self.holder is not None and self._obs_tf:
                 self._free_from = self._obs_tf[0]
             self._lift_free = self._lift_free or free or self.holder is None
-            if self._lift_free or obs.z > cfg.holder_reach_z_ft:
-                return []
-            players = [p for p in players if p.player_id == self.holder]
+            # ... and a raised ball nobody holds that is supported (not falling at -g) and not over a ring is in the
+            # hands of a player within reach: a high catch (``holder_high_catch``; the engine passes ``high_ok``)
+            catch = self.holder is None and high_ok and lifted and not free and obs.z <= cfg.holder_reach_z_ft
+            if not catch:
+                if self._lift_free or obs.z > cfg.holder_reach_z_ft:
+                    return []
+                players = [p for p in players if p.player_id == self.holder]
         else:
             self._lift_free, self._free_from = False, None
         bx, by = obs.xy  # type: ignore[misc]
@@ -682,6 +690,7 @@ class HolderTracker:
         onset_t, onset_f = self._cand_onset
         self.holder, self.holder_since = pid, onset_t
         self._free_from = None
+        self._lift_free = False  # a ball he caught above his head stays his until it is in free flight
         self.clear_n = 0
         self._holder_team = self._teams.get(pid)
         self._seen_t, self._after_seen, self._away = now, None, 0
