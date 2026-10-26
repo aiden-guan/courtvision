@@ -150,7 +150,7 @@ def test_healthz_is_open(hub: Hub, ctrl: FakeController):
 def test_dashboard_index_and_assets_are_served(client: TestClient):
     r = client.get("/")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
-    assert "CourtVision" in r.text and 'src="static/app.js"' in r.text
+    assert "CourtVision" in r.text and 'src="static/app.js?v=' in r.text
     csp = r.headers["content-security-policy"]
     assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert r.headers["x-content-type-options"] == "nosniff"

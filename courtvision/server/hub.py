@@ -500,6 +500,24 @@ class Hub:
 
     # -- loop binding ---------------------------------------------------------------------------
 
+    async def reset(self) -> None:
+        """Start a new game without leaking the previous game's replay or pending snapshots."""
+        with self._lock:
+            self._latest.clear()
+            self._event_log.clear()
+            self._event_replay.clear()
+            self._transcript.clear()
+            self._insights.clear()
+            self._captions.clear()
+            for client in self._clients.values():
+                for timer in client._timers.values():
+                    timer.cancel()
+                client._timers.clear()
+                client._pending.clear()
+                client._queue.clear()
+                client._type_counts.clear()
+        await self.publish({"type": "reset", "t": 0})
+
     def bind_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Bind the loop that owns client queues (defaults to the running loop)."""
         self._loop = loop or asyncio.get_running_loop()

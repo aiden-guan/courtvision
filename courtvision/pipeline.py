@@ -1969,6 +1969,17 @@ class GameController:
         old = g._calibration
         calib = Calibration(homography=hom, image_size=size, league=g.court.league,
                             rims=dict(old.rims) if old is not None else {})
+        if not calib.rims:
+            from courtvision.perception.footpoint import camera_from_homography
+
+            camera = camera_from_homography(hom, size, (g.court.length, g.court.width))
+            if camera is not None:
+                for side in ("left", "right"):
+                    x, y = g.court.basket_xy(side)
+                    box = camera.bbox_of_circle(x, y, g.court.rim_height, g.court.rim_radius)
+                    if (all(math.isfinite(v) for v in box.as_tuple()) and box.w > 0 and box.h > 0
+                            and box.x2 > 0 and box.x1 < size[0] and box.y2 > 0 and box.y1 < size[1]):
+                        calib.rims[side] = box
 
         def swap() -> bool:
             g._calibration = calib

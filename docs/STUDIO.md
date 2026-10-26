@@ -1,0 +1,75 @@
+# Video workspace
+
+Run `.venv/bin/python -m courtvision studio --open`, or double-click `Start CourtVision.command`.
+The default address is `http://127.0.0.1:8000`. The server binds localhost; a non-loopback bind requires
+`--auth-token`. Enter the token in dashboard settings. Detector setup is an explicit action from Start analysis.
+
+## What works
+
+- Streamed file upload, decoder validation and an 8 GB upload cap, without buffering the file in RAM.
+  Ordinary JSON/operator endpoints keep their 64 KB cap. Existing Origin, Host and token guards apply.
+- A local RF-DETR Nano starter detector, warmed on a worker thread. Apple Silicon uses MPS when available.
+  Preparation errors are shown in setup; repeated frame failures stop analysis with an actionable message.
+- Image-space people/ball tracks before calibration. No court positions, basketball events or scores are
+  invented from an uncalibrated image. Cut detection resets these preview track IDs between shots.
+- A monitor built from the processed video frame, paired with its source timestamp. Bounding boxes are drawn
+  over that same image; the time ruler shows processed source time. Overlays can be hidden.
+- Pause/resume, speed, restart, full-screen monitor, recent footage, JSON export, and separate analysis folders.
+- Court calibration using the existing landmark fitter, with a reference diagram and frozen source frame.
+  Saved calibration and scoreboard regions are reused when reopening the same uploaded file. A recoverable
+  pinhole camera provides projected rims; moving-camera calibration is handled by the broadcast wrapper.
+- Existing event corrections, score/clock override, lineup controls, box scores, shot charts and narration.
+- A simulator demo with explicit labelling. It uses synthetic state and is not presented as real CV evidence.
+
+## Current limits
+
+The starter checkpoint is trained on COCO. It detects generic people and sports balls, not NBA rosters,
+referees, basketball rims or official basketball events. Names require validated identity evidence or manual
+event attribution. Team clustering needs review. No NBA-specific accuracy or full-game throughput claim is made.
+Pass `--config` with `perception.rfdetr.weights` or `perception.rfdetr.coreml_path` to use an existing local
+checkpoint instead. The workspace honours that configuration rather than replacing it with the starter.
+
+Spatial analysis needs an accurate court mapping. Four clicks fit mathematically even if the wrong landmarks
+were selected, so fit RMSE alone is not evidence of correct calibration. Use additional well-spread points and
+inspect the map. For fixed footage, camera geometry may be unrecoverable from noisy points; rim-based shot
+events then need a trained rim detector or a supplied calibration with rim observations.
+
+Broadcast mode tracks court lines and pauses spatial inference when the court is lost. Without an explicitly
+configured scorebug, it cannot distinguish a replay that shows the court from live play. Scorebug fonts/layouts
+must be configured and verified for the broadcast. Fouls, substitutions and timeouts require operator/feed input.
+
+Every source frame is processed. The monitor reports measured inference rate; video can run behind wall time
+when inference is slower than the input frame rate. The current monitor is a sequence of processed JPEGs and
+does not play source audio. It supports pause/speed/restart, not random seeking of the stateful event engine.
+
+Footage persists at `runs/studio/<video id>/source.video`. Each run is saved independently under
+`runs/studio/analyses/<run id>/`. There is no automatic retention deletion. Reopening a video starts a fresh
+analysis, while previous output files remain available. JSON export also works during analysis.
+
+## Validation record — 2026-10-26
+
+- Imported round 5 (`425a779`) without discarding the newer README/banner commits on main.
+- Ran one held-out aggregate check: truth3d **0.991**, mono **0.815**, synthetic video **0.792**.
+  [Full results](bench/round5-heldout.md). The simulator's pump-fake changes alter the games, so round-4 deltas
+  are not a controlled comparison. The held-out set was not used to tune this workspace.
+- The existing full suite initially reported 2,104 passes, three expected failures and one short-clip failure.
+  Round 5 changed the simulator RNG sequence; the integration fixture now uses a verified 4–7 second window
+  containing settled possession. Its original event assertion remains intact.
+- Exercised upload and RF-DETR inference on Roboflow's public
+  [Supervision basketball sample](https://supervision.roboflow.com/latest/assets/): 1920×1080, 59.94 fps,
+  approximately eight seconds. This is a two-person gym clip, not an NBA game. No labelled event score exists.
+- A public NBA play-by-play URL returned a 15-second “Video not available” placeholder. Those files do
+  not count as game validation. An NBA-hosted Raptors documentary also does not establish broadcast accuracy.
+- Automated workspace tests exercise real video decoding, pre-calibration gating, pause, export, independent
+  runs, saved calibration, upload validation, auth/origin/body limits and hub replay reset, using an injected
+  detector. No model downloads or cloud calls occur in tests.
+- Full suite: **2,111 passed, 3 expected failures**. Follow-up server/CLI/controller checks: **212 passed**;
+  the six workspace tests also passed after adding the reconnect snapshot. Browser checks covered
+  real-file upload, reopening footage, local tracking, pause, court setup and the simulator demo, at
+  1440 px and 390 px viewport widths without horizontal page overflow.
+- Jev/Claude credentials were absent. Their live APIs, billed narration and their production latency were
+  not exercised. Browser video upload and local inference require neither key.
+
+The README's latency table was re-measured with `simulate --mode truth3d --seconds 120 --seed 7`:
+3,600 frames in 0.9 seconds processing wall time, complete-step p50/p95 0.1/0.5 ms, event-to-narration
+p50/p95 650/3160 ms. These are offline synthetic timings, not real-footage throughput.

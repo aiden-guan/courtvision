@@ -4,13 +4,23 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>CourtVision Live</title>
+  <meta name="description" content="A local basketball video workspace. Follow the footage, player tracks, live events and box score in one view.">
+  <title>CourtVision — Game studio</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23eb6834'/%3E%3Cpath d='M3 16h26M16 3v26M7 7c5 4 5 14 0 18M25 7c-5 4-5 14 0 18' stroke='%230b0b0b' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="static/styles.css">
-  <script src="static/app.js" defer></script>
+  <link rel="stylesheet" href="static/styles.css?v=20261026r4">
+  <link rel="stylesheet" href="static/studio.css?v=20261026r4">
+  <script src="static/app.js?v=20261026r4" defer></script>
+  <script src="static/studio.js?v=20261026r4" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
+
+<header class="workspace-header">
+  <a class="studio-brand" href="/" aria-label="CourtVision home"><svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="8" fill="currentColor"/><path d="M23 10a9 9 0 1 0 0 12M16 7v18M7 16h10" fill="none" stroke="#fff" stroke-width="1.7"/><circle cx="23" cy="16" r="2" fill="#fff"/></svg><span>CourtVision<span class="brand-divider">/</span><span class="studio-word">Studio</span></span></a>
+  <div class="workspace-actions"><span class="local-indicator"><span></span>Local workspace</span><button type="button" class="btn" id="studio-export" disabled>Export analysis <span aria-hidden="true">↗</span></button><button type="button" class="btn btn-primary" id="studio-open"><span aria-hidden="true">＋</span> Open video</button></div>
+</header>
+
+<div class="workspace-heading"><div><p class="eyebrow">BASKETBALL INTELLIGENCE</p><h1 id="studio-title">See the whole game.</h1><p id="studio-subtitle">Your footage. Every movement. A clearer picture.</p></div><div class="session-label" id="studio-session-label"><span class="signal-mark" aria-hidden="true">▂ ▅ ▃ ▇</span><span>Ready when you are</span></div></div>
 
 <header class="scorebar">
   <div class="brand">
@@ -42,6 +52,7 @@
   </div>
 
   <div class="bar-right">
+    <span id="score-source-label" class="score-source-label">Score unavailable</span>
     <span class="flag" id="paused-flag" hidden>Paused</span>
     <span class="flag flag-muted" id="muted-flag" hidden>Muted</span>
     <div class="conn" id="conn-status" role="status" data-state="connecting">
@@ -54,21 +65,39 @@
 </header>
 
 <nav class="tabs" role="tablist" aria-label="Dashboard views">
-  <button type="button" role="tab" id="tab-live" aria-controls="view-live" aria-selected="true">Live</button>
+  <button type="button" role="tab" id="tab-live" aria-controls="view-live" aria-selected="true">Live analysis</button>
   <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false" tabindex="-1">Box score &amp; shots</button>
-  <button type="button" role="tab" id="tab-operator" aria-controls="view-operator" aria-selected="false" tabindex="-1">Operator</button>
-  <button type="button" role="tab" id="tab-calibration" aria-controls="view-calibration" aria-selected="false" tabindex="-1">Calibration</button>
-  <button type="button" role="tab" id="tab-roi" aria-controls="view-roi" aria-selected="false" tabindex="-1">Scoreboard ROI</button>
+  <button type="button" role="tab" id="tab-operator" aria-controls="view-operator" aria-selected="false" tabindex="-1">Game controls</button>
+  <button type="button" role="tab" id="tab-calibration" aria-controls="view-calibration" aria-selected="false" tabindex="-1">Court setup</button>
+  <button type="button" role="tab" id="tab-roi" aria-controls="view-roi" aria-selected="false" tabindex="-1">Scoreboard setup</button>
 </nav>
 
 <main id="main" tabindex="-1">
 
+  <div class="studio-notice" id="studio-notice" role="status" hidden></div>
+
   <!-- =========================================================== LIVE -->
   <section class="view view-live" id="view-live" role="tabpanel" aria-labelledby="tab-live">
     <div class="col col-main">
+      <article class="monitor-card">
+        <header class="monitor-head"><div><span class="monitor-dot" aria-hidden="true"></span><h2>Game feed</h2><span id="monitor-source">No video loaded</span></div><div class="monitor-options"><label class="overlay-switch"><input type="checkbox" id="studio-overlay" checked>Tracking overlay</label><button type="button" class="monitor-expand" id="studio-fullscreen" aria-label="Expand game feed" title="Expand game feed">⛶</button></div></header>
+        <div class="monitor-screen" id="monitor-screen">
+          <img id="studio-frame" alt="Current processed game frame with player and ball tracking" hidden>
+          <div class="monitor-empty" id="studio-empty">
+            <svg class="empty-court" viewBox="0 0 700 390" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="1"><path d="M92 330 228 70h244l136 260H92ZM160 200h380M350 70v260"/><ellipse cx="350" cy="200" rx="56" ry="35"/><path d="m279 70-23 67h188l-23-67M199 330l49-98h204l49 98"/><path d="M227 74c-65 60-50 116 123 116S538 134 473 74M103 313c113-167 381-167 494 0"/><path d="M315 95h70M311 286h78"/></g><circle cx="350" cy="106" r="5" stroke="currentColor"/><circle cx="350" cy="276" r="8" stroke="currentColor"/></svg>
+            <div class="empty-content"><span class="empty-symbol" aria-hidden="true">↗</span><h2>A new angle on every play.</h2><p>Drop in a game. Follow the action as it unfolds.</p><div class="empty-actions"><button type="button" class="btn btn-primary" id="studio-empty-open">Open a game video</button><button type="button" class="btn btn-demo" id="studio-demo">Explore the demo <span aria-hidden="true">→</span></button></div><span class="empty-formats">MP4, MOV, MKV &amp; AVI · Up to 8 GB · Processed on this computer</span></div>
+          </div>
+          <div class="monitor-loading" id="studio-loading" hidden><span class="loading-bars" aria-hidden="true">▂ ▅ ▃ ▇</span><p id="studio-loading-label">Opening game feed…</p></div>
+          <div class="monitor-badge" id="monitor-badge" hidden>COMPUTER VISION · ESTIMATED</div>
+        </div>
+        <div class="monitor-progress"><progress id="studio-progress" max="100" value="0" aria-label="Video analysis progress"></progress></div>
+        <footer class="monitor-controls"><div><button type="button" id="studio-play" class="play-control" aria-label="Pause analysis" disabled>Ⅱ</button><span id="studio-time">00:00</span><span class="time-divider">/</span><span id="studio-duration">--:--</span></div><div><span id="studio-throughput">Awaiting footage</span><label class="sr-only" for="studio-speed">Playback speed</label><select id="studio-speed" disabled><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></div></footer>
+      </article>
+
+      <div class="vision-strip" aria-label="Tracking status"><div><span class="metric-symbol" aria-hidden="true">⌖</span><span>People tracked<strong id="vision-people">—</strong></span></div><div><span class="metric-symbol" aria-hidden="true">◉</span><span>Ball tracking<strong id="vision-ball">Awaiting video</strong></span></div><div><span class="metric-symbol" aria-hidden="true">▱</span><span>Court map<strong id="vision-court">Not configured</strong></span><button type="button" id="studio-calibrate" class="text-button">Set up →</button></div></div>
       <article class="card card-court">
         <header class="card-head">
-          <h2>Live court</h2>
+          <h2>Court view</h2>
           <div class="legend" aria-label="Legend">
             <span class="chip chip-away"><span class="dot" aria-hidden="true"></span><span id="legend-away">Away</span></span>
             <span class="chip chip-home"><span class="dot" aria-hidden="true"></span><span id="legend-home">Home</span></span>
@@ -108,7 +137,7 @@
 
       <article class="card card-feed">
         <header class="card-head">
-          <h2>Event feed</h2>
+          <h2>Play-by-play</h2>
           <div class="head-tools">
             <label class="sr-only" for="feed-filter">Event filter</label>
             <select id="feed-filter">
@@ -247,10 +276,12 @@
     </article>
     <aside class="card tool-side">
       <header class="card-head"><h2>Points</h2><span class="muted" id="cal-count">0 / 4 minimum</span></header>
+      <div class="field-row"><label for="cal-preset">Visible court</label><select id="cal-preset"><option value="left">Left basket · paint corners</option><option value="right">Right basket · paint corners</option><option value="full">Full court · outer corners</option><option value="all">Choose any landmarks</option></select></div>
       <div class="field-row" id="cal-landmark-row">
         <label for="cal-landmark">Next landmark</label>
         <select id="cal-landmark"></select>
       </div>
+      <div class="calibration-reference"><svg id="cal-reference" viewBox="-5 -5 104 60" role="img" aria-label="Selected landmark on a court diagram"></svg><p>The blue point shows the selected landmark. Match it on the frozen video. Use points spread across the visible court; keep left and right consistent with the diagram.</p></div>
       <div class="field-row field-pair" id="cal-manual-row" hidden>
         <label>Court x (ft)<input type="number" step="0.01" id="cal-manual-x"></label>
         <label>Court y (ft)<input type="number" step="0.01" id="cal-manual-y"></label>
@@ -259,7 +290,7 @@
       <div class="form-actions">
         <button type="button" class="btn" id="btn-cal-undo">Undo</button>
         <button type="button" class="btn" id="btn-cal-clear">Clear</button>
-        <button type="button" class="btn btn-primary" id="btn-cal-submit" disabled>Fit homography</button>
+        <button type="button" class="btn btn-primary" id="btn-cal-submit" disabled>Apply court setup</button>
       </div>
       <div class="result" id="cal-result" role="status" aria-live="polite"></div>
     </aside>
@@ -321,6 +352,23 @@
     </aside>
   </section>
 </main>
+
+<dialog id="studio-dialog" class="studio-dialog" aria-labelledby="upload-title">
+  <form id="studio-form">
+    <header class="upload-header"><div><p class="eyebrow">YOUR NEXT GAME</p><h2 id="upload-title">Bring the game into focus.</h2></div><button type="button" class="icon-btn" id="studio-close" aria-label="Close video setup">×</button></header>
+    <label class="upload-zone" id="studio-dropzone" for="studio-file"><span class="upload-icon" aria-hidden="true">↥</span><strong id="studio-filename">Drop a game video here</strong><span id="studio-file-detail">or choose a file from your computer</span><span class="file-types">MP4, MOV, MKV, AVI · Up to 8 GB</span><input id="studio-file" type="file" accept="video/*,.mkv,.avi,.mov,.mp4"></label>
+    <div class="upload-teams"><label>Away team<input id="studio-away" type="text" maxlength="48" value="Away" required autocomplete="off"></label><label>Home team<input id="studio-home" type="text" maxlength="48" value="Home" required autocomplete="off"></label></div>
+    <label class="broadcast-option"><input id="studio-broadcast" type="checkbox" checked><span>Broadcast footage<small>Track camera movement and pause spatial analysis on cutaways.</small></span></label>
+    <div class="setup-explainer"><span aria-hidden="true">⌖</span><p>Tracking starts with your video. Add court landmarks for spatial events and stats. Player names and official scores need a roster and scoreboard setup.</p></div>
+    <p class="detector-note" id="studio-model-note">First use prepares a local detector (about 350 MB). Generic player and ball detections need review.</p>
+    <progress id="studio-upload-progress" max="100" value="0" aria-label="Video upload progress" hidden></progress>
+    <p class="upload-status" id="studio-upload-status" role="status" aria-live="polite"></p>
+    <button type="submit" class="btn btn-primary upload-submit" id="studio-start" disabled>Start analysis <span aria-hidden="true">→</span></button>
+    <div class="recent-videos" id="studio-recent" hidden><h3>Recent footage</h3><div id="studio-video-list"></div></div>
+  </form>
+</dialog>
+
+<footer class="workspace-footer"><span>CourtVision <span class="footer-slash">/</span> Game studio</span><span>Vision estimates · Review before using as official statistics</span><span id="studio-cloud">Local processing</span></footer>
 
 <!-- =========================================================== DIALOGS -->
 <dialog class="dialog" id="event-dialog" aria-labelledby="ev-title">

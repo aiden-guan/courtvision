@@ -503,7 +503,20 @@
   // =========================================================================== dispatch
 
   function dispatch(msg) {
+    window.dispatchEvent(new CustomEvent("courtvision-message", { detail: msg }));
     switch (msg && msg.type) {
+      case "reset":
+        resetLiveState();
+        S.frame = null; S.stats = null; S.clock = []; S.held = {};
+        S.meta = null; S.roster.clear(); S.paused = false;
+        CAL.points = [];
+        if (CAL.tool) { CAL.tool.img = null; CAL.tool.empty.hidden = false; CAL.tool.draw(); }
+        ROI.corners = []; ROI.cells.clear(); ROI.history = [];
+        if (ROI.tool) { ROI.tool.img = null; ROI.tool.empty.hidden = false; ROI.tool.draw(); }
+        byId("cal-result").replaceChildren(); byId("roi-result").replaceChildren();
+        roiChanged();
+        mark("court", "shots", "box", "compare", "scorebar", "status", "calibration");
+        break;
       case "meta": onMeta(msg); break;
       case "frame": onFrame(msg); break;
       case "stats": onStats(msg); break;
@@ -786,8 +799,9 @@
   renderers.scorebar = () => {
     const f = S.frame, st = S.stats;
     const score = (st && st.score) || {};
-    setText(byId("away-score"), fmtInt(num(score.away, 0)));
-    setText(byId("home-score"), fmtInt(num(score.home, 0)));
+    setText(byId("score-source-label"), st ? (st.score_source === "scoreboard" ? "Scoreboard" : "Observed points") : "Score unavailable");
+    setText(byId("away-score"), fmtInt(score.away));
+    setText(byId("home-score"), fmtInt(score.home));
     const period = num(heldClock("period"), st && st.period);
     const game = num(heldClock("game"), st && st.game_clock);
     const shotS = num(heldClock("shot"), st && st.shot_clock);
@@ -1688,7 +1702,14 @@
   // ----------------------------------------------------------------------- calibration
 
   const CAL = { points: [], tool: null };
-  const landmarkNames = () => Object.keys(S.landmarks || {});
+  const landmarkNames = () => {
+    const all = Object.keys(S.landmarks || {}), preset = byId("cal-preset").value;
+    const side = preset === "right" ? "R" : "L";
+    const preferred = preset === "all" ? [] : preset === "full"
+      ? ["L_corner_bottom", "L_corner_top", "R_corner_top", "R_corner_bottom"]
+      : [`${side}_lane_baseline_bottom`, `${side}_lane_baseline_top`, `${side}_lane_ft_top`, `${side}_lane_ft_bottom`];
+    return [...preferred.filter(n => all.includes(n)), ...all.filter(n => !preferred.includes(n))];
+  };
 
   function nextLandmark() {
     const used = new Set(CAL.points.map((p) => p.landmark));
@@ -1704,6 +1725,7 @@
     const current = sel.value;
     sel.replaceChildren(...names.map((n) => h("option", { value: n, text: `${used.has(n) ? "✓ " : ""}${humanize(n)}` })));
     sel.value = names.includes(current) && !used.has(current) ? current : nextLandmark() || current || names[0] || "";
+    renderCalibrationReference();
     const list = byId("cal-points");
     list.replaceChildren(...CAL.points.map((p, i) => h("li", null,
       h("span", { class: "pidx", text: i + 1 }),
@@ -1716,6 +1738,21 @@
 
   function calChanged() {
     mark("calibration");
+  }
+
+  function renderCalibrationReference() {
+    const map = byId("cal-reference");
+    if (!map) return;
+    map.replaceChildren();
+    const L = num(S.court && S.court.length, 94), W = num(S.court && S.court.width, 50);
+    map.setAttribute("viewBox", `-5 -5 ${L + 10} ${W + 10}`);
+    const line = { fill:"none", stroke:"currentColor", "stroke-width":.45 };
+    map.append(svg("rect", {...line, x:0, y:0, width:L, height:W}),
+      svg("path", {...line, d:`M${L/2} 0v${W} M0 17h19v16H0 M${L} 17h-19v16h19`}),
+      svg("circle", {...line, cx:L/2, cy:W/2, r:6}));
+    const name = byId("cal-landmark").value, pt = S.landmarks[name];
+    if (pt) map.append(svg("circle", { cx:pt[0], cy:W - pt[1], r:1.5, fill:"#3765dd" }),
+      svg("circle", { cx:pt[0], cy:W - pt[1], r:3, fill:"none", stroke:"#3765dd", "stroke-width":.5 }));
   }
 
   function addCalPoint(u, v) {
@@ -1979,6 +2016,11 @@
     byId("btn-cal-undo").addEventListener("click", () => { CAL.points.pop(); calChanged(); });
     byId("btn-cal-clear").addEventListener("click", () => { CAL.points = []; byId("cal-result").replaceChildren(); calChanged(); });
     byId("btn-cal-submit").addEventListener("click", submitCalibration);
+    byId("cal-landmark").addEventListener("change", renderCalibrationReference);
+    byId("cal-preset").addEventListener("change", () => {
+      CAL.points = []; byId("cal-landmark").value = landmarkNames()[0] || "";
+      byId("cal-result").replaceChildren(); calChanged();
+    });
 
     ROI.tool = new FrameTool("roi", { onPoint: roiPoint, onRect: addCell, onDraw: drawRoi, dragMode: () => ROI.mode === "cells" });
     byId("btn-roi-load").addEventListener("click", () => ROI.tool.load());

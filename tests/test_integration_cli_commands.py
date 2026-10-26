@@ -187,9 +187,9 @@ def rendered(tmp_path_factory):
     d = tmp_path_factory.mktemp("render")
     out = d / "demo.mp4"
     with no_credentials(d), contextlib.redirect_stdout(io.StringIO()):
-        # a 3 s window (frames 180-269) of a 9 s seed-7 game: possessions, passes and dribbles (the first 3 s
-        # window from 6 s with a pass, dribbles and no dead ball; re-pinned when the simulator's flow changes)
-        assert main(["render", "--seconds", "9", "--start", "6", "--seed", "7", "--out", str(out)]) == 0
+        # A 3 s window (frames 120-209) includes the first settled possession and a dribble.
+        # Round 5's pump fakes changed the RNG sequence: 6-9 s is now a hidden-ball stretch.
+        assert main(["render", "--seconds", "7", "--start", "4", "--seed", "7", "--out", str(out)]) == 0
     return out
 
 

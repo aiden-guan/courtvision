@@ -9,8 +9,8 @@
 <br/>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](pyproject.toml)
-[![Tests: 2075 passed](https://img.shields.io/badge/Tests-2075%20passed-brightgreen.svg)](tests/)
+[![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](pyproject.toml)
+[![Tests](https://img.shields.io/badge/Tests-pytest-brightgreen.svg)](tests/)
 [![Architecture: Real-Time CV](https://img.shields.io/badge/Architecture-Real--Time%20CV-orange.svg)](#architecture)
 
 <br/>
@@ -34,7 +34,7 @@ video / camera / simulator ─▶ perception ─▶ event engine ─▶ stats �
                                   scoreboard reconcile)
 ```
 
-The stack operates from both the Python library API and the unified `courtvision` CLI. A simulated game, video recording, or live camera feed streams through frame perception, deterministic state estimation, advanced analytics, Jev-guided decision classification, grounded voice narration, and an operator dashboard over WebSockets. The entire codebase is verified by an extensive test suite of 2,009 deterministic, offline tests.
+The stack operates from the Python API, the `courtvision` CLI, and a local video workspace. Upload a recording to follow image-space tracks immediately, then map court landmarks to enable spatial analysis. Simulations exercise the complete event, statistics, and narration pipeline. **NBA broadcast event accuracy remains unmeasured:** simulator scores below do not establish real-game reliability.
 
 ---
 
@@ -42,7 +42,7 @@ The stack operates from both the Python library API and the unified `courtvision
 
 | Real-Time Perception & Camera Calibration | Deterministic Monocular Event Engine |
 | :--- | :--- |
-| **Pinhole Geometry & Floor Homography**<br/>Projects 2D image coordinates to standard court coordinates (NBA, FIBA, NCAA, NFHS) via Direct Linear Transform (DLT) and RANSAC. Runs ByteTrack multi-object tracking, Kalman-filtered ball estimation, and scorebug OCR. | **Zero-Heuristic State Machine**<br/>Tracks possession transitions, shot trajectories, makes, misses, rebounds, and turnovers with millisecond event timestamps. Employs contest-aware backdating and scoreboard deltas to eliminate false positives. |
+| **Pinhole Geometry & Floor Homography**<br/>Projects 2D image coordinates to standard court coordinates (NBA, FIBA, NCAA, NFHS) via Direct Linear Transform (DLT) and RANSAC. Runs ByteTrack multi-object tracking, Kalman-filtered ball estimation, and configured scorebug OCR. | **Deterministic State Machine**<br/>Estimates possession transitions, shot trajectories, makes, misses, rebounds, and turnovers. Uses temporal evidence, contest-aware backdating and scoreboard deltas; inferred events still require validation. |
 
 | Live Box Score & Advanced xFG / EPV | TypeSafe Jev Decision Engine |
 | :--- | :--- |
@@ -120,7 +120,7 @@ flowchart LR
 
 ### End-to-End Execution Flow
 
-1. **Frame Capture & Observation**: Ingests raw video frames at 30–60 FPS. `courtvision/perception/detector.py` infers bounding boxes for players, referees, and the ball using RF-DETR or synthetic color-blob detectors. `courtvision/geometry/homography.py` projects player footpoints to court coordinates in real feet.
+1. **Frame Capture & Observation**: Decodes the input video's frames; analysis throughput depends on the detector, resolution and hardware. The perception layer infers bounding boxes using RF-DETR or synthetic color-blob detectors. `courtvision/geometry/homography.py` projects player footpoints to court coordinates after calibration.
 2. **Multi-Object State Estimation**: `courtvision/perception/tracker.py` links detections across frames using ByteTrack. The ball Kalman filter maintains 3D position and velocity estimates through player and backboard occlusions.
 3. **Deterministic Event Classification**: `courtvision/events/engine.py` processes court observations frame-by-frame. The possession state machine detects ball control, passes, strips, and turnovers. Shot arcs are tracked until the ball leaves the rim cylinder, cross-referencing scorebug OCR increments to confirm field goals.
 4. **Statistical Aggregation & Decision Layer**: Confirmed events update player box scores, plus/minus, and expected possession value (EPV) in `courtvision/stats/`. The `courtvision/decision/client.py` evaluates play patterns and tactical leverage via TypeSafe Jev within strict 250ms deadline budgets.
@@ -141,7 +141,7 @@ flowchart LR
 
 - **Problem**: Monocular camera setups suffer from perspective distortion and physical vibration. Relying solely on visual net deformation to detect made shots produces false positives on airballs that pass close behind the rim.
 - **Approach**: Combined a Direct Linear Transform (DLT) with RANSAC homography (`courtvision/geometry/homography.py`) with a dedicated 5Hz scorebug OCR reader (`courtvision/perception/scorebug.py`). Shots entering the rim cylinder enter a `PENDING_CONFIRMATION` state. The event engine watches the scorebug for a 2-point or 3-point delta within a 3.0-second post-shot window.
-- **Why**: Real-world scoreboards are authoritative truth. Reconciling computer vision detections against scorebug OCR eliminates false make detections entirely, maintaining 0 team-points error across whole games.
+- **Why**: Confirmed scoreboard changes provide an independent score reference. Reconciling visual shot candidates against those changes can reduce false makes. Zero team-points error in simulator runs does not establish reliable OCR or zero error on real broadcasts.
 - **Tradeoff**: Requires the broadcast scorebug to be visible in the camera frame and introduces a 1.0–2.5 second latency before confirming field goals in the official log.
 
 ### 3. TypeSafe Jev Decision Integration with Strict Circuit Breakers
@@ -217,22 +217,44 @@ Evaluated across train seeds (1–6) and held-out test seeds (101–104) with de
 
 ### System Latency & Performance Profile
 
-| Measurement Component | Performance Metric |
+Re-measured on 2026-10-26 with `simulate --seconds 120 --seed 7 --mode truth3d`, Jev off,
+template narration. This is an **offline synthetic run**, not RF-DETR throughput or live broadcast latency.
+
+| Measurement | Result |
 |---|---|
-| **Event Engine Processing** | 0.06 ms / frame mean (p95: 0.11 ms) |
-| **Complete Frame Step (`truth3d`)** | 0.12 ms mean (p95: 0.30 ms) |
-| **Offline Pipeline Throughput** | 120s of gameplay processed in ~0.5s (~230× real-time) |
-| **Event Occurrence → Engine Emission** | p50: 67 ms, p95: 1.1s (shots resolve on rim exit) |
-| **Engine Emission → Narration Utterance** | p50: 283 ms, p95: 1.6s |
-| **Live `serve` Dashboard (`truth3d`)** | 0 dropped frames; Emission → Utterance p50: 245 ms |
-| **Live `serve` Video Perception Thread** | p50: 24.5 ms, p95: 46.7 ms per 1280×720 frame |
+| Complete frame step | p50 0.1 ms, p95 0.5 ms (3,600 frames) |
+| 120 source seconds | 0.9 s processing wall time (128.6×; excludes pre-simulation) |
+| Event occurrence → engine emission | p50 66.7 ms, p95 833.3 ms (155 events) |
+| Engine emission → narration | p50 233.3 ms, p95 931.7 ms (18 matched lines) |
+| Event occurrence → narration | p50 650.0 ms, p95 3160.0 ms (18 matched lines) |
+| Synthetic video perception (same seed/duration, 1280×720) | p50 28.5 ms, p95 41.5 ms (3,600 frames) |
+| Complete synthetic video run | 120 source seconds in 114.5 s processing wall time; includes rendering and perception |
+
+The studio displays vision-stage time and inference rate (excluding decoding and UI) for the loaded footage. It processes
+every frame; slower hardware can fall behind source time. RF-DETR Nano starter detections were exercised
+on the [Supervision basketball sample](https://supervision.roboflow.com/latest/assets/), without a labelled
+event-accuracy evaluation. See [video workspace validation](docs/STUDIO.md) for the exact scope.
+
+### Round 5 held-out verification
+
+One aggregate check on seeds 101–104, after integrating `425a779`:
+
+| Mode | Source seconds per game | Headline F1 | 95% seed-bootstrap CI |
+|---|---:|---:|---:|
+| `truth3d` | 1200 | **0.991** | 0.982–1.000 |
+| `mono` | 1200 | **0.815** | 0.775–0.873 |
+| `video` | 180 | **0.792** | 0.733–0.837 |
+
+Truth3d exceeds the 0.98 simulator target; mono and video remain below 0.85. The round-5 simulator
+adds pump fakes and changes the generated games, so these figures are not a controlled before/after
+comparison with round 4. [Complete aggregate report](docs/bench/round5-heldout.md).
 
 ---
 
 ## Quickstart
 
 ### Prerequisites
-- Python 3.10, 3.11, or 3.12
+- Python 3.11 or newer (this workspace uses 3.12)
 - virtualenv / pip
 
 ### Installation
@@ -243,8 +265,33 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # Install package in editable mode with development dependencies
-pip install -e ".[dev]"
+pip install -e ".[cv,dev]"
 ```
+
+### Open a game video
+
+```bash
+courtvision studio --open
+```
+
+On this Mac, double-click **`Start CourtVision.command`**. The workspace opens at
+[localhost:8000](http://127.0.0.1:8000/).
+
+1. Choose **Open video**, select an MP4, MOV, MKV or AVI (up to 8 GB), and start analysis.
+   The first run prepares an RF-DETR Nano COCO starter checkpoint (about 350 MB). The footage stays local.
+2. Watch player/ball overlays on the actual processed frame. Pause, resume, adjust speed, or expand the monitor.
+3. Use **Court setup** to freeze a frame and mark at least four known floor landmarks. The reference diagram
+   identifies the selected point. Apply setup and resume; setup is saved with this video.
+4. Review the play-by-play and box score. Use **Game controls** for score, lineup, and event corrections.
+   **Export analysis** downloads the current events, stats, transcript, and timing report as JSON.
+
+**Explore the demo** runs a clearly labelled simulated game without downloading a detector. Recent footage
+can be reopened; previous run outputs stay in separate `runs/studio/analyses/` folders.
+
+The starter model detects generic people and sports balls. It does not automatically identify NBA players,
+read arbitrary TV scorebugs, distinguish every replay, or produce official statistics. A basketball-trained
+checkpoint, validated identity/scoreboard setup, and labelled real-game evaluation are still needed for that.
+Jev and Claude are optional; missing keys leave local rule-based decisions and template commentary available.
 
 ### Running the Stack
 
@@ -294,6 +341,7 @@ pip install -e ".[dev]"
 
 | Command | Purpose | Key Arguments |
 |---|---|---|
+| `studio` | Upload footage and follow local video analysis | `--open`, `--port`, `--data-dir`, `--config`, `--auth-token` |
 | `simulate` | Evaluates simulator game against ground truth | `--seconds`, `--seed`, `--mode (truth3d\|mono\|video)`, `--out`, `--jev` |
 | `serve` | Runs FastAPI server and live dashboard | `--source (sim\|video\|camera)`, `--speed`, `--host`, `--port`, `--tts`, `--open` |
 | `run` | Processes offline video file through CV stack | `--video`, `--calibration`, `--detector`, `--roster`, `--scoreboard-roi`, `--out` |
@@ -352,7 +400,7 @@ courtvision/
 │   ├── RESEARCH.md              # Research survey, legal considerations, and design bindings
 │   ├── TRAINING.md              # Fine-tuning guides, data licensing, and rights gates
 │   └── examples/                # Sample roster files and camera calibration points
-├── tests/                       # Complete automated test suite (2,009 deterministic tests)
+├── tests/                       # Automated offline and integration tests
 ├── tools/                       # Multi-seed accuracy benchmark runner (`accuracy_bench.py`)
 ├── .env.example                 # Environment variable template for optional API keys
 └── pyproject.toml               # Python package specification and optional dependency groups
@@ -381,6 +429,7 @@ CourtVision has 2,075 deterministic, network-free tests (6 more skip when option
 ## Limitations
 
 - **Simulator-Scored Baseline**: Current benchmark numbers are derived from the seeded simulator and synthetic renderer. Accuracy on arbitrary in-the-wild handheld footage is unmeasured.
+- **Starter detector and NBA broadcasts**: Upload/playback, generic detections and manual court setup are usable locally. Automatic NBA identity, scorebug OCR and replay recognition are not validated. Ball occlusion, camera changes and tiny broadcast balls can suppress or misclassify events. The studio's statistics are estimates for review.
 - **Fixed-Camera Assumption**: The homography model assumes a fixed camera position or a calibrated pan/tilt/zoom head with fixed center. Unconstrained dynamic camera motion breaks the planar homography.
 - **Monocular Occlusion Challenges**: In single-camera footage without stereoscopic height estimation, steals, turnovers, and blocks remain challenging (held-out mono F1, round 4: steals 0.50, turnovers 0.68, blocks 0.27). One camera cannot tell a ball high over the shooter from one in the box of a player behind him on the same camera ray, nor a pump fake that draws a defender's jump from a shot he turns back (both recorded as strict expected-failure tests); the hold-time block path for a shot swatted straight back into the shooter's hands is therefore off by default (`hold_block_confirm_s`).
 - **Video Compression Artifacts**: Lossy H.264 compression degrades ball detection accuracy compared to lossless FFV1 encoding.

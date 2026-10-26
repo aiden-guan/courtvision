@@ -189,6 +189,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     cfgp = _config_parent()
 
+    studio = sub.add_parser("studio", parents=[cfgp], help="open the local video analysis workspace")
+    studio.add_argument("--host", default="127.0.0.1")
+    studio.add_argument("--port", type=_port, default=8000)
+    studio.add_argument("--open", action="store_true", help="open the workspace in your browser")
+    studio.add_argument("--data-dir", default="runs/studio", help="local footage and analysis directory")
+    studio.add_argument("--auth-token", default=None)
+    studio.set_defaults(func=cmd_studio)
+
     # simulate
     p = sub.add_parser("simulate", parents=[cfgp], help="offline simulator run evaluated against truth",
                        description="Simulate a game, run it through the whole stack as fast as possible "
@@ -853,6 +861,19 @@ def attach_game(app: Any, game: LiveGame, stop_timeout_s: float = 10.0) -> None:
 
     app.router.lifespan_context = lifespan
     app.state.game = game
+
+
+def cmd_studio(args: argparse.Namespace) -> int:
+    from courtvision.server.studio import create_studio_app
+
+    cfg = load_cli_config(args)
+    if not _is_loopback(args.host) and not args.auth_token:
+        raise CLIError("Studio needs --auth-token when listening outside localhost.")
+    app = create_studio_app(cfg, root=args.data_dir, auth_token=args.auth_token)
+    url = f"http://{_url_host(args.host)}:{args.port}/"
+    print(f"CourtVision Studio: {url}\nFootage and analysis: {Path(args.data_dir).resolve()}")
+    server = build_uvicorn_server(app, args.host, args.port)
+    return EXIT_OK if asyncio.run(_serve(server, url if args.open else None)) else EXIT_ERROR
 
 
 def create_serve_app(cfg: AppConfig, *, source: Any = None, env: Mapping[str, str] | None = None,

@@ -413,11 +413,12 @@ class _GuardMiddleware:
     _UNSAFE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
     def __init__(self, app: ASGIApp, max_body: int, allowed_origins: list[str],
-                 allowed_hosts: list[str] | None = None) -> None:
+                 allowed_hosts: list[str] | None = None, upload_max_body: int | None = None) -> None:
         self.app = app
         self.max_body = max_body
         self.allowed = list(allowed_origins)
         self.allowed_hosts = list(allowed_hosts or [])
+        self.upload_max_body = upload_max_body
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -447,7 +448,12 @@ class _GuardMiddleware:
                 message = {**message, "headers": list(message.get("headers", [])) + extra}
             await send(message)
 
-        await self.app(scope, self._capped(receive), send_with_headers)
+        await self.app(scope, self._capped(receive, self._body_limit(scope)), send_with_headers)
+
+    def _body_limit(self, scope: Scope) -> int:
+        if scope.get("path") == "/api/studio/upload" and self.upload_max_body is not None:
+            return self.upload_max_body
+        return self.max_body
 
     def _refusal(self, scope: Scope, headers: dict[str, str]) -> tuple[int, str] | None:
         if not _host_ok(headers.get("host"), self.allowed_hosts):
@@ -460,11 +466,11 @@ class _GuardMiddleware:
             length = int(headers.get("content-length", "0") or 0)
         except ValueError:
             return 400, "bad content-length"
-        if length > self.max_body:
+        if length > self._body_limit(scope):
             return 413, "request body too large"
         return None
 
-    def _capped(self, receive: Receive) -> Receive:
+    def _capped(self, receive: Receive, limit: int | None = None) -> Receive:
         seen = 0
 
         async def capped() -> Message:
@@ -472,7 +478,7 @@ class _GuardMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 seen += len(message.get("body", b""))
-                if seen > self.max_body:
+                if seen > (self.max_body if limit is None else limit):
                     raise HTTPException(413, "request body too large")
             return message
 
@@ -487,6 +493,7 @@ def create_app(
     controller: Controller | None = None,
     auth_token: str | None = None,
     config: ServerConfig | None = None,
+    *, upload_max_body: int | None = None,
 ) -> FastAPI:
     """Build the CourtVision FastAPI app (see module docstring)."""
     cfg = config or ServerConfig()
@@ -516,7 +523,7 @@ def create_app(
     app.state.controller = controller
     app.state.started = time.monotonic()
     app.add_middleware(_GuardMiddleware, max_body=cfg.max_body_bytes, allowed_origins=cfg.allowed_origins,
-                       allowed_hosts=cfg.allowed_hosts)
+                       allowed_hosts=cfg.allowed_hosts, upload_max_body=upload_max_body)
     _install_error_handlers(app)
 
     def require_write(request: Request) -> None:
@@ -526,6 +533,9 @@ def create_app(
     def require_read(request: Request) -> None:
         if cfg.protect_reads:
             require_write(request)
+
+    app.state.require_read = require_read
+    app.state.require_write = require_write
 
     _register_reads(app, hub, cfg, controller, Depends(require_read))
     _register_writes(app, hub, cfg, controller, Depends(require_write))

@@ -5,6 +5,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — video studio and round 5
+
+- Added `courtvision studio --open` and a Mac launcher: local video upload, actual processed-frame monitor,
+  player/ball overlays, pause/speed/restart, saved court setup, recent footage and JSON export.
+- Reworked the dashboard around the footage, with local Manrope typography, a restrained neutral palette,
+  tracking status and a court-landmark guide. Existing operator/stats tools remain available.
+- Added streamed uploads with decoder validation and existing auth/Origin/Host guards. Separate run folders
+  preserve prior outputs; new analyses clear old hub snapshots, events and queued replay messages.
+- Integrated round 5, including pump fakes, transition-confirmed mono steals and reviewed truth3d fixes.
+  Held-out simulator F1: truth3d **0.991**, mono **0.815**, video **0.792**. NBA event accuracy is unmeasured.
+- Re-pinned the rendered CLI fixture to a settled-possession window after the simulator flow changed;
+  retained its original event assertion. Added workspace integration tests and refreshed timing documentation.
+- See [workspace validation and limitations](docs/STUDIO.md).
+
+---
+
 ## [Unreleased] — round 4
 
 ### Summary
