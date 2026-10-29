@@ -26,7 +26,8 @@ so its effect on the box score can be measured on its own:
 4. ``shot_teams`` (needs the camera, ``PlayDirection``): the broadcast camera follows the ball, so the floor point
    it aims at shows which half the play is in. Each team attacks one basket per half of the game; the made
    baskets (scorebug team + the half the camera was on) tell which. A shot takes the team attacking the half the
-   camera aims at on its release. ``rebounds``: after a missed field goal the play either leaves that half (the
+   camera aims at on its release, or with ``teams_at_rim`` at its result (the ball at the rim: the basket it went
+   to, also when the engine's release time is off or the shot is a heave from the other half). ``rebounds``: after a missed field goal the play either leaves that half (the
    defence rebounded: the camera crosses half court and stays) or the attack goes on there (an offensive rebound);
    the engine's rebound after the miss is re-typed and re-teamed accordingly, and a miss without one gets one.
 5. ``bug_rebounds``: the shot clock says the same more directly (NBA rule 7): after a missed field goal the first of
@@ -175,6 +176,7 @@ class FusionConfig:
     flight_values: bool = True  # misses take 2 / 3 from a 3-D flight that reaches the rim near them
     handler_values: bool = False  # inferred misses take 2 / 3 from the ball handler's last position (pass 6)
     shot_teams: bool = True
+    teams_at_rim: bool = True  # shot_teams: the camera half when the ball reaches the rim (the result), not the release
     rebounds: bool = True
     bug_rebounds: bool = True
     oreb_misses: bool = True
@@ -383,7 +385,9 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
                 if res is not None and res.kind is EventKind.SHOT_MADE and res.attrs.get("fused", "").startswith("score"):
                     fixed.append(e)  # the scorebug named the team
                     continue
-                team, _ = attacker(att.t if att is not None else e.t)
+                # the half the ball went to: at its result (the ball at the rim) with teams_at_rim, else the release
+                t_cam = res.t if cfg.teams_at_rim and res is not None else (att.t if att is not None else e.t)
+                team, _ = attacker(t_cam)
                 if team is not None and team is not e.team:
                     e = _replace(e, team=team, attrs={"team_from": "camera half"})
             fixed.append(e)

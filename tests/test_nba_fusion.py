@@ -580,6 +580,15 @@ def test_shot_takes_the_team_attacking_the_half_the_camera_aims_at() -> None:
     assert out["s2a"].team is HOME and out["s2r"].team is HOME and "team_from" not in out["s2r"].attrs
 
 
+def test_shot_team_comes_from_the_half_the_ball_reaches_the_rim_in() -> None:
+    # the engine's release (38 s, camera on the left: away's half) is 5 s before its result at the right rim
+    ev = shot("s1", 38.0, 43.0, AWAY)
+    out = ids(fuse(ev, SIDES, only("shot_teams", "teams_at_rim"), direction=ALTERNATING, periods=PERIODS))
+    assert out["s1a"].team is HOME and out["s1r"].team is HOME and out["s1r"].attrs["team_from"] == "camera half"
+    off = ids(fuse(ev, SIDES, only("shot_teams"), direction=ALTERNATING, periods=PERIODS))
+    assert off["s1a"].team is AWAY and off["s1r"].team is AWAY  # the camera at the release
+
+
 def test_scorebug_make_keeps_the_bugs_team_whatever_half_the_camera_is_on() -> None:
     bug = SIDES + [BugEvent(37.5, "score", HOME, 2, period=1)]  # a home basket with the camera on away's half
     ev = shot("s1", 34.5, 35.5, AWAY)
