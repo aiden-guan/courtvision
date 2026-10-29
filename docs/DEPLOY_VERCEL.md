@@ -9,6 +9,8 @@ The root `Dockerfile` runs CourtVision Studio on Vercel's Container Runtime.
 2. **Bearer token**: every `/api/*` route and the WebSocket require `COURTVISION_TOKEN`.
    Open `https://<deployment>/#token=<token>` once per browser session (the hash never
    reaches the server or logs). If the variable is unset, the container refuses to start.
+3. The app's Host check accepts `*.vercel.app` (set in the Dockerfile `CMD`); add a custom
+   domain there with another `--set server.allowed_hosts=...` entry if you attach one.
 
 ## Environment variables (Project Settings → Environment Variables, type Sensitive)
 
