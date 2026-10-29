@@ -4,6 +4,10 @@ The camera sees who had the ball and where it went; the scorebug knows for certa
 much, and its shot clock resets when the ball touches the rim. Each pass below is switchable (``FusionConfig``)
 so its effect on the box score can be measured on its own:
 
+0. ``team_map``: the engine's HOME / AWAY are jersey clusters, bound to the real teams only when the game's colours
+   are configured (``perception/teams.py``: otherwise the order is arbitrary). The scorebug names the team of
+   every basket: when the engine's own makes at the score changes are mostly of the other team, the engine's
+   labels are swapped throughout.
 1. ``makes``: every confirmed score change is a made basket of that team and value: the nearest engine shot
    result (made or missed, any team) within the window before the bug update is turned into that make (team,
    value; its attempt follows), else an attempt and a make are inferred (no shooter). Engine makes with no score
@@ -151,6 +155,9 @@ def attack_sides(scores: list[BugEvent], direction: PlayDirection, lag_s: float)
 
 @dataclass
 class FusionConfig:
+    team_map: bool = True
+    team_map_min_votes: int = 4  # baskets matched to an engine shot of a known team before the labels can swap
+    team_map_share: float = 0.75  # the share of them on the other team that swaps the labels
     makes: bool = True
     ft_trips: bool = True
     rim_misses: bool = True
@@ -183,6 +190,31 @@ class FusionConfig:
     reset_make_after_s: float = 4.0  # a score change this soon after a reset: the reset was the make
     inferred_release_s: float = 1.0  # an inferred attempt is released this long before its rim touch / make
     assist_window_s: float = 3.5
+
+
+def _team_swap(events: list[Event], scores: list[BugEvent], cfg: FusionConfig) -> bool:
+    """Whether the engine's HOME / AWAY are the other way round (pass 0): a score change with exactly one engine make
+    (of a known team) in its make window votes with that make's team against the scorebug's. Engine misses do not
+    vote: next to a basket they are as often the other team's shots."""
+    same = other = 0
+    makes = [e for e in _results(events) if e.kind is EventKind.SHOT_MADE and e.team is not None
+             and e.source != "scoreboard"]
+    for s in scores:
+        if s.team is None:
+            continue
+        tm = s.t - cfg.score_lag_s
+        ft = s.points == 1
+        lo, hi = cfg.ft_window_s if ft else cfg.make_window_s
+        cands = [e for e in makes if _is_ft(e) == ft and lo <= e.t - tm <= hi]
+        if len(cands) != 1:
+            continue
+        c = cands[0]
+        if c.team is s.team:
+            same += 1
+        else:
+            other += 1
+    n = same + other
+    return n >= cfg.team_map_min_votes and other >= cfg.team_map_share * n
 
 
 def _results(events: list[Event]) -> list[Event]:
@@ -253,6 +285,13 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
         attempts[sid] = att
 
     scores = [b for b in bug if b.kind == "score"]
+    if cfg.team_map:
+        swap = _team_swap(list(by_id.values()), scores, cfg)
+        if swap:
+            for e in list(by_id.values()):
+                if e.team is not None:
+                    by_id[e.event_id] = _replace(e, team=e.team.other(), attrs={"team_from": "scorebug team map"})
+            attempts = {sid: by_id.get(a.event_id, a) for sid, a in attempts.items()}
     if cfg.makes:
         used: set[str] = set()
         for s in scores:

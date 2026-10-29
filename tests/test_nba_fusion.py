@@ -589,3 +589,32 @@ def test_free_throw_rebound_from_the_reset_as_play_resumes() -> None:
     # free throws of both teams in one stoppage (technicals): no call
     both = [*base, BugEvent(110.0, "score", AWAY, 1), BugEvent(140.4, "reset24", shot_clock_before=9.0)]
     assert of(fuse([], both, cfg), EventKind.REBOUND) == []
+
+
+# --------------------------------------------------------------------------- fusion: team map
+
+
+def swapped_game(n_swapped: int, n_same: int) -> tuple[list[Event], list[BugEvent]]:
+    """Home baskets every 30 s: the engine's make next to each is labelled away (``n_swapped``) or home."""
+    ev: list[Event] = []
+    bug: list[BugEvent] = []
+    for k in range(n_swapped + n_same):
+        t = 30.0 * k + 10.0
+        ev += shot(f"s{k}", t - 1.0, t, AWAY if k < n_swapped else HOME, made=True)
+        bug.append(BugEvent(t + 2.0, "score", HOME, 2))
+    ev.append(Event("rb", EventKind.REBOUND, 500.0, 0, team=AWAY, player_id="p9", attrs={"offensive": False}))
+    return ev, bug
+
+
+def test_engine_teams_the_other_way_round_are_swapped_from_the_scorebug() -> None:
+    ev, bug = swapped_game(5, 0)
+    out = ids(fuse(ev, bug, only("team_map", "makes")))
+    assert out["rb"].team is HOME and out["rb"].attrs["team_from"] == "scorebug team map"
+    assert all(out[f"s{k}r"].team is HOME and out[f"s{k}a"].team is HOME for k in range(5))
+
+
+def test_team_map_needs_enough_and_clear_votes() -> None:
+    for n_swapped, n_same in ((3, 0), (3, 2)):  # too few votes; not a clear majority
+        ev, bug = swapped_game(n_swapped, n_same)
+        out = ids(fuse(ev, bug, only("team_map", "makes")))
+        assert out["rb"].team is AWAY and "team_from" not in out["rb"].attrs
