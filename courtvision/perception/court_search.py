@@ -46,13 +46,16 @@ __all__ = [
     "Evidence",
     "EvidenceConfig",
     "court_evidence",
+    "court_region",
     "coverage",
     "explained",
     "fit_center",
     "plausible",
     "refine",
+    "restrict",
     "rotation",
     "search",
+    "with_lines",
 ]
 
 log = logging.getLogger(__name__)
@@ -65,10 +68,11 @@ def rotation(pan: float, tilt: float, roll: float = 0.0) -> np.ndarray:
     """World -> camera rotation (rows right, down, forward) for pan / tilt / roll in degrees. Pan 0 looks along
     +y (across the court from the near sideline), positive tilt looks down, roll turns the image clockwise."""
     p, t = math.radians(pan), math.radians(tilt)
-    fwd = np.array([math.cos(t) * math.sin(p), math.cos(t) * math.cos(p), -math.sin(t)])
-    right = np.array([fwd[1], -fwd[0], 0.0]) / max(math.hypot(fwd[0], fwd[1]), 1e-12)
-    down = np.cross(fwd, right)
-    R = np.vstack([right, down, fwd])
+    f0, f1, f2 = math.cos(t) * math.sin(p), math.cos(t) * math.cos(p), -math.sin(t)
+    n = max(math.hypot(f0, f1), 1e-12)
+    r0, r1, r2 = f1 / n, -f0 / n, 0.0
+    # down = fwd x right, written out (the products np.cross forms; it costs more than the rest of a refine step)
+    R = np.array([[r0, r1, r2], [f1 * r2 - f2 * r1, f2 * r0 - f0 * r2, f0 * r1 - f1 * r0], [f0, f1, f2]])
     if roll:
         r = math.radians(roll)
         c, s = math.cos(r), math.sin(r)
@@ -155,6 +159,9 @@ class Evidence:
     dist: np.ndarray  # float32 distance (px) to the nearest line pixel, clipped
     sigma: float = 2.0  # structure-tensor scale of ``orient``
     _orient: np.ndarray | None = None
+    raw: np.ndarray | None = None  # float32 ridge response before the floor mask (for ``restrict``)
+    density: np.ndarray | None = None  # float32 share of strong responses around each pixel
+    blocked: np.ndarray | None = None  # bool: excluded boxes and people
 
     @property
     def size(self) -> tuple[int, int]:
@@ -192,9 +199,10 @@ def line_orientation(resp: np.ndarray, sigma: float) -> np.ndarray:
 
 
 def court_evidence(img_bgr: np.ndarray, config: EvidenceConfig | None = None,
-                   people: list[tuple[float, float, float, float]] | None = None) -> Evidence:
+                   people: list[tuple[float, float, float, float]] | None = None, lines: bool = True) -> Evidence:
     """Line evidence of one frame (see the module docstring). ``people``: person boxes (x1, y1, x2, y2), masked
-    out of the floor (a body's outline is no court line)."""
+    out of the floor (a body's outline is no court line). ``lines=False`` leaves the frame-wide line pixels for
+    ``with_lines`` (a tracked frame needs only ``restrict``)."""
     cfg = config or EvidenceConfig()
     h, w = img_bgr.shape[:2]
     s = h / 1080.0
@@ -209,22 +217,41 @@ def court_evidence(img_bgr: np.ndarray, config: EvidenceConfig | None = None,
     density = cv2.boxFilter(strong, -1, (k, k))
     floor = density < cfg.max_density
     sx = w / 1920.0
+    blocked = np.zeros((h, w), bool)
 
     def clear(x0: float, y0: float, x1: float, y1: float) -> None:
         # clipped to the frame first: a negative end would wrap round to the far edge in a slice
         i0, i1 = int(np.clip(y0, 0, h)), int(np.clip(y1, 0, h))
         j0, j1 = int(np.clip(x0, 0, w)), int(np.clip(x1, 0, w))
-        floor[i0:i1, j0:j1] = False
+        blocked[i0:i1, j0:j1] = True
 
     for x, y, bw, bh in cfg.exclude:  # boxes in pixels of a 1920x1080 frame
         x0, y0 = round(x * sx), round(y * s)
         clear(x0, y0, x0 + round(bw * sx), y0 + round(bh * s))
     for x1, y1, x2, y2 in people or ():
         clear(math.floor(x1), math.floor(y1), math.floor(x2) + 1, math.floor(y2) + 1)
+    floor &= ~blocked
     n, lab, stats, _ = cv2.connectedComponentsWithStats(floor.astype(np.uint8), connectivity=8)
     keep = np.zeros(n, bool)
     keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= cfg.min_floor_frac * h * w
     floor = keep[lab]
+    ev = Evidence(resp, floor, np.zeros((0, 0), bool), np.zeros((0, 0), np.float32), 2.0 * s, raw=resp,
+                  density=density, blocked=blocked)
+    return with_lines(ev, cfg) if lines else ev
+
+
+def with_lines(ev: Evidence, config: EvidenceConfig | None = None) -> Evidence:
+    """``ev`` with its frame-wide line pixels, distance map and floor-masked response (computed once)."""
+    if ev.lines.shape == ev.floor.shape or ev.raw is None:
+        return ev
+    cfg = config or EvidenceConfig()
+    ev.lines, ev.dist = _line_pixels(ev.raw, ev.floor, cfg, ev.size[1] / 1080.0)
+    ev.resp = np.where(ev.floor, ev.raw, 0.0).astype(np.float32)
+    return ev
+
+
+def _line_pixels(resp: np.ndarray, floor: np.ndarray, cfg: EvidenceConfig, s: float) -> tuple[np.ndarray, np.ndarray]:
+    """Line pixels (strong responses on the floor in long components) and their clipped distance map."""
     lines = (resp >= cfg.line_min) & floor
     n, lab, stats, _ = cv2.connectedComponentsWithStats(lines.astype(np.uint8), connectivity=8)
     span = np.hypot(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT])
@@ -233,7 +260,43 @@ def court_evidence(img_bgr: np.ndarray, config: EvidenceConfig | None = None,
     lines = keep[lab]
     dist = cv2.distanceTransform((~lines).astype(np.uint8), cv2.DIST_L2, 3)
     np.minimum(dist, cfg.dist_clip_px * s, out=dist)
-    return Evidence(np.where(floor, resp, 0.0).astype(np.float32), floor, lines, dist, 2.0 * s)
+    return lines, dist
+
+
+def court_region(court: CourtSpec, params: CameraParams, size: tuple[int, int], margin_ft: float) -> np.ndarray:
+    """bool image mask of the court rectangle grown by ``margin_ft`` under ``params`` (the part in front of the
+    camera)."""
+    w, h = size
+    m = margin_ft
+    xs = np.linspace(-m, court.length + m, 48)
+    ys = np.linspace(-m, court.width + m, 32)
+    pts = np.concatenate([np.column_stack([xs, np.full_like(xs, -m)]),
+                          np.column_stack([np.full_like(ys, court.length + m), ys]),
+                          np.column_stack([xs[::-1], np.full_like(xs, court.width + m)]),
+                          np.column_stack([np.full_like(ys, -m), ys[::-1]])])
+    uv, wz = _project(params.G(size), pts)
+    mask = np.zeros((h, w), np.uint8)
+    ok = wz > 1e-6
+    if ok.sum() >= 3:
+        q = np.clip(uv[ok], -8.0 * max(w, h), 8.0 * max(w, h))
+        cv2.fillPoly(mask, [np.round(q * 8.0).astype(np.int32)], 1, cv2.LINE_8, shift=3)
+    return mask.astype(bool)
+
+
+def restrict(ev: Evidence, court: CourtSpec, params: CameraParams, config: EvidenceConfig | None = None,
+             margin_ft: float = 4.0, max_density: float = 0.30) -> Evidence:
+    """The evidence of a frame seen by a known (predicted) camera: the floor is the projected court grown by
+    ``margin_ft`` (the stands, boards and graphics outside it drop out) minus clutter denser than ``max_density``,
+    a looser test than the frame-wide floor mask (lines close together, as round the key, no longer mask
+    themselves out; players still do)."""
+    if ev.raw is None or ev.density is None or ev.blocked is None:
+        return ev
+    cfg = config or EvidenceConfig()
+    s = ev.size[1] / 1080.0
+    floor = (ev.density < max_density) & ~ev.blocked & court_region(court, params, ev.size, margin_ft)
+    lines, dist = _line_pixels(ev.raw, floor, cfg, s)
+    return Evidence(np.where(floor, ev.raw, 0.0).astype(np.float32), floor, lines, dist, ev.sigma, raw=ev.raw,
+                    density=ev.density, blocked=ev.blocked)
 
 
 def _oriented_dist(ev: Evidence, k: int, clip: float) -> tuple[np.ndarray, np.ndarray]:
@@ -340,9 +403,10 @@ def _scores(floor: np.ndarray, odist: np.ndarray, k: int, size: tuple[int, int],
         inv_scale = beta * len(P) / len(ev_pts)
     for a in range(0, len(Rs), 256):
         R = Rs[a:a + 256]
+        Rt = R.transpose(0, 2, 1)
         f = focals[a:a + 256, None].astype(np.float32)
-        ca = np.einsum("aij,nj->ani", R, A)
-        cb = np.einsum("aij,nj->ani", R, B)
+        ca = A @ Rt  # (a, n, 3): each candidate's rotation applied to every model point (BLAS, not einsum's loop)
+        cb = B @ Rt
         with np.errstate(divide="ignore", invalid="ignore"):
             ua, va = f * ca[..., 0] / ca[..., 2], f * ca[..., 1] / ca[..., 2]
             ub, vb = f * cb[..., 0] / cb[..., 2], f * cb[..., 1] / cb[..., 2]
@@ -357,9 +421,9 @@ def _scores(floor: np.ndarray, odist: np.ndarray, k: int, size: tuple[int, int],
         g = np.clip(1.0 - odist[bins, vi, ui] / tau, 0.0, 1.0)
         sc = np.where(on, g - lam * (1.0 - g), 0.0).sum(axis=1)
         if ev_pts is not None and field is not None and len(ev_pts):
-            # rays of the line pixels in world coordinates: R^T [u / f, v / f, 1]
-            rays = np.einsum("aji,anj->ani", R, np.concatenate(
-                [e_uv[None, :, :] / f[:, :, None], np.ones((len(R), len(e_uv), 1), np.float32)], axis=2))
+            # rays of the line pixels in world coordinates: R^T [u / f, v / f, 1] (row vectors: v @ R)
+            rays = np.concatenate(
+                [e_uv[None, :, :] / f[:, :, None], np.ones((len(R), len(e_uv), 1), np.float32)], axis=2) @ R
             with np.errstate(divide="ignore", invalid="ignore"):
                 s = -C[2] / rays[..., 2]
             down = rays[..., 2] < -1e-6

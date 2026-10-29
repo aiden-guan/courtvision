@@ -214,3 +214,14 @@ def test_level_zero_suppression_keeps_distinct_peaks() -> None:
     order = np.arange(6)  # already best first
     kept = court_search._nms(order, pans, tilts, focals, step0=40.0, focal_step=0.1, n=3)
     assert kept == [0, 3, 5]
+
+
+def test_restrict_keeps_the_court_region_and_drops_the_stands() -> None:
+    cam = CameraParams(CENTER, 14.0, 15.5, 0.0, 2300.0)
+    ev = court_evidence(render(cam))
+    loc = court_search.restrict(ev, COURT, cam)
+    region = court_search.court_region(COURT, cam, ev.size, 4.0)
+    assert loc.lines.any() and not (loc.lines & ~region).any()  # nothing beyond the court and its margin
+    assert court_search.coverage(loc, COURT, cam) >= court_search.coverage(ev, COURT, cam)  # no court line lost
+    lazy = court_evidence(render(cam), lines=False)  # the tracker's frame: lines only on demand
+    assert lazy.lines.size == 0 and court_search.with_lines(lazy).lines.sum() == ev.lines.sum()

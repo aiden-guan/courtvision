@@ -78,6 +78,11 @@ def main() -> int:
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--start", type=float, default=0.0)
     ap.add_argument("--duration", type=float, default=None)
+    ap.add_argument("--track-margin-ft", type=float, default=None,
+                    help="tracked frames read lines around the projected court plus this margin (default: "
+                         "BroadcastTrackerConfig's); 0: the frame-wide floor mask of before")
+    ap.add_argument("--no-reacquire-after-loss", action="store_true",
+                    help="re-acquire after a loss in play only on the regular schedule (as before)")
     args = ap.parse_args()
 
     court = court_for("nba")
@@ -95,6 +100,10 @@ def main() -> int:
               f"track fills gaps of up to {fill} at {fps:.2f} fps, so no two tracked frames would be joined",
               file=sys.stderr, flush=True)
     cfg = BroadcastTrackerConfig(evidence=EvidenceConfig(exclude=bug_exclude(args.scorebug)))
+    if args.track_margin_ft is not None:
+        cfg.track_margin_ft = args.track_margin_ft
+    if args.no_reacquire_after_loss:
+        cfg.reacquire_after_loss = ()
     rows = [json.loads(line) for line in open(args.scorebug)]
     if args.center:
         center = np.array([float(v) for v in args.center.split(",")])

@@ -3,13 +3,17 @@
 ``BroadcastCourtTracker.update(frame) -> CourtFix`` follows the game camera (``court_search``):
 
 * **Tracking.** The line evidence of the frame (at ``work_width``) refines the previous frame's camera, predicted
-  forward with its velocity (pan / tilt / roll / focal only: the centre is fixed for the game). A fit is accepted
+  forward with its velocity (pan / tilt / roll / focal only: the centre is fixed for the game). The evidence is
+  seen through the predicted camera (``court_search.restrict``): the projected court plus ``track_margin_ft`` is
+  the floor, so the stands and boards drop out and lines close together (the key) no longer mask themselves out
+  of the frame-wide clutter test (synthetic benchmark, ``tools/court_bench.py``). A fit is accepted
   when enough of the court's lines land on line pixels (``min_coverage``) and the change is one a camera
   operator makes in one frame; otherwise the last camera is held for ``hold_frames`` and then the court is lost.
 * **Cuts.** On a ``cut`` (from a shot-boundary detector) the last camera is refined first and kept when it still
   fits as well as a re-acquisition must (most flagged cuts in a game are fast pans or flashes, not cuts); only
   then is it dropped.
-* **Re-acquisition** while lost: every ``reacquire_every`` frames a pan / tilt / zoom search near the last good
+* **Re-acquisition** while lost (also ``reacquire_after_loss`` frames after a loss in play, e.g. the blur of a
+  fast pan): every ``reacquire_every`` frames a pan / tilt / zoom search near the last good
   camera (``reacquire_around_deg``), then over the whole prior; accepted with ``reacquire_quality`` (coverage x
   explained lines) and only for a camera the game camera can be (``court_search.plausible``: focal length in the
   prior's field of view, looking down into the aim box, nearly level, a tight fit). Replays, close-ups and other
@@ -48,6 +52,8 @@ from .court_search import (
     focal_range,
     plausible,
     refine,
+    restrict,
+    with_lines,
 )
 
 __all__ = ["BroadcastCourtTracker", "BroadcastTrackerConfig", "CourtFix", "estimate_center", "params_from_homography"]
@@ -60,6 +66,10 @@ class BroadcastTrackerConfig:
     work_width: int = 960  # evidence resolution (the full-resolution camera is scaled back)
     evidence: EvidenceConfig = field(default_factory=EvidenceConfig)
     track_refine: RefineConfig = field(default_factory=lambda: RefineConfig(search_px=(40, 16, 6, 3), max_nfev=25))
+    # Tracked frames see the floor through the predicted camera (``court_search.restrict``): the projected court
+    # grown by ``track_margin_ft``, minus clutter denser than ``track_density`` (0 margin: the frame-wide mask).
+    track_margin_ft: float = 4.0
+    track_density: float = 0.30
     min_coverage: float = 0.40  # tracked fit: share of the court samples in view on a line
     min_inliers: int = 20
     max_rmse_px: float = 2.5  # 1080-line px
@@ -71,6 +81,7 @@ class BroadcastTrackerConfig:
     # Re-acquisition while lost: at a cut and a few frames after it (the game camera comes back on a cut), then
     # every ``reacquire_every`` frames; a frame must show some floor with lines first (close-ups do not).
     reacquire_after_cut: tuple[int, ...] = (0, 2, 6, 15)
+    reacquire_after_loss: tuple[int, ...] = (1, 4, 10, 20)  # lost frames after a loss in play (the blur of a pan)
     reacquire_every: int = 30
     min_floor_share: float = 0.12
     min_line_share: float = 0.002
@@ -121,6 +132,7 @@ class BroadcastCourtTracker:
         self._misses = 0
         self._lost_frames = 0
         self._since_cut = 10**6
+        self._loss_in_play = False  # lost without a cut (the blur of a fast pan, a flash)
         self._attempts = 0
         self._memory: list[CameraParams] = []  # work resolution, most recent first
         self.status = "lost"
@@ -145,7 +157,8 @@ class BroadcastCourtTracker:
         """The current camera at full resolution (None while lost)."""
         return None if self._last is None or self.status == "lost" else _scaled(self._last, 1.0 / self.scale)
 
-    def evidence(self, frame_bgr: np.ndarray, people: list[tuple[float, float, float, float]] | None = None) -> Evidence:
+    def evidence(self, frame_bgr: np.ndarray, people: list[tuple[float, float, float, float]] | None = None,
+                 lines: bool = True) -> Evidence:
         img = frame_bgr
         boxes = people
         if self.scale < 1.0:
@@ -153,23 +166,24 @@ class BroadcastCourtTracker:
             h = int(round(frame_bgr.shape[0] * self.scale))
             img = cv2.resize(frame_bgr, (w, h), interpolation=cv2.INTER_AREA)
             boxes = None if people is None else [tuple(v * self.scale for v in b) for b in people]  # type: ignore[misc]
-        return court_evidence(img, self.config.evidence, boxes)  # type: ignore[arg-type]
+        return court_evidence(img, self.config.evidence, boxes, lines=lines)  # type: ignore[arg-type]
 
     def update(self, frame_bgr: np.ndarray, cut: bool = False,
                people: list[tuple[float, float, float, float]] | None = None) -> CourtFix:
         cfg = self.config
-        ev = self.evidence(frame_bgr, people)
+        ev = self.evidence(frame_bgr, people, lines=False)  # the frame-wide line pixels only when needed
         self._since_cut = 0 if cut else self._since_cut + 1
         if cut and self.status != "lost" and self._last is not None:
             pred = self._predict()
-            r = refine(ev, self.court, pred, config=cfg.track_refine)
-            if r is not None and self._acceptable(r, pred) and self._sound(ev, r):
+            r = refine(self._local(ev, pred), self.court, pred, config=cfg.track_refine)
+            if r is not None and self._acceptable(r, pred) and self._sound(with_lines(ev, cfg.evidence), r):
                 return self._accept(r, "tracking")  # not a cut: the same camera, still turning
             self.status = "lost"
             self._lost_frames = 0
+            self._loss_in_play = False
         if self.status != "lost" and self._last is not None:
             pred = self._predict()
-            r = refine(ev, self.court, pred, config=cfg.track_refine)
+            r = refine(self._local(ev, pred), self.court, pred, config=cfg.track_refine)
             if r is not None and self._acceptable(r, pred):
                 return self._accept(r, "tracking")
             self._misses += 1
@@ -178,15 +192,25 @@ class BroadcastCourtTracker:
                 return CourtFix("held", self.params)
             self.status = "lost"
             self._lost_frames = 0
+            self._loss_in_play = True
             log.debug("court lost")
+        ev = with_lines(ev, cfg.evidence)
         self._lost_frames += 1
-        due = self._since_cut in cfg.reacquire_after_cut or (self._lost_frames - 1) % cfg.reacquire_every == 0
+        due = (self._since_cut in cfg.reacquire_after_cut or (self._lost_frames - 1) % cfg.reacquire_every == 0
+               or (self._loss_in_play and self._lost_frames in cfg.reacquire_after_loss))
         if due and ev.floor.mean() >= cfg.min_floor_share and ev.lines.mean() >= cfg.min_line_share:
             r = self._reacquire(ev)
             if r is not None:
                 self._vel[:] = 0.0
                 return self._accept(r, "reacquired")
         return CourtFix("lost", None)
+
+    def _local(self, ev: Evidence, p: CameraParams) -> Evidence:
+        """The frame's evidence seen through a predicted camera (``court_search.restrict``)."""
+        cfg = self.config
+        if cfg.track_margin_ft <= 0:
+            return with_lines(ev, cfg.evidence)
+        return restrict(ev, self.court, p, cfg.evidence, cfg.track_margin_ft, cfg.track_density)
 
     def _predict(self) -> CameraParams:
         assert self._last is not None
