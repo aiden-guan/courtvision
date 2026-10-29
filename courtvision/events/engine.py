@@ -597,6 +597,9 @@ class EventEngine:
         self._now = -math.inf  # time of the frame being processed
         self._track_bound: dict[int, tuple[str, Team | None, float]] = {}  # track -> (roster id, team, last seen)
         self._pend: _PendingSteal | None = None  # monocular change of team control awaiting corroboration
+        # (t, gaining team, ids) of the latest steals and inferred turnovers (a make re-credited later undoes them)
+        self._steal_log: deque[tuple[float, Team, list[str]]] = deque(maxlen=8)
+        self._inbound_after: tuple[Team | None, float] | None = None  # (scoring team, t): a make re-credited in play
         self._last_poss: tuple[str, Team | None, float] | None = None  # (POSSESSION id, team before, t)
         self._release_log: deque[tuple[Release, _Control | None]] = deque(maxlen=24)  # live releases
         self._boxes: deque[tuple[float, dict[str, tuple[BBox, Team | None]]]] = deque(maxlen=45)  # image boxes
@@ -1041,6 +1044,7 @@ class EventEngine:
 
     def _enter_dead(self, cause: str, t: float, f: int, **kw: Any) -> _Dead:
         dropped = self._resolve_pending()
+        self._inbound_after = None
         if self._held_block is not None:  # (the held gainer's stint ended in a dead ball: his pass stands)
             self._retro_dropped_t = max(self._retro_dropped_t, self._held_block[1][0])
             self._held_block = None
@@ -1141,10 +1145,14 @@ class EventEngine:
         t = d.out_t if d.out_t is not None else d.since_t
         f = d.out_frame if d.out_frame is not None else d.since_frame
         kind = "out_of_bounds" if d.cause == "oob" or d.out_t is not None else "other"
-        self._emit(EventKind.TURNOVER, t, f, team=last, player_id=d.last_holder, confidence=self.config.oob_turnover_conf,
-                   attrs={"type": kind, "needs_review": True,
-                          "reason": "inferred from the next inbound by the other team (last touch not seen)"})
-        self._set_possession(team, ft, ff, fp, "turnover")
+        ids = [self._emit(EventKind.TURNOVER, t, f, team=last, player_id=d.last_holder,
+                          confidence=self.config.oob_turnover_conf,
+                          attrs={"type": kind, "needs_review": True,
+                                 "reason": "inferred from the next inbound by the other team (last touch not seen)"}).event_id]
+        pev = self._set_possession(team, ft, ff, fp, "turnover")
+        if pev is not None:
+            ids.append(pev.event_id)
+        self._steal_log.append((t, team, ids))
 
     def _set_possession(self, team: Team | None, t: float, f: int, pid: str | None, cause: str,
                         conf: float | None = None, force: bool = False) -> Event | None:
@@ -1152,6 +1160,8 @@ class EventEngine:
             return None
         if self._pend is not None and team is self._pend.team and cause != "steal":
             return None  # decided when the pending change of control is corroborated or settled
+        if self._inbound_after is not None and team is not self._inbound_after[0]:
+            self._inbound_after = None  # the other team has the ball after the score
         before, self._poss_team = self._poss_team, team
         ev = self._emit(EventKind.POSSESSION, t, f, team=team, player_id=pid, xy=self._pos(pid, t) if pid else None,
                         confidence=self.config.possession_conf if conf is None else conf,
@@ -1429,6 +1439,14 @@ class EventEngine:
                 self._set_possession(team, ch.t, ch.frame_idx, pid, "other")
                 self._control = _Control(pid, team, ch.t, ch.frame_idx)
                 return
+            ia = self._inbound_after
+            if ia is not None and team is not ia[0] and ch.t >= ia[1] - 1e-6:
+                # the shot before was made (re-credited by the scoreboard after play seemed to go on): the other
+                # team's first gain is its inbound after the score, not a steal
+                self._inbound_after = None
+                self._set_possession(team, ch.t, ch.frame_idx, pid, "made_shot")
+                self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="inbound")
+                return
             travel = math.dist(r.xy, self._pos(pid, ch.t) or r.xy) if r.xy is not None else 0.0
             strip = travel <= cfg.strip_max_travel_ft and ch.t - r.t <= cfg.strip_max_flight_s
             kind = "steal" if strip else "bad_pass"
@@ -1611,6 +1629,7 @@ class EventEngine:
         if pev is not None:
             ids.append(pev.event_id)
         chg = self._provisional("steal", ch.t, team, poss_before, ids=ids, release=r if kind == "bad_pass" else None)
+        self._steal_log.append((ch.t, team, ids))
         if control:
             self._control = _Control(pid, team, ch.t, ch.frame_idx, origin="steal", change=chg)
         return chg
@@ -3037,12 +3056,48 @@ class EventEngine:
                         self._retract(tv.event_id, reason)
             elif ev.kind is EventKind.POSSESSION and ev.team is other and ev.attrs.get("cause") in (
                     "turnover", "steal", "other", "defensive_rebound"):
+                if ev.attrs.get("cause") == "turnover":
+                    # the inbound a turnover was inferred from is the inbound after the score: no turnover
+                    # (dated at the ball going out, which can come just before the make the scoreboard implies)
+                    for _, _, ids in self._steal_log:
+                        if ev.event_id in ids:
+                            for eid in ids:
+                                tv = self._store.get(eid)
+                                if tv is not None and tv.kind is EventKind.TURNOVER and tv.team is team:
+                                    self._retract(eid, reason)
                 self._revise(ev.event_id, attrs={"cause": "made_shot", "reason": reason})
                 entry.possession_id = ev.event_id
         d = self._dead
         if d is not None and d.since_t >= made_t - 0.5 and d.cause in ("oob", "unknown"):
             d.cause, d.scoring_team, d.shot_id = "made_fg", team, entry.shot_id
             d.last_team = d.last_holder = None
+
+    def _inbound_not_steal(self, entry: ShotEntry) -> None:
+        """Monocular: a shot called missed is re-credited as made after play seemed to go on (its "rebound" was
+        the ball through the net). After a score the other team inbounds: its gain since the make was that
+        inbound, not a steal or a turnover inferred from its throw-in (the STEAL / TURNOVER and the "intercepted"
+        pass are retracted, the POSSESSION is the possession after a score), a gain of it still pending is no
+        steal, and its next gain is the inbound."""
+        made_t = entry.result_t if entry.result_t is not None else entry.t_release
+        reason = "the shot before was made (scoreboard): the other team's inbound after the score, not a steal"
+        undone = False
+        for t, team, ids in self._steal_log:
+            if team is entry.team or t < made_t - 1e-6:
+                continue
+            undone = True
+            for eid in ids:
+                ev = self._store.get(eid)
+                if ev is not None and ev.kind is EventKind.POSSESSION:
+                    self._revise(eid, attrs={"cause": "made_shot", "reason": reason})
+                else:
+                    self._retract(eid, reason)
+        pend = self._pend
+        if pend is not None and pend.team is not entry.team and pend.ch.t >= made_t - 1e-6:
+            self._pend = None
+            self._set_possession(pend.team, pend.ch.t, pend.ch.frame_idx, pend.stealer, "made_shot")
+            undone = True
+        if not undone and self._poss_team is entry.team:
+            self._inbound_after = (entry.team, made_t)
 
     def _frame_before(self, t: float) -> tuple[float, int] | None:
         """(t, frame_idx) of the last processed frame strictly before ``t``, if still buffered."""
@@ -3089,10 +3144,13 @@ class EventEngine:
             self._enter_dead(cause, res_t, res.frame_idx if res else self._frame_near(res_t), scoring_team=entry.team,
                              shot_id=entry.shot_id)
             self.deadball.note_stoppage(res_t, "made_basket")
-        elif d is not None and d.miss is entry:
-            # a dead ball (clock stop, out of bounds) entered while the miss was still pending: it follows the make,
-            # so the other team's inbound is the possession after a score, not a team rebound / turnover
-            d.miss, d.cause, d.scoring_team, d.shot_id = None, cause, entry.team, entry.shot_id
+        else:
+            if d is not None and d.miss is entry:
+                # a dead ball (clock stop, out of bounds) entered while the miss was still pending: it follows the
+                # make, so the other team's inbound is the possession after a score, not a team rebound / turnover
+                d.miss, d.cause, d.scoring_team, d.shot_id = None, cause, entry.team, entry.shot_id
+            if self._mono:
+                self._inbound_not_steal(entry)
         if entry.assist_id is None and not entry.is_ft:
             res = self._store.get(entry.result_id or "")
             if res is not None:
