@@ -1,0 +1,320 @@
+"""Train the basketball student detector (``perception/student.py``) on teacher-labelled broadcast clips.
+
+    .venv/bin/python -m courtvision.training.train_student --data runs/nba/<game>/teacher \
+        [--data runs/nba/<other game>/teacher ...] --out runs/models/student [--epochs 14]
+
+Each ``--data`` folder holds ``frames/<clip>/<frame>.jpg`` (960 px wide), ``detections.jsonl`` (teacher persons,
+full-resolution px) and ``ball_labels.jsonl`` (``ball_labels.link_ball_path``). A sample is a clip frame and its two
+predecessors. Targets: Gaussian centre heatmaps at stride 4 (ball sigma ``ball_sigma`` cells; persons sized by
+CenterNet's radius rule), offsets and log box sizes. The ball loss is weighted by the label weight and skipped on
+frames without a ball label (the teacher's silence is not evidence of no ball). Every 10th clip is held out;
+``best.pt`` keeps the epoch with the best held-out ball F1 (within 12 full-resolution px).
+
+Research use only: the labels derive from NBA broadcasts (docs/TRAINING.md §1).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import random
+import time
+from collections import defaultdict
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from courtvision.perception.student import INPUT_HW, MEAN, STD, STRIDE, build_net, decode
+
+TEACHER_SCALE = 0.5  # stored frames are 960 px wide; labels are 1920-px coordinates
+OUT_HW = (INPUT_HW[0] // STRIDE, INPUT_HW[1] // STRIDE)
+
+
+def gaussian_radius(h: float, w: float, min_overlap: float = 0.7) -> float:
+    """CenterNet's radius rule (``h``, ``w`` in output cells)."""
+    a1, b1, c1 = 1, h + w, w * h * (1 - min_overlap) / (1 + min_overlap)
+    r1 = (b1 + math.sqrt(b1**2 - 4 * a1 * c1)) / 2
+    a2, b2, c2 = 4, 2 * (h + w), (1 - min_overlap) * w * h
+    r2 = (b2 + math.sqrt(b2**2 - 4 * a2 * c2)) / 2
+    a3, b3, c3 = 4 * min_overlap, -2 * min_overlap * (h + w), (min_overlap - 1) * w * h
+    r3 = (b3 + math.sqrt(b3**2 - 4 * a3 * c3)) / 2
+    return max(0.0, min(r1, r2, r3))
+
+
+def draw_gaussian(hm: np.ndarray, cx: float, cy: float, sigma: float) -> None:
+    h, w = hm.shape
+    r = int(math.ceil(3 * sigma))
+    x0, x1 = max(0, int(cx) - r), min(w, int(cx) + r + 1)
+    y0, y1 = max(0, int(cy) - r), min(h, int(cy) + r + 1)
+    if x0 >= x1 or y0 >= y1:
+        return
+    ys, xs = np.mgrid[y0:y1, x0:x1]
+    g = np.exp(-((xs - int(cx)) ** 2 + (ys - int(cy)) ** 2) / (2 * sigma * sigma))
+    np.maximum(hm[y0:y1, x0:x1], g, out=hm[y0:y1, x0:x1])
+
+
+class ClipDataset:
+    """Samples (input tensor, targets) from teacher folders; ``train`` turns on augmentation."""
+
+    def __init__(self, folders: list[Path], clips: set[tuple[int, int]] | None, train: bool, frames: int = 3,
+                 ball_sigma: float = 1.2, person_min_score: float = 0.4, crop: int = 512,
+                 ball_crop_share: float = 0.7) -> None:
+        self.train, self.frames, self.ball_sigma, self.person_min = train, frames, ball_sigma, person_min_score
+        self.crop, self.ball_crop_share = crop, ball_crop_share  # training crops (eval: the whole frame)
+        self.items: list[tuple[int, int, list[int], dict, dict]] = []
+        self.folders = folders
+        for fi, folder in enumerate(folders):
+            dets = {(r["clip"], r["frame"]): r for r in map(json.loads, (folder / "detections.jsonl").open())}
+            labels = {(r["clip"], r["frame"]): r for r in map(json.loads, (folder / "ball_labels.jsonl").open())}
+            by_clip: dict[int, list[int]] = defaultdict(list)
+            for clip, frame in dets:
+                by_clip[clip].append(frame)
+            for clip, fr in by_clip.items():
+                if clips is not None and (fi, clip) not in clips:
+                    continue
+                fr.sort()
+                for i, f in enumerate(fr):
+                    prev = [fr[max(0, i - k)] for k in range(frames - 1, 0, -1)]
+                    self.items.append((fi, clip, prev + [f], dets[(clip, f)], labels.get((clip, f), {})))
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def _img(self, fi: int, clip: int, frame: int) -> np.ndarray:
+        return cv2.imread(str(self.folders[fi] / "frames" / f"{clip:04d}" / f"{frame:06d}.jpg"))
+
+    def __getitem__(self, idx: int) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        fi, clip, frames, det, lab = self.items[idx]
+        imgs = [self._img(fi, clip, f) for f in frames]
+        h_in, w_in = INPUT_HW
+        s = TEACHER_SCALE  # label px -> stored image px
+        flip = self.train and random.random() < 0.5
+        zoom = random.uniform(0.8, 1.25) if self.train else 1.0
+        h0, w0 = imgs[0].shape[:2]
+        ox = oy = 0.0
+        if self.train:  # a crop x crop window of the zoomed frame, often around the ball
+            h_in = w_in = self.crop
+            if lab.get("xy") and lab.get("w", 0) > 0 and random.random() < self.ball_crop_share:
+                bx, by = lab["xy"][0] * s * zoom, lab["xy"][1] * s * zoom
+                cx, cy = bx + random.uniform(-0.4, 0.4) * w_in, by + random.uniform(-0.4, 0.4) * h_in
+            else:
+                cx, cy = random.uniform(0, w0 * zoom), random.uniform(0, h0 * zoom)
+            ox, oy = w_in / 2 - cx, h_in / 2 - cy
+        M = np.array([[zoom, 0.0, ox], [0.0, zoom, oy]], np.float32)
+        if flip:
+            M = np.array([[-1.0, 0.0, w_in - 1.0], [0.0, 1.0, 0.0]], np.float32) @ np.vstack([M, [0, 0, 1]])
+        jitter = None
+        if self.train:
+            jitter = (random.uniform(0.85, 1.15), random.uniform(-12, 12), random.uniform(0.85, 1.15))
+        chans = []
+        for img in imgs:
+            warped = cv2.warpAffine(img, M, (w_in, h_in), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            if jitter is not None:
+                c, b, sat = jitter
+                warped = np.clip(warped.astype(np.float32) * c + b, 0, 255).astype(np.uint8)
+                hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV).astype(np.float32)
+                hsv[..., 1] = np.clip(hsv[..., 1] * sat, 0, 255)
+                warped = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+            rgb = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            chans.append(((rgb - MEAN) / STD).transpose(2, 0, 1))
+        x = np.concatenate(chans, axis=0).astype(np.float32)
+
+        def tf(px: float, py: float) -> tuple[float, float]:
+            return (M[0, 0] * px * s + M[0, 1] * py * s + M[0, 2], M[1, 0] * px * s + M[1, 1] * py * s + M[1, 2])
+
+        oh, ow = h_in // STRIDE, w_in // STRIDE
+        t = {"ball_hm": np.zeros((1, oh, ow), np.float32), "ball_off": np.zeros((2, oh, ow), np.float32),
+             "ball_mask": np.zeros((1, oh, ow), np.float32), "ball_w": np.zeros(1, np.float32),
+             "person_hm": np.zeros((1, oh, ow), np.float32), "person_wh": np.zeros((2, oh, ow), np.float32),
+             "person_off": np.zeros((2, oh, ow), np.float32), "person_mask": np.zeros((1, oh, ow), np.float32)}
+        if lab.get("w", 0) > 0 and lab.get("xy"):
+            u, v = tf(*lab["xy"])
+            cu, cv = u / STRIDE, v / STRIDE
+            t["ball_w"][0] = float(lab["w"])  # the frame counts for the ball loss (even with the ball cropped out)
+            if 0 <= cu < ow and 0 <= cv < oh:
+                draw_gaussian(t["ball_hm"][0], cu, cv, self.ball_sigma)
+                t["ball_off"][:, int(cv), int(cu)] = (cu - int(cu), cv - int(cv))
+                t["ball_mask"][0, int(cv), int(cu)] = 1.0
+        for x1, y1, x2, y2, sc in det["persons"]:
+            if sc < self.person_min:
+                continue
+            a, b = tf(x1, y1)
+            c, d = tf(x2, y2)
+            bx1, bx2 = sorted((a, c))
+            by1, by2 = sorted((b, d))
+            bx1, by1, bx2, by2 = max(0, bx1), max(0, by1), min(w_in - 1, bx2), min(h_in - 1, by2)
+            if bx2 - bx1 < 4 or by2 - by1 < 8:
+                continue
+            cu, cv = (bx1 + bx2) / 2 / STRIDE, (by1 + by2) / 2 / STRIDE
+            wc, hc = (bx2 - bx1) / STRIDE, (by2 - by1) / STRIDE
+            draw_gaussian(t["person_hm"][0], cu, cv, max(0.6, (2 * gaussian_radius(hc, wc) + 1) / 6))
+            t["person_wh"][:, int(cv), int(cu)] = (math.log(wc), math.log(hc))
+            t["person_off"][:, int(cv), int(cu)] = (cu - int(cu), cv - int(cv))
+            t["person_mask"][0, int(cv), int(cu)] = 1.0
+        return x, t
+
+
+def focal_loss(logits, target, weight=None):  # noqa: ANN001, ANN201 (torch)
+    """CenterNet focal loss (alpha 2, beta 4), summed over the batch and divided by the positive count; ``weight``
+    (B,) scales each sample."""
+    import torch
+
+    p = torch.sigmoid(logits).clamp(1e-4, 1 - 1e-4)
+    pos = target.eq(1).float()
+    neg = 1.0 - pos
+    pos_l = torch.log(p) * (1 - p) ** 2 * pos
+    neg_l = torch.log(1 - p) * p**2 * (1 - target) ** 4 * neg
+    per = -(pos_l + neg_l).flatten(1).sum(1)
+    if weight is not None:
+        per = per * weight
+    n = pos.flatten(1).sum(1)
+    if weight is not None:
+        n = n * (weight > 0).float()
+    return per.sum() / n.sum().clamp(min=1.0)
+
+
+def masked_l1(pred, target, mask):  # noqa: ANN001, ANN201 (torch)
+    m = mask.expand_as(pred)
+    return (abs(pred - target) * m).sum() / m.sum().clamp(min=1.0)
+
+
+def evaluate(net, ds: ClipDataset, device: str, tol_px: float = 12.0) -> dict[str, float]:  # noqa: ANN001
+    """Held-out ball precision / recall / F1 at several thresholds (labelled frames; within ``tol_px``
+    full-resolution px) and person recall at IoU 0.5."""
+    import torch
+
+    net.eval()
+    found: list[tuple[float, bool]] = []  # top ball score per labelled frame, and whether it hit the label
+    n_lab = 0
+    p_hit = p_n = 0
+    with torch.no_grad():
+        for i in range(0, len(ds), 16):
+            batch = [ds[j] for j in range(i, min(len(ds), i + 16))]
+            x = torch.from_numpy(np.stack([b[0] for b in batch])).to(device)
+            out = {k: v.float().cpu().numpy() for k, v in net(x).items()}
+            for j, (_, tg) in enumerate(batch):
+                one = {k: v[j] for k, v in out.items()}
+                for k in ("ball_hm", "person_hm"):
+                    one[k] = 1.0 / (1.0 + np.exp(-one[k]))
+                balls, persons = decode(one, TEACHER_SCALE, ball_thresh=0.02, person_thresh=0.3)
+                _, item_clip, frames, det, lab = ds.items[i + j]
+                if lab.get("w", 0) >= 0.5 and lab.get("xy"):
+                    n_lab += 1
+                    if balls:
+                        bx, by, sc = balls[0]
+                        found.append((sc, math.hypot(bx - lab["xy"][0], by - lab["xy"][1]) <= tol_px))
+                gts = [p for p in det["persons"] if p[4] >= 0.5]
+                p_n += len(gts)
+                for g in gts:
+                    if any(_iou(g, q) >= 0.5 for q in persons):
+                        p_hit += 1
+    res: dict[str, float] = {"person_recall": p_hit / max(1, p_n), "n_ball": n_lab}
+    best_f1 = 0.0
+    for th in (0.1, 0.2, 0.3, 0.4, 0.5):
+        tp = sum(1 for sc, ok in found if sc >= th and ok)
+        fp = sum(1 for sc, ok in found if sc >= th and not ok)
+        prec, rec = tp / max(1, tp + fp), tp / max(1, n_lab)
+        f1 = 2 * prec * rec / max(1e-9, prec + rec)
+        res[f"ball_p@{th}"], res[f"ball_r@{th}"] = round(prec, 3), round(rec, 3)
+        best_f1 = max(best_f1, f1)
+    res["ball_f1"] = round(best_f1, 4)
+    net.train()
+    return res
+
+
+def _iou(a, b) -> float:  # noqa: ANN001
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    u = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / u if u > 0 else 0.0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data", action="append", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--epochs", type=int, default=14)
+    ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--lr", type=float, default=6e-4)
+    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--init", default=None, help="start from these weights")
+    ap.add_argument("--max-steps", type=int, default=0, help="stop after this many steps (smoke test)")
+    args = ap.parse_args()
+
+    import torch
+
+    random.seed(0)
+    torch.manual_seed(0)
+    folders = [Path(d) for d in args.data]
+    all_clips = set()
+    for fi, folder in enumerate(folders):
+        for r in map(json.loads, (folder / "detections.jsonl").open()):
+            all_clips.add((fi, r["clip"]))
+    val_clips = {c for c in all_clips if c[1] % 10 == 5}
+    train_ds = ClipDataset(folders, all_clips - val_clips, train=True)
+    val_ds = ClipDataset(folders, val_clips, train=False)
+    print(f"train {len(train_ds)} frames, val {len(val_ds)} frames", flush=True)
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    net = build_net(3, pretrained=args.init is None).to(device)
+    if args.init:
+        net.load_state_dict(torch.load(args.init, map_location="cpu", weights_only=True)["model"])
+    loader = torch.utils.data.DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
+                                         drop_last=True, persistent_workers=args.workers > 0, collate_fn=_collate)
+    opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)
+    steps = args.epochs * len(loader)
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=steps, pct_start=0.08)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    best = -1.0
+    step = 0
+    for epoch in range(args.epochs):
+        t0, run = time.time(), defaultdict(float)
+        for x, tg in loader:
+            x = x.to(device)
+            tg = {k: v.to(device) for k, v in tg.items()}
+            o = net(x)
+            l_ball = focal_loss(o["ball_hm"], tg["ball_hm"], tg["ball_w"][:, 0])
+            l_boff = masked_l1(o["ball_off"], tg["ball_off"], tg["ball_mask"])
+            l_phm = focal_loss(o["person_hm"], tg["person_hm"])
+            l_pwh = masked_l1(o["person_wh"], tg["person_wh"], tg["person_mask"])
+            l_poff = masked_l1(o["person_off"], tg["person_off"], tg["person_mask"])
+            loss = 2.0 * l_ball + l_boff + l_phm + 0.5 * l_pwh + l_poff
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+            sched.step()
+            step += 1
+            for k, v in (("loss", loss), ("ball", l_ball), ("person", l_phm), ("wh", l_pwh)):
+                run[k] += float(v)
+            run["n"] += 1
+            if args.max_steps and step >= args.max_steps:
+                break
+        n = max(1.0, run.pop("n"))
+        msg = {k: round(v / n, 4) for k, v in run.items()}
+        ev = evaluate(net, val_ds, device)
+        print(f"epoch {epoch + 1}/{args.epochs} {time.time() - t0:.0f}s train {msg} val {ev}", flush=True)
+        state = {"model": net.state_dict(), "epoch": epoch + 1, "val": ev}
+        torch.save(state, out / "last.pt")
+        if ev["ball_f1"] > best:
+            best = ev["ball_f1"]
+            torch.save(state, out / "best.pt")
+        if args.max_steps and step >= args.max_steps:
+            break
+    (out / "train_summary.json").write_text(json.dumps({"best_ball_f1": best, "epochs": args.epochs,
+                                                        "data": args.data}, indent=1))
+    return 0
+
+
+def _collate(batch):  # noqa: ANN001, ANN202 (torch)
+    import torch
+
+    x = torch.from_numpy(np.stack([b[0] for b in batch]))
+    keys = batch[0][1].keys()
+    return x, {k: torch.from_numpy(np.stack([b[1][k] for b in batch])) for k in keys}
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

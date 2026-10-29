@@ -1,0 +1,453 @@
+"""Fuse the event engine's camera events with the scorebug's account of the game (``scorebug_events``).
+
+The camera sees who had the ball and where it went; the scorebug knows for certain when a team scored and how
+much, and its shot clock resets when the ball touches the rim. Each pass below is switchable (``FusionConfig``)
+so its effect on the box score can be measured on its own:
+
+1. ``makes``: every confirmed score change is a made basket of that team and value: the nearest engine shot
+   result (made or missed, any team) within the window before the bug update is turned into that make (team,
+   value; its attempt follows), else an attempt and a make are inferred (no shooter). Engine makes with no score
+   change are turned into misses (a ball that did not go in).
+2. ``rim_misses``: a shot-clock reset to 24 while the game clock runs, with no score change right after it and no
+   engine turnover / steal near it, is a rim touch: the engine's missed shot just before it is kept; without one a
+   missed attempt is inferred for the team in possession (``possession_at``).
+3. ``assists``: assists of shots that ended up missed are retracted; a make without one takes the last completed
+   pass of a teammate within ``assist_window_s`` (NBA scorers credit a pass leading directly to the basket).
+4. ``shot_teams`` (needs the camera, ``PlayDirection``): the broadcast camera follows the ball, so the floor point
+   it aims at shows which half the play is in. Each team attacks one basket per half of the game; the made
+   baskets (scorebug team + the half the camera was on) tell which. A shot takes the team attacking the half the
+   camera aims at on its release. ``rebounds``: after a missed field goal the play either leaves that half (the
+   defence rebounded: the camera crosses half court and stays) or the attack goes on there (an offensive rebound);
+   the engine's rebound after the miss is re-typed and re-teamed accordingly, and a miss without one gets one.
+
+Times: the ESPN bug shows a basket ``score_lag_s`` after it; a shot result is a little after its release.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import math
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+
+from courtvision.eval.events import latest_revisions
+from courtvision.types import Event, EventKind, EventStatus, Team
+
+from .scorebug_events import BugEvent
+
+__all__ = ["FusionConfig", "PlayDirection", "attack_sides", "fuse", "possession_at"]
+
+
+@dataclass
+class PlayDirection:
+    """Where the game camera aims on the floor over time: ``aim_x`` (court ft along the length) per tracked frame."""
+
+    t: np.ndarray
+    x: np.ndarray
+    mid: float = 47.0
+    margin_ft: float = 9.0  # the aim must be this far into a half to call the side
+
+    @classmethod
+    def from_camera(cls, camera: Any, smooth_s: float = 0.5) -> PlayDirection:
+        frames = sorted(camera.params)
+        C = np.asarray(camera.center, float)
+        ts, xs = [], []
+        for f in frames:
+            pan, tilt, _, _ = camera.params[f]
+            if tilt <= 0.5:
+                continue
+            d = C[2] / math.tan(math.radians(tilt))
+            ts.append(f / camera.fps)
+            xs.append(C[0] + d * math.sin(math.radians(pan)))
+        t, x = np.asarray(ts), np.asarray(xs)
+        k = max(1, int(round(smooth_s * camera.fps)))
+        if len(x) > k:
+            x = np.convolve(np.pad(x, (k // 2, k - 1 - k // 2), mode="edge"), np.ones(k) / k, mode="valid")
+        return cls(t, x)
+
+    def aim(self, t: float, max_gap_s: float = 1.0) -> float | None:
+        i = int(np.searchsorted(self.t, t))
+        best = None
+        for j in (i - 1, i):
+            if 0 <= j < len(self.t) and abs(self.t[j] - t) <= max_gap_s and (best is None or abs(self.t[j] - t) < abs(self.t[best] - t)):
+                best = j
+        return None if best is None else float(self.x[best])
+
+    def side(self, t: float, margin_ft: float | None = None) -> str | None:
+        a = self.aim(t)
+        m = self.margin_ft if margin_ft is None else margin_ft
+        if a is None:
+            return None
+        if a > self.mid + m:
+            return "right"
+        if a < self.mid - m:
+            return "left"
+        return None
+
+    def leaves(self, side: str, t0: float, t1: float, hold_s: float = 2.0) -> float | None:
+        """First time in [t0, t1] after which the aim stays in the other half for ``hold_s``."""
+        other = "left" if side == "right" else "right"
+        i0, i1 = int(np.searchsorted(self.t, t0)), int(np.searchsorted(self.t, t1))
+        start = None
+        for j in range(i0, min(i1, len(self.t))):
+            x = self.x[j]
+            in_other = x < self.mid - self.margin_ft if other == "left" else x > self.mid + self.margin_ft
+            if in_other:
+                if start is None:
+                    start = self.t[j]
+                if self.t[j] - start >= hold_s:
+                    return float(start)
+            else:
+                start = None
+        return None
+
+
+def _half(period: int | None) -> int | None:
+    """0: first half, 1: second half and overtime (teams switch baskets at half time)."""
+    return None if period is None else (0 if period <= 2 else 1)
+
+
+def attack_sides(scores: list[BugEvent], direction: PlayDirection, lag_s: float) -> dict[tuple[int, Team], str]:
+    """(half, team) -> the side that team attacks, by majority over its made field goals."""
+    votes: dict[tuple[int, Team], dict[str, int]] = {}
+    for s in scores:
+        h = _half(s.period)
+        side = direction.side(s.t - lag_s - 0.5)
+        if h is None or side is None or s.team is None or s.points == 1:
+            continue
+        v = votes.setdefault((h, s.team), {"left": 0, "right": 0})
+        v[side] += 1
+    out: dict[tuple[int, Team], str] = {}
+    for h in (0, 1):
+        home = votes.get((h, Team.HOME), {"left": 0, "right": 0})
+        away = votes.get((h, Team.AWAY), {"left": 0, "right": 0})
+        # the two teams attack opposite sides: pick the assignment the made baskets support most
+        a = home["left"] + away["right"]
+        b = home["right"] + away["left"]
+        if a == b:
+            continue
+        out[(h, Team.HOME)] = "left" if a > b else "right"
+        out[(h, Team.AWAY)] = "right" if a > b else "left"
+    return out
+
+
+@dataclass
+class FusionConfig:
+    makes: bool = True
+    ft_trips: bool = True
+    rim_misses: bool = True
+    assists: bool = True
+    flight_values: bool = True  # misses take 2 / 3 from a 3-D flight that reaches the rim near them
+    shot_teams: bool = True
+    rebounds: bool = True
+    rebound_window_s: float = 6.0  # the rebound of a miss happens within this
+    oreb_hold_s: float = 2.0  # the camera must stay in the other half this long to call a defensive rebound
+    and_one_window_s: float = 90.0  # a team's basket this soon before its lone free throw (clock stopped): an and-one
+    shot_deep_ft: float = 17.0  # a put-back attempt is taken with the camera this deep in the half (not mid-pan)
+    flight_match_s: float = 1.5  # a flight's rim pass this close to a missed shot's result is that shot
+    three_margin_ft: float = 0.5  # release beyond the arc by this much counts as a three (the ball is ahead of the feet)
+    score_lag_s: float = 2.0  # ESPN: bug update after the ball goes in (median, Lakers @ Warriors)
+    make_window_s: tuple[float, float] = (-3.5, 1.5)  # engine result time - (bug time - lag)
+    ft_window_s: tuple[float, float] = (-4.0, 2.0)
+    reset_window_s: tuple[float, float] = (-3.0, 1.0)  # engine miss time - reset time
+    reset_turnover_s: float = 2.5
+    reset_make_after_s: float = 4.0  # a score change this soon after a reset: the reset was the make
+    inferred_release_s: float = 1.0  # an inferred attempt is released this long before its rim touch / make
+    assist_window_s: float = 3.5
+
+
+def _results(events: list[Event]) -> list[Event]:
+    return [e for e in events if e.kind in (EventKind.SHOT_MADE, EventKind.SHOT_MISSED)]
+
+
+def _is_ft(e: Event) -> bool:
+    return e.value == 1 or e.attrs.get("shot_type") == "free_throw"
+
+
+def possession_at(events: list[Event], t: float) -> Team | None:
+    """The team that last gained or used the ball before ``t`` (possession, pass, rebound, steal, shot)."""
+    best: tuple[float, Team] | None = None
+    for e in events:
+        if e.t > t or e.team is None:
+            continue
+        if e.kind in (EventKind.POSSESSION, EventKind.PASS, EventKind.REBOUND, EventKind.STEAL,
+                      EventKind.SHOT_ATTEMPT, EventKind.DRIBBLE):
+            if best is None or e.t >= best[0]:
+                best = (e.t, e.team)
+    return None if best is None else best[1]
+
+
+def _replace(e: Event, **kw: object) -> Event:
+    attrs = dict(e.attrs)
+    attrs.update(kw.pop("attrs", {}))  # type: ignore[arg-type]
+    return dataclasses.replace(e, attrs=attrs, revision=e.revision + 1, **kw)  # type: ignore[arg-type]
+
+
+def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConfig | None = None,
+         direction: PlayDirection | None = None, periods: list[tuple[float, int]] | None = None,
+         flights: list[Any] | None = None, court: Any | None = None) -> list[Event]:
+    """``direction``: the camera's aim over time (passes 4-5); ``periods``: (video t, period) reads, for the half of
+    the game at a time."""
+    cfg = config or FusionConfig()
+    events = [e for e in latest_revisions(engine_events) if e.status is not EventStatus.RETRACTED]
+    events.sort(key=lambda e: e.t)
+    by_id = {e.event_id: e for e in events}
+    attempts = {e.shot_id: e for e in events if e.kind is EventKind.SHOT_ATTEMPT and e.shot_id}
+    n_new = 0
+
+    def new_id(prefix: str) -> str:
+        nonlocal n_new
+        n_new += 1
+        return f"fuse-{prefix}{n_new}"
+
+    def set_shot(res: Event, made: bool, team: Team | None, value: int, why: str) -> None:
+        kind = EventKind.SHOT_MADE if made else EventKind.SHOT_MISSED
+        by_id[res.event_id] = _replace(res, kind=kind, team=team or res.team, value=value,
+                                       status=EventStatus.CONFIRMED, attrs={"fused": why})
+        att = attempts.get(res.shot_id or "")
+        if att is not None:
+            cur = by_id.get(att.event_id, att)
+            by_id[att.event_id] = attempts[res.shot_id or ""] = _replace(cur, team=team or cur.team, value=value,
+                                                                         attrs={"fused": why})
+
+    def add_shot(t_res: float, team: Team | None, value: int, made: bool, why: str) -> None:
+        sid = new_id("s")
+        att = Event(sid + "a", EventKind.SHOT_ATTEMPT, t_res - cfg.inferred_release_s, 0, team=team, value=value,
+                    shot_id=sid, confidence=0.6, source="scoreboard", attrs={"fused": why, "inferred": True,
+                                                                               **({"shot_type": "free_throw"} if value == 1 else {})})
+        res = Event(sid + "r", EventKind.SHOT_MADE if made else EventKind.SHOT_MISSED, t_res, 0, team=team,
+                    value=value, shot_id=sid, confidence=0.6, source="scoreboard",
+                    status=EventStatus.CONFIRMED if made else EventStatus.PROVISIONAL,
+                    attrs={"fused": why, "inferred": True, **({"shot_type": "free_throw"} if value == 1 else {})})
+        by_id[att.event_id] = att
+        by_id[res.event_id] = res
+        attempts[sid] = att
+
+    scores = [b for b in bug if b.kind == "score"]
+    if cfg.makes:
+        used: set[str] = set()
+        for s in scores:
+            tm = s.t - cfg.score_lag_s
+            ft = s.points == 1
+            lo, hi = cfg.ft_window_s if ft else cfg.make_window_s
+            cands = [e for e in _results(list(by_id.values())) if e.event_id not in used and _is_ft(e) == ft
+                     and lo <= e.t - tm <= hi]
+            if cands:
+                c = min(cands, key=lambda e: (e.kind is not EventKind.SHOT_MADE or e.team is not s.team, abs(e.t - tm)))
+                used.add(c.event_id)
+                set_shot(c, True, s.team, s.points, "score change")
+            else:
+                add_shot(tm, s.team, s.points, True, "score change with no seen shot")
+                used.add(f"fuse-s{n_new}r")
+        for e in _results(list(by_id.values())):
+            if e.kind is EventKind.SHOT_MADE and e.event_id not in used and e.source != "scoreboard":
+                set_shot(e, False, e.team, e.value, "no score change")
+    if cfg.ft_trips:
+        _ft_trips(by_id, bug, cfg, add_shot)
+    if cfg.rim_misses:
+        cur = sorted(by_id.values(), key=lambda e: e.t)
+        clock = sorted((b.t, b.kind == "clock_start") for b in bug if b.kind in ("clock_start", "clock_stop"))
+
+        def running(t: float) -> bool:
+            i = int(np.searchsorted(np.array([c[0] for c in clock]), t, side="right")) - 1
+            return i < 0 or clock[i][1]
+
+        for r in (b for b in bug if b.kind == "reset24"):
+            if not running(r.t):
+                continue  # a dead-ball reset (foul, violation, out of bounds), not a rim touch
+            if any(0.0 <= s.t - r.t <= cfg.reset_make_after_s for s in scores):
+                continue  # the reset was a make
+            if any(e.kind in (EventKind.TURNOVER, EventKind.STEAL) and abs(e.t - r.t) <= cfg.reset_turnover_s for e in cur):
+                continue
+            lo, hi = cfg.reset_window_s
+            if any(e.kind is EventKind.SHOT_MISSED and lo <= e.t - r.t <= hi for e in cur):
+                continue
+            if any(e.kind is EventKind.SHOT_MADE and abs(e.t - r.t) <= 2.0 for e in cur):
+                continue
+            add_shot(r.t, possession_at(cur, r.t - cfg.inferred_release_s), 2, False, "shot clock reset (rim touch)")
+    if cfg.flight_values and flights and court is not None:
+        _flight_values(by_id, attempts, flights, court, cfg)
+    out = sorted(by_id.values(), key=lambda e: e.t)
+    sides = attack_sides(scores, direction, cfg.score_lag_s) if direction is not None else {}
+
+    def period_at(t: float) -> int | None:
+        if not periods:
+            return None
+        i = int(np.searchsorted(np.array([p[0] for p in periods]), t, side="right")) - 1
+        return periods[max(0, min(i, len(periods) - 1))][1]
+
+    def attacker(t: float) -> tuple[Team | None, str | None]:
+        if direction is None:
+            return None, None
+        side = direction.side(t)
+        h = _half(period_at(t))
+        if side is None or h is None:
+            return None, side
+        for team in (Team.HOME, Team.AWAY):
+            if sides.get((h, team)) == side:
+                return team, side
+        return None, side
+
+    if cfg.shot_teams and sides:
+        res_by_shot = {e.shot_id: e for e in out if e.kind in (EventKind.SHOT_MADE, EventKind.SHOT_MISSED) and e.shot_id}
+        fixed = []
+        for e in out:
+            if e.kind in (EventKind.SHOT_ATTEMPT, EventKind.SHOT_MADE, EventKind.SHOT_MISSED) and not _is_ft(e) \
+                    and not (e.kind is EventKind.SHOT_MADE and e.attrs.get("fused") == "score change") and e.shot_id:
+                att = attempts.get(e.shot_id)
+                res = res_by_shot.get(e.shot_id)
+                if res is not None and res.kind is EventKind.SHOT_MADE and res.attrs.get("fused", "").startswith("score"):
+                    fixed.append(e)  # the scorebug named the team
+                    continue
+                team, _ = attacker(att.t if att is not None else e.t)
+                if team is not None and team is not e.team:
+                    e = _replace(e, team=team, attrs={"team_from": "camera half"})
+            fixed.append(e)
+        out = fixed
+    if cfg.rebounds and sides:
+        out = _fix_rebounds(out, cfg, direction, attacker)  # type: ignore[arg-type]
+    if cfg.assists:
+        made_ids = {e.shot_id for e in out if e.kind is EventKind.SHOT_MADE and not _is_ft(e)}
+        final = []
+        for e in out:
+            if e.kind is EventKind.ASSIST and e.shot_id is not None and e.shot_id not in made_ids:
+                continue  # its shot was not made
+            final.append(e)
+        out = final
+        assisted = {e.shot_id for e in out if e.kind is EventKind.ASSIST}
+        for e in [e for e in out if e.kind is EventKind.SHOT_MADE and not _is_ft(e) and e.shot_id not in assisted]:
+            att = attempts.get(e.shot_id or "")
+            t_rel = att.t if att is not None else e.t - cfg.inferred_release_s
+            passes = [p for p in out if p.kind is EventKind.PASS and p.team is e.team and p.team is not None
+                      and 0.0 <= t_rel - p.t <= cfg.assist_window_s
+                      and (e.player_id is None or p.player_id != e.player_id)]
+            if passes:
+                p = max(passes, key=lambda p: p.t)
+                out.append(Event(new_id("a"), EventKind.ASSIST, p.t, p.frame_idx, team=e.team, player_id=p.player_id,
+                                 other_player_id=e.player_id, shot_id=e.shot_id, confidence=0.6, source="cv",
+                                 attrs={"fused": "last pass before a make"}))
+        out.sort(key=lambda e: e.t)
+    return out
+
+
+def _fix_rebounds(events: list[Event], cfg: FusionConfig, direction: PlayDirection,
+                  attacker: Any) -> list[Event]:
+    """Re-type / re-team the rebound after each missed field goal from where the play goes next (pass 5)."""
+    out = list(events)
+    misses = [e for e in out if e.kind is EventKind.SHOT_MISSED and not _is_ft(e) and not e.attrs.get("blocked_oob")]
+    shots = sorted((e for e in out if e.kind is EventKind.SHOT_ATTEMPT), key=lambda e: e.t)
+    n_new = 0
+    for m in misses:
+        team, side = attacker(m.t - 0.5)
+        if team is None or side is None:
+            continue
+        # the next attempt at the same basket (the camera on the same half at its release)
+        nxt_shot = next((s for s in shots if m.t + 0.5 < s.t <= m.t + 30.0
+                         and direction.side(s.t, cfg.shot_deep_ft) == side), None)
+        left = direction.leaves(side, m.t, m.t + 30.0, cfg.oreb_hold_s)
+        if left is not None and (nxt_shot is None or left < nxt_shot.t + 1.0):
+            reb_team, offensive, t_reb = team.other(), False, left - 1.0
+        elif nxt_shot is not None and (left is None or nxt_shot.t + 1.0 <= left):
+            reb_team, offensive, t_reb = team, True, m.t + 1.0
+        else:
+            continue
+        rebs = [e for e in out if e.kind is EventKind.REBOUND and 0.0 <= e.t - m.t <= cfg.rebound_window_s
+                and (offensive or e.t <= (left or 1e9) + 0.5)]
+        if rebs:
+            r = min(rebs, key=lambda e: abs(e.t - t_reb))
+            if r.team is not reb_team or bool(r.attrs.get("offensive")) != offensive:
+                out[out.index(r)] = _replace(r, team=reb_team, attrs={"offensive": offensive, "fused": "play direction"})
+        else:
+            n_new += 1
+            out.append(Event(f"fuse-reb{n_new}", EventKind.REBOUND, min(m.t + 1.5, max(m.t + 0.5, t_reb)), m.frame_idx,
+                             team=reb_team,
+                             player_id=f"{reb_team.value}-unknown", confidence=0.5, source="cv",
+                             attrs={"offensive": offensive, "fused": "play direction", "inferred": True}))
+    out.sort(key=lambda e: e.t)
+    return out
+
+
+def _ft_trips(by_id: dict[str, Event], bug: list[BugEvent], cfg: FusionConfig, add_shot: Any) -> None:
+    """Missed free throws from the trip each group of made ones belongs to (pass 2b).
+
+    Made free throws (+1 score changes) of a team within one clock stoppage (no clock start between them) are one
+    trip. A lone make right after the same team's basket with the clock stopped since is an and-one (one shot);
+    otherwise a trip has at least two shots (three when three went in: a fouled three, or a technical before a
+    two-shot trip). The shortfall are misses: the engine's own free-throw misses of that team in the stoppage count
+    first, inferred ones make up the rest, extra ones are dropped. A trip with no make (both missed) is not seen."""
+    starts = [b.t for b in bug if b.kind == "clock_start"]
+    stops = [b.t for b in bug if b.kind == "clock_stop"]
+    scores = sorted((b for b in bug if b.kind == "score"), key=lambda b: b.t)
+
+    def started_between(a: float, b: float) -> bool:
+        return any(a < t < b for t in starts)
+
+    def stopped_since(a: float, b: float) -> bool:
+        """The clock stopped right after ``a`` (the foul on the basket) and did not run again before ``b``."""
+        stop = next((t for t in stops if a - 3.0 <= t <= a + 6.0), None)
+        return stop is not None and not started_between(stop, b)
+
+    groups: list[list[BugEvent]] = []
+    for s in (s for s in scores if s.points == 1):
+        g = groups[-1] if groups else None
+        if g is not None and g[-1].team is s.team and not started_between(g[-1].t, s.t) and s.t - g[-1].t < 90.0:
+            g.append(s)
+        else:
+            groups.append([s])
+    for g in groups:
+        team, k = g[0].team, len(g)
+        basket = [s for s in scores if s.points >= 2 and s.team is team and 0.0 < g[0].t - s.t <= cfg.and_one_window_s]
+        and_one = k == 1 and bool(basket) and stopped_since(basket[-1].t - cfg.score_lag_s, g[0].t)
+        size = 1 if and_one else max(2, k)
+        lo = g[0].t - cfg.score_lag_s - 20.0
+        hi = g[-1].t + 25.0
+        misses = [e for e in by_id.values() if e.kind is EventKind.SHOT_MISSED and _is_ft(e) and e.team is team
+                  and lo <= e.t <= hi]
+        want = size - k
+        for e in sorted(misses, key=lambda e: e.t)[want:]:  # more misses than the trip has room for
+            by_id.pop(e.event_id, None)
+            if e.shot_id:
+                for a in [a for a in by_id.values() if a.kind is EventKind.SHOT_ATTEMPT and a.shot_id == e.shot_id]:
+                    by_id.pop(a.event_id, None)
+        for j in range(max(0, want - len(misses))):
+            add_shot(g[-1].t - cfg.score_lag_s + 8.0 * (j + 1), team, 1, False, "free-throw trip short of makes")
+
+
+def _flight_values(by_id: dict[str, Event], attempts: dict[str, Event], flights: list[Any], court: Any,
+                   cfg: FusionConfig) -> None:
+    """2 or 3 points for missed field goals from the release point of the 3-D flight that reaches a rim near them."""
+    from courtvision.perception.ball3d import rim_pass
+
+    baskets = {side: court.basket_xy(side) for side in ("left", "right")}
+    passes = []
+    for f in flights:
+        rp = rim_pass(f, baskets, court.rim_height, court.rim_radius)
+        if rp is not None and rp.dist_ft <= 3.0:
+            passes.append((rp.t, rp.side, f))
+    for e in list(by_id.values()):
+        if e.kind is not EventKind.SHOT_MISSED or _is_ft(e):
+            continue
+        near = [p for p in passes if abs(p[0] - e.t) <= cfg.flight_match_s]
+        if not near:
+            continue
+        _, side, f = min(near, key=lambda p: abs(p[0] - e.t))
+        x, y = float(f.p0[0]), float(f.p0[1])
+        value = 3 if court.is_three(x, y, side) and _arc_margin(court, x, y, side) >= cfg.three_margin_ft else 2
+        if value != e.value or e.x is None:
+            by_id[e.event_id] = _replace(e, value=value, x=x, y=y, attrs={"value_from": "3-D flight"})
+            att = attempts.get(e.shot_id or "")
+            if att is not None:
+                cur = by_id.get(att.event_id, att)
+                by_id[att.event_id] = _replace(cur, value=value, x=x, y=y, attrs={"value_from": "3-D flight"})
+
+
+def _arc_margin(court: Any, x: float, y: float, side: str) -> float:
+    """How far (ft) the point lies beyond the 3-point line (negative inside)."""
+    bx, by = court.basket_xy(side)
+    lateral = abs(y - by)
+    if lateral >= court.corner_three_dist and abs(x - bx) <= court.three_junction_along:
+        return lateral - court.corner_three_dist
+    return math.hypot(x - bx, y - by) - court.three_pt_radius

@@ -214,7 +214,8 @@ class Workspace:
         self.model_state = "ready" if detector is not None else "idle"
         self.model_error: str | None = None
         self.model_name = ("Configured RF-DETR checkpoint" if cfg.perception.rfdetr.weights or
-                           cfg.perception.rfdetr.coreml_path else "RF-DETR Nano · COCO starter")
+                           cfg.perception.rfdetr.coreml_path else
+                           "NBA broadcast detector" if self.student_weights() is not None else "RF-DETR Nano · COCO starter")
         self.model_task: asyncio.Task[Any] | None = None
         self.lock = asyncio.Lock()
         self.upload_lock = asyncio.Lock()
@@ -240,8 +241,30 @@ class Workspace:
                 "capabilities": {"jev": bool(runtime_env().get("TYPESAFE_API_KEY")),
                                  "claude": bool(os.getenv("ANTHROPIC_API_KEY"))}}
 
+    def student_weights(self) -> Path | None:
+        """The NBA broadcast student detector (training/train_student.py), when one is installed in the data folder's
+        models (``models/nba-student.pt``); it replaces the COCO starter unless an RF-DETR checkpoint is configured."""
+        p = self.root / "models" / "nba-student.pt"
+        rf = self.cfg.perception.rfdetr
+        return p if p.is_file() and not (rf.weights or rf.coreml_path) else None
+
     async def prepare(self) -> None:
         self.model_state, self.model_error = "loading", None
+        student = self.student_weights()
+        if student is not None:
+            try:
+                def load_student() -> Any:
+                    from courtvision.perception.student import StudentConfig, StudentDetector
+
+                    det = StudentDetector(StudentConfig(weights=str(student)))
+                    det.detect(np.zeros((540, 960, 3), np.uint8), 0, 0.)
+                    det.reset()
+                    return det
+                self.detector = await asyncio.to_thread(load_student)
+                self.model_state = "ready"
+                return
+            except Exception:
+                log.exception("Could not load the NBA student detector; falling back to the COCO starter")
         try:
             def load() -> RFDETRDetector:
                 import torch
@@ -297,6 +320,13 @@ class Workspace:
                 # The scorebug must be explicitly configured before it can gate live play. Without
                 # one, court visibility gates cutaways; replay footage still needs operator review.
                 cfg.perception.broadcast_config.live_requires_scorebug = False
+                if type(self.detector).__name__ == "StudentDetector":
+                    # its person scores are centre-heatmap peaks (lower than a classifier's): ByteTrack thresholds to
+                    # match, and boxes re-drawn from the tracked camera (perception/broadcast.py)
+                    cfg.perception.pipeline.tracker = {"high_thresh": 0.3, "low_thresh": 0.1, "new_track_thresh": 0.35,
+                                                       **cfg.perception.pipeline.tracker}
+                    cfg.perception.broadcast_config.rectify_boxes = True
+                    self.detector.reset()
                 source = await asyncio.to_thread(VideoFileSource, cfg.source.path, realtime=True)
             await self.stop()
             await self.hub.reset()

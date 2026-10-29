@@ -48,6 +48,9 @@ class BroadcastPerceptionConfig:
     cut_threshold: float = 0.35  # Bhattacharyya distance of consecutive HSV histograms; tuned on sim renders
     live_requires_scorebug: bool = True  # a replay hides the scorebug
     scoreboard_hz: float = 5.0  # D14
+    # Re-draw person boxes as a standing player at the box centre through the tracked camera (automatic court
+    # tracking only): for detectors whose boxes are well centred but mis-sized (nba/analyze.rectify_box)
+    rectify_boxes: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,12 +86,15 @@ class BroadcastPerception:
     court tracker; its rims are re-projected per frame); ``scorebug`` reads the broadcast graphic (None: no
     scoreboard reads and no scorebug gate)."""
 
-    def __init__(self, inner: PerceptionPipeline, calibration: Calibration, scorebug: ScorebugReader | None = None,
-                 config: BroadcastPerceptionConfig | None = None) -> None:
+    def __init__(self, inner: PerceptionPipeline, calibration: Calibration, scorebug: Any | None = None,
+                 config: BroadcastPerceptionConfig | None = None, court_tracker: Any | None = None) -> None:
         self.inner = inner
         inner.config.foot_direct = True  # a new homography every frame: no per-frame correction table
         self.config = config or BroadcastPerceptionConfig()
         self.base = calibration
+        # ``court_tracker``: a ``broadcast_court.BroadcastCourtTracker`` (automatic registration from a known camera
+        # centre, no operator calibration); default the line tracker started from ``calibration``
+        self.auto = court_tracker
         tcfg = CourtTrackerConfig(**self.config.tracker)
         self.tracker = CourtTracker(inner.court, calibration.image_size, calibration.homography, tcfg)
         self.cuts = ShotBoundaryDetector(self.config.cut_threshold)
@@ -96,6 +102,7 @@ class BroadcastPerception:
         self._last_read_t: float | None = None
         self._was_live = True
         self._prev_ptz: tuple[float, float, float] | None = None
+        self._prev_params: Any = None
         self.last_gate: GateState | None = None
         self.stats = {"frames": 0, "live": 0, "cuts": 0, "court_lost": 0, "no_scorebug": 0}
 
@@ -119,8 +126,9 @@ class BroadcastPerception:
         """The frame's calibration: the tracked homography and the rims seen through the tracked camera."""
         rims: dict[str, BBox] = {}
         center, ptz = self.tracker.center, self.tracker.ptz
-        if center is not None and ptz is not None:
-            cam = _camera(center, *ptz, self.base.image_size)
+        params = self.auto.params if self.auto is not None else None
+        if params is not None or (center is not None and ptz is not None):
+            cam = params.camera(self.base.image_size) if params is not None else _camera(center, *ptz, self.base.image_size)
             court = self.inner.court
             for side in ("left", "right"):
                 bx, by = court.basket_xy(side)
@@ -133,7 +141,12 @@ class BroadcastPerception:
 
     def gate(self, frame_bgr: np.ndarray) -> GateState:
         cut = self.cuts.update(frame_bgr)
-        track = self.tracker.update(frame_bgr)
+        if self.auto is not None:
+            fix = self.auto.update(frame_bgr, cut=cut)
+            hom = fix.homography(self.base.image_size)
+            track = TrackResult(hom, fix.status, fix.inliers, fix.inliers, fix.rmse_px)
+        else:
+            track = self.tracker.update(frame_bgr)
         court = track.homography is not None and track.status != "lost"
         bug = self.scorebug.present(frame_bgr) if self.scorebug is not None else True
         if not court:
@@ -156,18 +169,32 @@ class BroadcastPerception:
         self._was_live = g.live
         if not g.live:
             self._prev_ptz = None
+            self._prev_params = None
             st[g.reason] = st.get(g.reason, 0) + 1
             return FrameState(frame_idx, t, [], None, [], None, (w, h))
         st["live"] += 1
         assert g.track.homography is not None
-        ptz = self.tracker.ptz
-        if self._prev_ptz is not None and ptz is not None and not g.cut and self.tracker.center is not None:
-            self.inner.warp_image_state(_rotation_homography(self._prev_ptz, ptz, self.base.image_size))
-        self._prev_ptz = ptz
+        if self.auto is not None:
+            params = self.auto.params
+            if self._prev_params is not None and params is not None and not g.cut:
+                a, b, size = self._prev_params, params, self.base.image_size
+                self.inner.warp_image_state(b.K(size) @ b.R() @ a.R().T @ np.linalg.inv(a.K(size)))
+            self._prev_params = params
+        else:
+            ptz = self.tracker.ptz
+            if self._prev_ptz is not None and ptz is not None and not g.cut and self.tracker.center is not None:
+                self.inner.warp_image_state(_rotation_homography(self._prev_ptz, ptz, self.base.image_size))
+            self._prev_ptz = ptz
         self.inner.calibration = self._calibration(g.track.homography)
+        params = self.auto.params if self.auto is not None else None
+        if self.config.rectify_boxes and params is not None:
+            det = self.inner.detector
+            if not isinstance(det, _Rectifying):
+                det = self.inner.detector = _Rectifying(det)
+            det.camera, det.size = params, self.base.image_size
         state = self.inner.process(frame_bgr, frame_idx, t)
         state.scoreboard = self._read_scoreboard(frame_bgr, t)
-        center = self.tracker.center
+        center = self.auto.center if self.auto is not None else self.tracker.center
         if center is not None:
             state.camera_xyz = (float(center[0]), float(center[1]), float(center[2]))
         return state
@@ -180,6 +207,37 @@ class BroadcastPerception:
             return None
         self._last_read_t = t
         return self.scorebug.read(frame_bgr, t)
+
+
+class _Rectifying:
+    """Detector wrapper: PLAYER / REFEREE boxes re-drawn through ``camera`` (``nba/analyze.rectify_box``)."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.camera: Any = None
+        self.size: tuple[int, int] = (0, 0)
+
+    def __getattr__(self, name: str) -> Any:  # mask polygons, team colours, reset, ... of the wrapped detector
+        if name == "inner":
+            raise AttributeError(name)
+        return getattr(self.inner, name)
+
+    def detect(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> Any:
+        from courtvision.nba.analyze import rectify_box
+        from courtvision.types import Detection, ObjClass
+
+        fd = self.inner.detect(frame_bgr, frame_idx, t)
+        if self.camera is None:
+            return fd
+        out = []
+        for d in fd.detections:
+            if d.cls in (ObjClass.PLAYER, ObjClass.REFEREE):
+                box = rectify_box(d.bbox.as_tuple(), self.camera, self.size)
+                if box is not None:
+                    d = Detection(BBox(*box), d.cls, d.score, d.embedding, d.jersey, d.jersey_conf)
+            out.append(d)
+        fd.detections = out
+        return fd
 
 
 def _rotation_homography(a: tuple[float, float, float], b: tuple[float, float, float],

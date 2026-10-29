@@ -166,6 +166,13 @@ class PerceptionSettings:
     broadcast_config: BroadcastPerceptionConfig = field(default_factory=BroadcastPerceptionConfig)
     scorebug_layout_path: str | None = None  # ScorebugLayout JSON (broadcast scorebug fields)
     glyph_bank_path: str | None = None  # GlyphBank JSON (learned scorebug glyphs); None = bootstrap from a font
+    # Broadcast footage without a calibration: find the game camera from the court lines (perception/broadcast_court.py)
+    # instead of waiting for operator clicks; the camera centre is estimated once from auto_court_frames frames.
+    auto_court: bool = True
+    auto_court_frames: int = 6
+    auto_court_every_s: float = 1.0
+    auto_court_tries: int = 20
+    scorebug_ocr: bool = True  # real broadcasts on macOS: read an ESPN-style scorebug with Apple Vision text recognition
 
 
 @dataclass
