@@ -159,3 +159,39 @@ def test_hub_reset_removes_pending_and_replay_from_previous_game():
         assert all('99' not in text for _, text in client._queue)
         hub.close_clients()
     asyncio.run(check())
+
+
+def test_monitor_focus_uses_same_frame_and_never_changes_clean_footage(app):
+    from courtvision.server.studio import StudioGame
+    game = StudioGame.__new__(StudioGame)
+    image = np.full((180, 320, 3), 40, np.uint8)
+    game.visual = (image, [
+        {"box":(40, 30, 100, 150), "label":"Track 1", "team":None, "confidence":.94},
+        {"box":(180, 25, 245, 155), "label":"Track 2", "team":None, "confidence":.81},
+    ], 1.25)
+    game._jpeg_cache = {}
+    app.state.workspace.game = game
+    with TestClient(app) as client:
+        clean = client.get("/api/studio/frame.jpg?overlay=false", headers=AUTH)
+        all_tracks = client.get("/api/studio/frame.jpg", headers=AUTH)
+        focused = client.get("/api/studio/frame.jpg?focus=Track%201", headers=AUTH)
+        clean_focused = client.get("/api/studio/frame.jpg?overlay=false&focus=Track%201", headers=AUTH)
+        assert clean.content == clean_focused.content
+        assert all_tracks.content != focused.content != clean.content
+        assert focused.headers["x-video-time"] == "1.25"
+        # The backing source image is never drawn on.
+        assert np.all(image == 40)
+    app.state.workspace.game = None
+
+
+def test_studio_reads_saved_key_for_next_session_without_exposing_it(app, tmp_path, monkeypatch):
+    from courtvision.credentials import save_jev_key
+    monkeypatch.chdir(tmp_path)
+    with TestClient(app) as client:
+        assert not client.get("/api/studio", headers=AUTH).json()["capabilities"]["jev"]
+        save_jev_key("test-only-saved-key", tmp_path / ".env")
+        state = client.get("/api/studio", headers=AUTH)
+        assert state.json()["capabilities"]["jev"]
+        assert "test-only-saved-key" not in state.text
+        assert client.post("/api/studio/start", json={"demo":True}, headers=AUTH).status_code == 200
+        assert app.state.workspace.game.env["TYPESAFE_API_KEY"] == "test-only-saved-key"

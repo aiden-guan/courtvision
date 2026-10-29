@@ -7,20 +7,20 @@
   <meta name="description" content="A local basketball video workspace. Follow the footage, player tracks, live events and box score in one view.">
   <title>CourtVision — Game studio</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23eb6834'/%3E%3Cpath d='M3 16h26M16 3v26M7 7c5 4 5 14 0 18M25 7c-5 4-5 14 0 18' stroke='%230b0b0b' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="static/styles.css?v=20261026r5">
-  <link rel="stylesheet" href="static/studio.css?v=20261026r5">
-  <script src="static/app.js?v=20261026r5" defer></script>
-  <script src="static/studio.js?v=20261026r5" defer></script>
+  <link rel="stylesheet" href="static/styles.css?v=20261028">
+  <link rel="stylesheet" href="static/studio.css?v=20261028">
+  <script src="static/app.js?v=20261028" defer></script>
+  <script src="static/studio.js?v=20261028" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
 
 <header class="workspace-header">
-  <a class="studio-brand" href="/" aria-label="CourtVision home"><svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="8" fill="currentColor"/><path d="M23 10a9 9 0 1 0 0 12M16 7v18M7 16h10" fill="none" stroke="#fff" stroke-width="1.7"/><circle cx="23" cy="16" r="2" fill="#fff"/></svg><span>CourtVision<span class="brand-divider">/</span><span class="studio-word">Studio</span></span></a>
-  <div class="workspace-actions"><span class="local-indicator"><span></span>Local workspace</span><button type="button" class="btn" id="studio-export" disabled>Export analysis <span aria-hidden="true">↗</span></button><button type="button" class="btn btn-primary" id="studio-open"><span aria-hidden="true">＋</span> Open video</button></div>
+  <a class="studio-brand" href="/" aria-label="CourtVision home"><svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><path d="M11 3H3v8M21 3h8v8M29 21v8h-8M11 29H3v-8" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 16h16M16 8v16M10 10c5 3 5 9 0 12M22 10c-5 3-5 9 0 12" fill="none" stroke="currentColor" stroke-width="1"/></svg><span>CourtVision<span class="brand-divider">/</span><span class="studio-word">Analysis studio</span></span></a>
+  <div class="workspace-actions"><span class="local-indicator"><span></span>On-device vision</span><button type="button" class="btn" id="studio-export" disabled>Export <span aria-hidden="true">↗</span></button><button type="button" class="btn btn-primary" id="studio-open"><span aria-hidden="true">＋</span> Open footage</button><button type="button" class="icon-btn workspace-settings" id="studio-settings" aria-label="Workspace settings" title="Workspace settings"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--surface)"/><circle cx="15" cy="17" r="3" fill="var(--surface)"/></svg></button></div>
 </header>
 
-<div class="workspace-heading"><div><p class="eyebrow">BASKETBALL INTELLIGENCE</p><h1 id="studio-title">See the whole game.</h1><p id="studio-subtitle">Your footage. Every movement. A clearer picture.</p></div><div class="session-label" id="studio-session-label"><span class="signal-mark" aria-hidden="true">▂ ▅ ▃ ▇</span><span>Ready when you are</span></div></div>
+<div class="workspace-heading"><div><p class="eyebrow"><span class="eyebrow-square" aria-hidden="true"></span> THE COURTSIDE PERSPECTIVE</p><h1 id="studio-title">Read the game<span class="title-period">.</span></h1><p id="studio-subtitle">Follow every movement. Find the plays that matter.</p></div><div class="session-label"><span class="status-orbit" aria-hidden="true"></span><span id="studio-session-label">Ready for footage</span></div></div>
 
 <header class="scorebar">
   <div class="brand">
@@ -65,7 +65,7 @@
 </header>
 
 <nav class="tabs" role="tablist" aria-label="Dashboard views">
-  <button type="button" role="tab" id="tab-live" aria-controls="view-live" aria-selected="true">Live analysis</button>
+  <button type="button" role="tab" id="tab-live" aria-controls="view-live" aria-selected="true"><span aria-hidden="true" class="tab-number">01</span> Live analysis</button>
   <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false" tabindex="-1">Box score &amp; shots</button>
   <button type="button" role="tab" id="tab-operator" aria-controls="view-operator" aria-selected="false" tabindex="-1">Game controls</button>
   <button type="button" role="tab" id="tab-calibration" aria-controls="view-calibration" aria-selected="false" tabindex="-1">Court setup</button>
@@ -80,12 +80,15 @@
   <section class="view view-live" id="view-live" role="tabpanel" aria-labelledby="tab-live">
     <div class="col col-main">
       <article class="monitor-card">
-        <header class="monitor-head"><div><span class="monitor-dot" aria-hidden="true"></span><h2>Game feed</h2><span id="monitor-source">No video loaded</span></div><div class="monitor-options"><label class="overlay-switch"><input type="checkbox" id="studio-overlay" checked>Tracking overlay</label><button type="button" class="monitor-expand" id="studio-fullscreen" aria-label="Expand game feed" title="Expand game feed">⛶</button></div></header>
+        <header class="monitor-head"><div><span class="monitor-dot" aria-hidden="true"></span><h2>Game feed</h2><span id="monitor-source">Video input / standby</span></div><div class="monitor-options"><button type="button" id="studio-clear-focus" class="focus-reset" hidden>All tracks ×</button><label class="overlay-switch"><input type="checkbox" id="studio-overlay" checked><span>Tracking</span></label><button type="button" class="monitor-expand" id="studio-fullscreen" aria-label="Expand game feed" title="Expand game feed"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M8 20H4v-4"/></svg></button></div></header>
         <div class="monitor-screen" id="monitor-screen">
           <img id="studio-frame" alt="Current processed game frame with player and ball tracking" hidden>
           <div class="monitor-empty" id="studio-empty">
             <svg class="empty-court" viewBox="0 0 700 390" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="1"><path d="M92 330 228 70h244l136 260H92ZM160 200h380M350 70v260"/><ellipse cx="350" cy="200" rx="56" ry="35"/><path d="m279 70-23 67h188l-23-67M199 330l49-98h204l49 98"/><path d="M227 74c-65 60-50 116 123 116S538 134 473 74M103 313c113-167 381-167 494 0"/><path d="M315 95h70M311 286h78"/></g><circle cx="350" cy="106" r="5" stroke="currentColor"/><circle cx="350" cy="276" r="8" stroke="currentColor"/></svg>
-            <div class="empty-content"><span class="empty-symbol" aria-hidden="true">↗</span><h2>A new angle on every play.</h2><p>Drop in a game. Follow the action as it unfolds.</p><div class="empty-actions"><button type="button" class="btn btn-primary" id="studio-empty-open">Open a game video</button><button type="button" class="btn btn-demo" id="studio-demo">Explore the demo <span aria-hidden="true">→</span></button></div><span class="empty-formats">MP4, MOV, MKV &amp; AVI · Up to 8 GB · Processed on this computer</span></div>
+            <div class="empty-coordinate" aria-hidden="true">CV / VISION WORKSPACE<span>INPUT_01 · NO SIGNAL</span></div>
+            <div class="empty-content"><span class="empty-kicker">YOUR NEXT GAME STARTS HERE</span><h2>Every play.<br><span>In focus.</span></h2><p>Turn game footage into a closer look at the action.</p><div class="empty-actions"><button type="button" class="btn btn-primary" id="studio-empty-open">Open game footage <span aria-hidden="true">↗</span></button><button type="button" class="btn btn-demo" id="studio-demo">Try the simulator <span aria-hidden="true">→</span></button></div><span class="empty-formats">MP4, MOV, MKV, AVI / up to 8 GB</span></div>
+            <div class="empty-reticle" aria-hidden="true"><span>COURT MAPPING</span><svg viewBox="0 0 260 260" fill="none"><circle cx="130" cy="130" r="100" stroke="currentColor" stroke-dasharray="2 10"/><circle cx="130" cy="130" r="74" stroke="currentColor" opacity=".25"/><path d="M130 15v30M130 215v30M15 130h30M215 130h30M110 130h40M130 110v40" stroke="currentColor"/><path d="M85 55H55v30M175 55h30v30M205 175v30h-30M85 205H55v-30" stroke="currentColor" stroke-width="2"/></svg><span>AWAITING SOURCE</span></div>
+            <div class="empty-workflow"><span><b>01</b> Open footage</span><span><b>02</b> Follow tracks</span><span><b>03</b> Map &amp; review</span></div>
           </div>
           <div class="monitor-loading" id="studio-loading" hidden><span class="loading-bars" aria-hidden="true">▂ ▅ ▃ ▇</span><p id="studio-loading-label">Opening game feed…</p></div>
           <div class="monitor-badge" id="monitor-badge" hidden>COMPUTER VISION · ESTIMATED</div>
@@ -94,7 +97,7 @@
         <footer class="monitor-controls"><div><button type="button" id="studio-play" class="play-control" aria-label="Pause analysis" disabled>Ⅱ</button><span id="studio-time">00:00</span><span class="time-divider">/</span><span id="studio-duration">--:--</span></div><div><span id="studio-throughput">Awaiting footage</span><label class="sr-only" for="studio-speed">Playback speed</label><select id="studio-speed" disabled><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></div></footer>
       </article>
 
-      <div class="vision-strip" aria-label="Tracking status"><div><span class="metric-symbol" aria-hidden="true">⌖</span><span>People tracked<strong id="vision-people">—</strong></span></div><div><span class="metric-symbol" aria-hidden="true">◉</span><span>Ball tracking<strong id="vision-ball">Awaiting video</strong></span></div><div><span class="metric-symbol" aria-hidden="true">▱</span><span>Court map<strong id="vision-court">Not configured</strong></span><button type="button" id="studio-calibrate" class="text-button">Set up →</button></div></div>
+      <div class="vision-strip" aria-label="Tracking status"><div><span class="metric-symbol" aria-hidden="true">⌖</span><span>People tracked<strong id="vision-people">—</strong></span></div><div><span class="metric-symbol" aria-hidden="true">◉</span><span>Ball tracking<strong id="vision-ball">Awaiting footage</strong></span></div><div><span class="metric-symbol" aria-hidden="true">▱</span><span>Court map<strong id="vision-court">Needs setup</strong></span><button type="button" id="studio-calibrate" class="text-button">Map court ↗</button></div></div>
       <article class="card card-court">
         <header class="card-head">
           <h2>Court view</h2>
@@ -125,6 +128,13 @@
     </div>
 
     <div class="col col-side">
+      <article class="card card-tracks">
+        <header class="card-head"><h2><span class="tracking-icon" aria-hidden="true">⌖</span> Tracked people</h2><span id="track-count" class="track-count">00</span></header>
+        <p class="track-instruction" id="track-instruction">Select a track to highlight it in the feed.</p>
+        <div class="track-list" id="track-list" role="group" aria-label="Detected person tracks"></div>
+        <div class="track-empty" id="track-empty"><svg viewBox="0 0 52 60" width="40" height="46" fill="none" stroke="currentColor" aria-hidden="true"><path d="M13 2H2v12M39 2h11v12M50 46v12H39M13 58H2V46"/><circle cx="26" cy="19" r="6"/><path d="M14 42v-7a12 12 0 0 1 24 0v7"/></svg><p>A closer look at every movement.</p><span>Person tracks appear when analysis starts.</span></div>
+        <footer class="track-foot"><span class="track-key-dot" aria-hidden="true"></span><span id="track-foot-note">Image-space tracking · IDs are provisional</span></footer>
+      </article>
       <article class="card card-insights">
         <header class="card-head"><h2>Coach insights</h2><span class="muted" id="insight-more">&nbsp;</span></header>
         <ol class="insight-list" id="insight-list"></ol>

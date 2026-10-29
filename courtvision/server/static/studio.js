@@ -6,6 +6,7 @@
   let frameUrl = null, frameBusy = false, stopped = false, lastStatus = null, lastVision = null;
   let isStudio = true, lastVideoKey = "", processedT = 0;
   let lastMonitorKey = "";
+  let focusedTrack = "", trackKey = "";
   const headers = extra => {
     let token = "";
     try { token = sessionStorage.getItem("cv-token") || ""; } catch { /* optional */ }
@@ -67,7 +68,7 @@
     $("studio-play").setAttribute("aria-label", status.finished ? "Restart analysis" : status.paused ? "Resume analysis" : "Pause analysis");
     if (Number.isFinite(status.speed)) $("studio-speed").value = String(status.speed);
     document.body.classList.toggle("has-session", hasActive);
-    const label = status.finished ? "Analysis complete" : status.paused ? "Analysis paused" : "Following the action";
+    const label = status.finished ? "Analysis complete" : status.paused ? "Analysis paused" : "Analysis in progress";
     text("studio-session-label", label);
     if (Number.isFinite(status.t)) processedT = status.t;
     text("studio-time", clock(processedT));
@@ -91,16 +92,58 @@
     text("vision-ball", vision.ball_visible ? "Visible" : "Out of view");
     text("vision-court", vision.calibrated ? (vision.gate && vision.gate !== "live" ? "Out of view" : "Mapped") : "Needs setup");
     text("studio-throughput", Number.isFinite(vision.fps) ? `${vision.fps.toFixed(1)} frames/s · ${Math.round(vision.inference_ms)} ms` : "Analyzing");
+    renderTracks(vision.tracks || []);
+  }
+  function setFocus(id) {
+    focusedTrack = focusedTrack === id ? "" : id;
+    $("studio-clear-focus").hidden = !focusedTrack;
+    if (focusedTrack) $("studio-overlay").checked = true;
+    for (const row of $("track-list").children) row.setAttribute("aria-pressed", String(row.dataset.track === focusedTrack));
+    lastMonitorKey = "";
+  }
+  function renderTracks(tracks, synthetic = false) {
+    const ids = tracks.map(track => [track.id, track.team]);
+    const key = JSON.stringify([ids, synthetic]);
+    text("track-count", String(tracks.length).padStart(2, "0"));
+    $("track-empty").hidden = !!tracks.length;
+    text("track-instruction", synthetic ? "Simulated player positions from the demo." : "Select a track to highlight it in the feed.");
+    text("track-foot-note", synthetic ? "Simulator data · Not camera detections" : "Image-space tracking · IDs are provisional");
+    if (focusedTrack && !tracks.some(track => track.id === focusedTrack)) setFocus(focusedTrack);
+    if (key !== trackKey) {
+      trackKey = key;
+      $("track-list").replaceChildren();
+      for (const track of tracks) {
+        const row = document.createElement("button"), marker = document.createElement("span");
+        const info = document.createElement("span"), name = document.createElement("strong");
+        const detail = document.createElement("small"), value = document.createElement("span");
+        row.type = "button"; row.className = "track-row"; row.dataset.track = track.id;
+        row.dataset.team = track.team || "unknown";
+        row.setAttribute("aria-pressed", String(track.id === focusedTrack));
+        row.disabled = synthetic || !isStudio;
+        marker.className = "track-marker"; marker.textContent = "⌖"; marker.setAttribute("aria-hidden", "true");
+        name.textContent = track.id;
+        detail.textContent = synthetic ? "Simulated player" : track.team ? `${track.team === "home" ? "Home" : "Away"} · provisional` : "Person · unassigned team";
+        value.className = "track-confidence"; value.title = "Detection confidence; does not verify identity";
+        info.append(name, detail); row.append(marker, info, value);
+        row.addEventListener("click", () => setFocus(track.id));
+        $("track-list").append(row);
+      }
+    }
+    for (let index = 0; index < tracks.length; index++) {
+      const confidence = tracks[index].confidence;
+      $("track-list").children[index].lastChild.textContent = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : synthetic ? "SIM" : "—";
+    }
   }
   function renderWorkspace(data) {
     workspace = data;
     const active = data.active;
     if (!active && activeId) {
       activeId = null; lastStatus = null; lastVision = null; processedT = 0;
-      text("studio-title", "See the whole game."); text("studio-subtitle", "Your footage. Every movement. A clearer picture.");
-      text("studio-session-label", "Ready when you are"); text("monitor-source", "No video loaded");
+      text("studio-title", "Read the game."); text("studio-subtitle", "Follow every movement. Find the plays that matter.");
+      text("studio-session-label", "Ready for footage"); text("monitor-source", "Video input / standby");
       text("studio-time", "00:00"); text("studio-duration", "--:--"); text("studio-throughput", "Awaiting footage");
-      text("vision-people", "—"); text("vision-ball", "Awaiting video"); text("vision-court", "Not configured");
+      text("vision-people", "—"); text("vision-ball", "Awaiting footage"); text("vision-court", "Needs setup");
+      renderTracks([]);
       $("studio-empty").hidden = false; $("studio-frame").hidden = true; $("studio-loading").hidden = true;
       $("monitor-badge").hidden = true; $("studio-play").disabled = true; $("studio-speed").disabled = true;
       $("studio-progress").value = 0; notify("");
@@ -118,6 +161,9 @@
       text("monitor-badge", active.demo ? "SIMULATOR DEMO" : "COMPUTER VISION · ESTIMATED");
       if (active.run_id !== activeId) {
         activeId = active.run_id; processedT = 0;
+        focusedTrack = ""; $("studio-clear-focus").hidden = true; renderTracks([]);
+        if (frameUrl) { URL.revokeObjectURL(frameUrl); frameUrl = null; }
+        $("studio-frame").hidden = true;
         $("studio-loading").hidden = false;
         $("studio-empty").hidden = true;
       }
@@ -127,12 +173,14 @@
       text("vision-people", (data.frame.players || []).length);
       text("vision-ball", data.frame.ball?.visible ? "Visible" : "Out of view");
       text("vision-court", "Simulator map");
+      renderTracks(data.frame.players || [], true);
     }
     const model = data.model;
     text("studio-model-note", model.state === "ready" ? (model.name.includes("COCO") ? "Local detector ready · Generic person and ball detections. Review results before using them as statistics." : "Configured local detector ready. Review its detections on this footage.") :
       model.state === "loading" ? "Preparing the local detector. The first download is about 350 MB." :
       model.error || "First use prepares a local detector (about 350 MB). Generic player and ball detections need review.");
-    text("studio-cloud", data.capabilities.jev ? "Jev connected · Local vision" : "Local vision · Template commentary");
+    const jevMode = data.status?.jev;
+    text("studio-cloud", jevMode === "live" ? "Jev live mode · Local vision" : data.capabilities.jev ? "Jev key configured · Ready for next session" : "Local vision · Jev key not configured");
     const key = JSON.stringify((data.videos || []).map(v => v.id));
     if (key !== lastVideoKey) {
       lastVideoKey = key;
@@ -171,10 +219,11 @@
     try {
       if (frameBusy || document.hidden || (!workspace?.active && isStudio)) return;
       if ($("view-live").hidden) return;
-      const monitorKey = `${activeId}:${processedT}:${$("studio-overlay").checked}:${lastStatus?.finished}:${lastStatus?.paused}`;
+      const monitorKey = `${activeId}:${processedT}:${$("studio-overlay").checked}:${focusedTrack}:${lastStatus?.finished}:${lastStatus?.paused}`;
       if ((lastStatus?.finished || lastStatus?.paused) && frameUrl && lastMonitorKey === monitorKey) return;
       frameBusy = true;
-      const path = isStudio ? `api/studio/frame.jpg?overlay=${$("studio-overlay").checked}` : "api/frame.jpg";
+      const requestRun = activeId;
+      const path = isStudio ? `api/studio/frame.jpg?overlay=${$("studio-overlay").checked}&focus=${encodeURIComponent(focusedTrack)}` : "api/frame.jpg";
       const response = await fetch(path, { headers: headers(), cache: "no-store" });
       if (!response.ok) return;
       const url = URL.createObjectURL(await response.blob());
@@ -182,6 +231,7 @@
       // Decode before swapping to avoid blank frames and pair the displayed timestamp to this JPEG.
       const preload = new Image(); preload.src = url;
       try { await preload.decode(); } catch { URL.revokeObjectURL(url); return; }
+      if (requestRun !== activeId) { URL.revokeObjectURL(url); return; }
       const old = frameUrl; frameUrl = url; image.src = url;
       image.alt = $("studio-overlay").checked ? "Current processed game frame with player and ball tracking" : "Current processed game frame";
       image.hidden = false; $("studio-empty").hidden = true; $("studio-loading").hidden = true;
@@ -192,7 +242,7 @@
         text("studio-time", clock(processedT));
         if (workspace?.active?.duration_s) $("studio-progress").value = lastStatus?.finished ? 100 : Math.min(100, processedT / workspace.active.duration_s * 100);
       }
-      lastMonitorKey = `${activeId}:${processedT}:${$("studio-overlay").checked}:${lastStatus?.finished}:${lastStatus?.paused}`;
+      lastMonitorKey = monitorKey;
     } catch { /* Keep the last frame during reconnect. */ }
     finally { frameBusy = false; if (!stopped) setTimeout(monitor, document.hidden ? 2000 : lastStatus?.finished || lastStatus?.paused ? 500 : 125); }
   }
@@ -248,6 +298,8 @@
     } catch (error) { notify(error.message); }
   }
   $("studio-open").addEventListener("click", openDialog);
+  $("studio-settings").addEventListener("click", () => $("btn-settings").click());
+  $("studio-clear-focus").addEventListener("click", () => setFocus(focusedTrack));
   $("studio-empty-open").addEventListener("click", openDialog);
   $("studio-close").addEventListener("click", () => $("studio-dialog").close());
   $("studio-file").addEventListener("change", e => chooseFile(e.target.files[0]));
@@ -305,6 +357,7 @@
     if (msg.type === "vision") receiveVision(msg);
     if (msg.type === "status") receiveStatus(msg);
     if (msg.type === "reset") {
+      focusedTrack = ""; $("studio-clear-focus").hidden = true; renderTracks([]);
       lastVision = null; processedT = 0; $("studio-progress").value = 0;
       for (const [id, value] of [["vision-people","—"],["vision-ball","Awaiting video"],["vision-court","Not configured"]]) text(id,value);
       $("studio-frame").hidden = true; $("studio-loading").hidden = false;
@@ -313,6 +366,7 @@
       text("vision-people", (msg.players || []).length);
       text("vision-ball", msg.ball?.visible ? "Visible" : "Out of view");
       text("vision-court", workspace?.active?.demo ? "Simulator map" : "Mapped");
+      renderTracks(msg.players || [], !!workspace?.active?.demo || !isStudio);
       processedT = msg.t;
     }
   });

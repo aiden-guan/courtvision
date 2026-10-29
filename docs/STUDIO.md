@@ -4,6 +4,27 @@ Run `.venv/bin/python -m courtvision studio --open`, or double-click `Start Cour
 The default address is `http://127.0.0.1:8000`. The server binds localhost; a non-loopback bind requires
 `--auth-token`. Enter the token in dashboard settings. Detector setup is an explicit action from Start analysis.
 
+Select a person in **Tracked people** to highlight their brackets and dim other person tracks.
+**All tracks** restores the full overlay; **Tracking** switches to clean footage. The labels show detector
+confidence, not identity confidence. The bottom marker is the bounding-box base, not a measured joint.
+Simulator players are labelled separately and cannot be selected as camera detections.
+
+## Jev setup
+
+Double-click `Set up Jev.command`, or run `.venv/bin/python -m courtvision.credentials` in this folder.
+Paste the TypeSafe key at the hidden prompt and press Return. It is saved to the ignored local `.env`
+with owner-only permissions; existing settings are preserved. Studio checks this file for each new video
+or simulator session, so start/restart a session after saving. Exported `TYPESAFE_API_KEY` takes precedence.
+The footer distinguishes a configured key from an active live-mode session. Saving does not validate the
+key or make an API call. Real requests use the existing decision layer; a rejected key falls back to rules.
+Jev judges decisions; narration text still comes from local templates or separately configured Claude.
+
+UI validation on 2026-10-28: 97 focused server, CLI and credential tests passed; the 15 studio/credential
+tests passed again after the final backend adjustment. Browser checks covered real sample tracking,
+person selection, clean-video mode, JSON download, simulator labels, and dark/light layouts at 1440 px
+and 390 px. No horizontal page overflow was found at either width. The two-person sample is a UI and
+detector smoke check, not a measured basketball accuracy benchmark. No live Jev request was made.
+
 ## What works
 
 - Streamed file upload, decoder validation and an 8 GB upload cap, without buffering the file in RAM.
