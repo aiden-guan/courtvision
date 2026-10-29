@@ -449,6 +449,7 @@
       WS.lastMsg = performance.now();
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
+      if (replaying && msg.type !== "pong") return;  // the view is a replay's (static/replay.js)
       dispatch(msg);
     };
     sock.onclose = (ev) => {
@@ -514,6 +515,18 @@
   }
 
   // =========================================================================== dispatch
+
+  // Replay (static/replay.js) applies a recorded game's messages through dispatch; meanwhile the live game's are
+  // dropped, and afterwards the socket reconnects so the hub sends the live game's state again.
+  let replaying = false;
+  function setReplay(on) {
+    if (on === replaying) return;
+    replaying = on;
+    if (!on) {
+      dispatch({ type: "reset", t: 0 });
+      if (WS.sock) WS.sock.close(4001, "replay over");
+    }
+  }
 
   function dispatch(msg) {
     window.dispatchEvent(new CustomEvent("courtvision-message", { detail: msg }));
@@ -2190,7 +2203,7 @@
     efgOf, tsOf, pppOf, possOf, rebOf, courtGeometry, xfgColor,
     get colors() { return C; },
     get lens() { return lens; },
-    api, send, toast, control, openEventDialog, setFeedMode, latestT, openSettings, applyTheme,
+    api, send, toast, control, openEventDialog, dispatch, setReplay, setFeedMode, latestT, openSettings, applyTheme,
     selectView: (id) => { const t = byId(id); if (t) selectTab(t, false); },
   };
 

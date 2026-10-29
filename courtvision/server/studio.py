@@ -14,6 +14,7 @@ import math
 import re
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -27,14 +28,14 @@ from courtvision.config import AppConfig, load_config
 from courtvision.credentials import runtime_env
 from courtvision.nba import results as game_results
 from courtvision.perception.rfdetr_adapter import RFDETRConfig, RFDETRDetector
-from courtvision.perception.tracker import ByteTracker
-from courtvision.perception.broadcast import ShotBoundaryDetector
-from courtvision.pipeline import (FrameItem, LiveGame, VideoFileSource, _collect, anthropic_credential_source, make_source,
+from courtvision.pipeline import (LiveGame, VideoFileSource, _collect, anthropic_credential_source, make_source,
                                   write_run_dir)
 from courtvision.server.app import HubJSONResponse, create_app
 from courtvision.server.hub import Hub, status_msg
+from courtvision.server import preanalysis
 from courtvision.server.lab import REPO, Lab, register_lab
-from courtvision.types import ObjClass
+from courtvision.server.preanalysis import Preanalysis
+from courtvision.server.studio_game import StudioGame
 
 log = logging.getLogger(__name__)
 UPLOAD_LIMIT = 8 * 1024**3
@@ -60,145 +61,6 @@ def probe_video(path: Path) -> dict[str, Any]:
         cap.release()
 
 
-class StudioGame(LiveGame):
-    """Run useful image-space detection while awaiting a real court calibration."""
-
-    def __init__(self, *args: Any, **kwargs: Any):
-        super().__init__(*args, **kwargs)
-        self.preview_tracker = ByteTracker()
-        self.preview_cuts = ShotBoundaryDetector()
-        self.visual: tuple[np.ndarray, list[dict[str, Any]], float] | None = None
-        self.vision: dict[str, Any] = {}
-        self.failure: str | None = None
-        self._vision_t = -1.0
-        self._consecutive_failures = 0
-        self._jpeg_cache: dict[tuple[float, bool, str], bytes] = {}
-
-    def _perceive(self, image: np.ndarray, frame_idx: int, t: float) -> Any:
-        started = time.perf_counter()
-        result = super()._perceive(image, frame_idx, t)
-        boxes: list[dict[str, Any]] = []
-        gate = getattr(self.perception, "last_gate", None)
-        if result is None:
-            # No invented homography: until setup, display tracks in pixels and emit no stats.
-            fd = self._detector.detect(image, frame_idx, t)
-            if self.preview_cuts.update(image):
-                self.preview_tracker = ByteTracker()
-            people = [d for d in fd.of(ObjClass.PLAYER) if d.bbox.h >= image.shape[0] * .045]
-            for tr in self.preview_tracker.update(people, frame_idx):
-                if tr.time_since_update == 0:
-                    boxes.append({"box": tr.bbox.as_tuple(), "label": f"Track {tr.track_id}",
-                                  "team": None, "confidence": tr.score})
-            for ball in fd.of(ObjClass.BALL):
-                boxes.append({"box": ball.bbox.as_tuple(), "label": "Ball", "team": "ball",
-                              "confidence": ball.score})
-        else:
-            frame, _ = result
-            for p in frame.players:
-                if p.bbox is not None:
-                    boxes.append({"box": p.bbox.as_tuple(), "label": p.player_id,
-                                  "team": p.team.value if p.team else None, "confidence": p.confidence})
-            if frame.ball is not None and frame.ball.visible and frame.ball.image_xy is not None:
-                u, v = frame.ball.image_xy
-                boxes.append({"box": (u - 9, v - 9, u + 9, v + 9), "label": "Ball", "team": "ball"})
-        ms = (time.perf_counter() - started) * 1000
-        if result is None:
-            self._lat.perception_ms.append(ms)
-        self._consecutive_failures = 0
-        self.visual = (image, boxes, t)
-        self.vision = {"type": "vision", "t": t, "people": sum(b["team"] != "ball" for b in boxes),
-                       "ball_visible": any(b["team"] == "ball" for b in boxes),
-                       "inference_ms": round(ms, 1), "fps": round(1000 / max(ms, 1), 1),
-                       "calibrated": result is not None, "gate": gate.reason if gate else None,
-                       "tracks": [{"id": b["label"], "team": b["team"],
-                                   "confidence": b.get("confidence")}
-                                  for b in boxes if b["team"] != "ball"]}
-        return result
-
-    async def _await_calibration(self, t: float) -> None:
-        # Let pixel tracks continue; the setup UI pauses and freezes the chosen calibration frame.
-        self._t = t
-        self._frames_done += 1
-        if self.hub is not None and t - self._vision_t >= .25:
-            await self.hub.publish(status_msg(t, **self.status()))
-
-    async def process(self, item: FrameItem) -> None:
-        before = self._errors
-        await super().process(item)
-        if self._errors > before:
-            self._consecutive_failures += 1
-            if self._consecutive_failures >= 3:
-                self.failure = "Analysis failed on consecutive frames. Reopen the video or check the detector setup."
-                self.request_stop(drain=False)
-        if self.hub is not None and item.t - self._vision_t >= .25:
-            self._vision_t = item.t
-            if self.vision:
-                await self.hub.publish(self.vision)
-            await self.hub.publish(status_msg(self.current_t, **self.status(), error=self.failure))
-
-    async def monitor_jpeg(self, overlay: bool, focus: str = "") -> bytes | None:
-        visual = self.visual
-        if visual is None:
-            return await self.controller.latest_frame_jpeg()
-        image, boxes, t = visual
-        key = (t, overlay, focus)
-        if key in self._jpeg_cache:
-            return self._jpeg_cache[key]
-
-        def encode() -> bytes | None:
-            scale = min(1., 1440 / image.shape[1])
-            frame = cv2.resize(image, None, fx=scale, fy=scale) if scale < 1 else image.copy()
-            if overlay:
-                for b in boxes:
-                    x1, y1, x2, y2 = (round(v * scale) for v in b["box"])
-                    h, w = frame.shape[:2]
-                    x1, x2 = max(0, min(w - 1, x1)), max(0, min(w - 1, x2))
-                    y1, y2 = max(0, min(h - 1, y1)), max(0, min(h - 1, y2))
-                    if x2 <= x1 or y2 <= y1:
-                        continue
-                    color = {"home": (237, 187, 120), "away": (117, 191, 246),
-                             "ball": (105, 224, 248)}.get(b["team"], (151, 235, 209))
-                    muted = bool(focus and focus != b["label"] and b["team"] != "ball")
-                    if muted:
-                        color = (106, 112, 110)
-                    if b["team"] == "ball":
-                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                        cv2.circle(frame, (cx, cy), max(9, (x2-x1)//2+4), color, 2, cv2.LINE_AA)
-                        cv2.line(frame, (cx-4, cy), (cx+4, cy), color, 1, cv2.LINE_AA)
-                        cv2.line(frame, (cx, cy-4), (cx, cy+4), color, 1, cv2.LINE_AA)
-                        continue
-                    # Corner brackets keep bodies readable. The bottom marker is the box base,
-                    # not a measured joint or calibrated foot position.
-                    length = max(3, min(20, (x2-x1)//3, (y2-y1)//4))
-                    thickness = 3 if focus == b["label"] else 2
-                    for x, dx in ((x1, 1), (x2, -1)):
-                        for y, dy in ((y1, 1), (y2, -1)):
-                            cv2.line(frame, (x, y), (x+dx*length, y), color, thickness, cv2.LINE_AA)
-                            cv2.line(frame, (x, y), (x, y+dy*length), color, thickness, cv2.LINE_AA)
-                    if muted:
-                        continue
-                    cv2.ellipse(frame, ((x1+x2)//2, y2), (max(6, (x2-x1)//3), 4), 0, 0, 360, color, 1, cv2.LINE_AA)
-                    cv2.circle(frame, ((x1+x2)//2, y2), 2, color, -1, cv2.LINE_AA)
-                    label = str(b["label"])
-                    confidence = b.get("confidence")
-                    if confidence is not None:
-                        label += f" / {confidence:.0%}"
-                    font_scale = .42 if w < 800 else .5
-                    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
-                    xx = max(0, min(x1, w - tw - 12))
-                    yy = min(h - 1, max(th + 10, y1 - 5))
-                    cv2.rectangle(frame, (xx, yy-th-9), (min(w-1, xx+tw+12), yy), (24, 30, 27), -1)
-                    cv2.line(frame, (xx, yy-th-9), (xx, yy), color, 2)
-                    cv2.putText(frame, label, (xx+6, yy-5), cv2.FONT_HERSHEY_SIMPLEX, font_scale,
-                                color, 1, cv2.LINE_AA)
-            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            return buf.tobytes() if ok else None
-
-        encoded = await asyncio.to_thread(encode)
-        self._jpeg_cache = {key: encoded} if encoded else {}
-        return encoded
-
-
 class StartIn(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     video_id: str | None = Field(None, pattern=r"^[a-f0-9]{32}$")
@@ -208,10 +70,20 @@ class StartIn(BaseModel):
     broadcast: bool = True
 
 
+class PreanalyseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stride: int = Field(1, ge=1, le=3)  # analyse every frame, or every 2nd or 3rd (2-3x sooner done)
+
+
 class Workspace:
     def __init__(self, cfg: AppConfig, root: Path, detector: Any = None, nba_root: Path | None = None,
-                 repo: Path = REPO):
+                 repo: Path = REPO, detector_factory: Callable[[], Any] | None = None, auto_preanalyze: bool = True):
         self.cfg, self.root = cfg, root.resolve()
+        # analysing videos ahead (server/preanalysis.py): one at a time, each with its own detector
+        self.detector_factory, self.auto_preanalyze = detector_factory, auto_preanalyze
+        self.preanalysis: Preanalysis | None = None
+        self.preanalysis_task: asyncio.Task[Any] | None = None
+        self.preanalysis_queue: list[tuple[str, int]] = []
         # analysed games (tools/nba_analyze.py): runs/nba/<game>; a game.json's relative video path is from the repo
         self.nba_root, self.repo = (nba_root or repo / "runs" / "nba").resolve(), repo
         self._analysis: tuple[str, float, tuple[Path, str, float] | None] | None = None  # (video id, looked at, run)
@@ -235,7 +107,7 @@ class Workspace:
         videos = []
         for path in self.root.glob("*/video.json"):
             try:
-                videos.append(json.loads(path.read_text()))
+                videos.append({**json.loads(path.read_text()), "replay": self.replay_status(path.parent.name)})
             except (ValueError, OSError):
                 log.warning("Could not read video metadata %s", path)
         return sorted(videos, key=lambda x: x.get("created", 0), reverse=True)
@@ -251,7 +123,8 @@ class Workspace:
                 "error": getattr(game, "failure", None),
                 "capabilities": {"jev": bool(runtime_env().get("TYPESAFE_API_KEY")),
                                  "claude": anthropic_credential_source() is not None},
-                "analysis": {"game": run[0].name, "tag": run[1], "version": run[2]} if run else None}
+                "analysis": {"game": run[0].name, "tag": run[1], "version": run[2]} if run else None,
+                "replay": self.replay_status(self.active["id"]) if self.active and not self.active.get("demo") else None}
 
     def analysis_run(self) -> tuple[Path, str, float] | None:
         """The open video's analysed run (``courtvision/nba/results.py``): None for the demo or a video no game folder
@@ -292,43 +165,146 @@ class Workspace:
         rf = self.cfg.perception.rfdetr
         return p if p.is_file() and not (rf.weights or rf.coreml_path) else None
 
-    async def prepare(self) -> None:
-        self.model_state, self.model_error = "loading", None
+    def new_detector(self) -> Any:
+        """A fresh, warmed detector (blocking: call it in a thread): the NBA student when installed, else the
+        configured RF-DETR checkpoint or the COCO starter (downloaded on first use)."""
         student = self.student_weights()
         if student is not None:
             try:
-                def load_student() -> Any:
-                    from courtvision.perception.student import StudentConfig, StudentDetector
+                from courtvision.perception.student import StudentConfig, StudentDetector
 
-                    det = StudentDetector(StudentConfig(weights=str(student)))
-                    det.detect(np.zeros((540, 960, 3), np.uint8), 0, 0.)
-                    det.reset()
-                    return det
-                self.detector = await asyncio.to_thread(load_student)
-                self.model_state = "ready"
-                return
+                det = StudentDetector(StudentConfig(weights=str(student)))
+                det.detect(np.zeros((540, 960, 3), np.uint8), 0, 0.)
+                det.reset()
+                return det
             except Exception:
                 log.exception("Could not load the NBA student detector; falling back to the COCO starter")
+        import torch
+        weights = self.root / "models" / "rf-detr-nano.pth"
+        weights.parent.mkdir(exist_ok=True)
+        if self.cfg.perception.rfdetr.weights or self.cfg.perception.rfdetr.coreml_path:
+            config = copy.deepcopy(self.cfg.perception.rfdetr)
+        else:
+            config = RFDETRConfig(variant="nano", weights=str(weights), allow_pretrained_download=True)
+        if config.device is None:
+            config.device = "mps" if torch.backends.mps.is_available() else "cpu"
+        detector = RFDETRDetector(config)
+        detector.detect(np.zeros((384, 640, 3), np.uint8), 0, 0.)
+        return detector
+
+    async def prepare(self) -> None:
+        self.model_state, self.model_error = "loading", None
         try:
-            def load() -> RFDETRDetector:
-                import torch
-                weights = self.root / "models" / "rf-detr-nano.pth"
-                weights.parent.mkdir(exist_ok=True)
-                if self.cfg.perception.rfdetr.weights or self.cfg.perception.rfdetr.coreml_path:
-                    config = copy.deepcopy(self.cfg.perception.rfdetr)
-                else:
-                    config = RFDETRConfig(variant="nano", weights=str(weights), allow_pretrained_download=True)
-                if config.device is None:
-                    config.device = "mps" if torch.backends.mps.is_available() else "cpu"
-                detector = RFDETRDetector(config)
-                detector.detect(np.zeros((384, 640, 3), np.uint8), 0, 0.)
-                return detector
-            self.detector = await asyncio.to_thread(load)
+            self.detector = await asyncio.to_thread(self.new_detector)
             self.model_state = "ready"
         except Exception:
             log.exception("Could not prepare starter detector")
             self.model_state = "error"
             self.model_error = "Detector setup failed. Check your connection and install courtvision[cv]. Then retry."
+
+    def video_config(self, video_id: str, detector: Any, *, broadcast: bool = True, home_name: str = "Home",
+                     away_name: str = "Away") -> AppConfig:
+        """The settings an uploaded video is analysed with, live or ahead of time."""
+        cfg = copy.deepcopy(self.cfg)
+        cfg.narration.tts = "none"
+        cfg.source.drop_late_s = None  # process every frame, report measured throughput honestly
+        cfg.game.home_name, cfg.game.away_name = home_name.strip(), away_name.strip()
+        cfg.source.kind = "video"
+        cfg.source.path = str(self.root / video_id / "source.video")
+        cfg.perception.calibration_path = str(self.root / video_id / "calibration.json")
+        cfg.perception.scoreboard_roi_path = str(self.root / video_id / "scoreboard_roi.json")
+        cfg.perception.save_calibration = True
+        cfg.perception.broadcast = "on" if broadcast else "off"
+        # The scorebug must be explicitly configured before it can gate live play. Without
+        # one, court visibility gates cutaways; replay footage still needs operator review.
+        cfg.perception.broadcast_config.live_requires_scorebug = False
+        if type(detector).__name__ == "StudentDetector":
+            # its person scores are centre-heatmap peaks (lower than a classifier's): ByteTrack thresholds to
+            # match, and boxes re-drawn from the tracked camera (perception/broadcast.py)
+            cfg.perception.pipeline.tracker = {"high_thresh": 0.3, "low_thresh": 0.1, "new_track_thresh": 0.35,
+                                               **cfg.perception.pipeline.tracker}
+            cfg.perception.broadcast_config.rectify_boxes = True
+        return cfg
+
+    # ------------------------------------------------------------------ analysing ahead (server/preanalysis.py)
+
+    def replay_dir(self, video_id: str) -> Path | None:
+        """The video's newest pre-analysis (``<video>/replays/<run>``), finished or not."""
+        runs = sorted((self.root / video_id / "replays").glob("*/status.json"))
+        return runs[-1].parent if runs else None
+
+    def replay_status(self, video_id: str) -> dict[str, Any] | None:
+        job = self.preanalysis
+        if job is not None and job.video_id == video_id:
+            return job.status()
+        if any(v == video_id for v, _ in self.preanalysis_queue):
+            return {"video_id": video_id, "state": "queued"}
+        out = self.replay_dir(video_id)
+        status = preanalysis.read_status(out) if out is not None else None
+        if status is not None and status.get("state") in ("queued", "loading", "running"):
+            status["state"] = "stopped"  # the Studio closed while it ran
+        return status
+
+    def replay_info(self, video_id: str) -> dict[str, Any]:
+        return self.replay_status(video_id) or {"video_id": video_id, "state": "none"}
+
+    def preanalysis_ready(self) -> bool:
+        """Whether a pre-analysis can load its detector without a download (the NBA student or a checkpoint on disk,
+        or one injected), so an upload may start one unasked."""
+        rf = self.cfg.perception.rfdetr
+        return (self.detector_factory is not None or self.student_weights() is not None
+                or bool(rf.weights or rf.coreml_path) or (self.root / "models" / "rf-detr-nano.pth").is_file())
+
+    def enqueue_preanalysis(self, video_id: str, stride: int = 1) -> dict[str, Any]:
+        if not (self.root / video_id / "video.json").is_file():
+            raise HTTPException(404, "Video not found.")
+        job = self.preanalysis
+        if (job is not None and job.video_id == video_id and job.state in ("loading", "running")) or any(
+                v == video_id for v, _ in self.preanalysis_queue):
+            raise HTTPException(409, "This video is already being analysed ahead.")
+        self.preanalysis_queue.append((video_id, stride))
+        if self.preanalysis_task is None or self.preanalysis_task.done():
+            self.preanalysis_task = asyncio.create_task(self._preanalyse(), name="studio-preanalysis")
+        return self.replay_info(video_id)
+
+    async def _preanalyse(self) -> None:
+        while self.preanalysis_queue:
+            video_id, stride = self.preanalysis_queue.pop(0)
+            try:
+                meta = json.loads((self.root / video_id / "video.json").read_text())
+            except (OSError, ValueError):
+                log.warning("Could not read video %s to analyse it ahead", video_id)
+                continue
+
+            def config_for(detector: Any, video_id: str = video_id) -> AppConfig:
+                cfg = self.video_config(video_id, detector)
+                cfg.perception.save_calibration = False  # never replace a calibration the operator saved
+                cfg.jev.mode, cfg.narration.llm_enabled = "off", False
+                return cfg
+
+            out = self.root / video_id / "replays" / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+            self.preanalysis = Preanalysis(video_id=video_id, video=self.root / video_id / "source.video", out=out,
+                                           config_for=config_for, detector_factory=self.detector_factory or self.new_detector,
+                                           duration_s=meta.get("duration_s"), stride=stride)
+            await self.preanalysis.run()
+
+    def stop_preanalysis(self, video_id: str) -> dict[str, Any]:
+        queued = len(self.preanalysis_queue)
+        self.preanalysis_queue = [(v, s) for v, s in self.preanalysis_queue if v != video_id]
+        job = self.preanalysis
+        if job is not None and job.video_id == video_id and job.state in ("loading", "running"):
+            job.stop()
+        elif len(self.preanalysis_queue) == queued:
+            raise HTTPException(409, "This video is not being analysed ahead.")
+        return self.replay_info(video_id)
+
+    async def stop_preanalyses(self) -> None:
+        self.preanalysis_queue.clear()
+        if self.preanalysis is not None:
+            self.preanalysis.stop()
+        if self.preanalysis_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.preanalysis_task
 
     async def stop(self) -> None:
         if self.game is not None and self.task is not None:
@@ -338,12 +314,12 @@ class Workspace:
 
     async def start(self, body: StartIn) -> dict[str, Any]:
         async with self.lock:
-            cfg = copy.deepcopy(self.cfg)
-            cfg.narration.tts = "none"
-            cfg.source.drop_late_s = None  # process every frame, report measured throughput honestly
-            cfg.game.home_name, cfg.game.away_name = body.home_name.strip(), body.away_name.strip()
-            cfg.source.kind = "sim" if body.demo else "video"
             if body.demo:
+                cfg = copy.deepcopy(self.cfg)
+                cfg.narration.tts = "none"
+                cfg.source.drop_late_s = None
+                cfg.game.home_name, cfg.game.away_name = body.home_name.strip(), body.away_name.strip()
+                cfg.source.kind = "sim"
                 cfg.source.sim_mode, cfg.sim.seconds = "truth3d", 180.
                 source = await asyncio.to_thread(make_source, cfg, realtime=True)
                 active = {"id": uuid.uuid4().hex, "name": "Studio demo", "duration_s": 180., "demo": True}
@@ -356,20 +332,9 @@ class Workspace:
                 if self.model_state != "ready" or self.detector is None:
                     raise HTTPException(409, "Prepare the detector before starting video analysis.")
                 active = json.loads(path.read_text())
-                cfg.source.path = str(self.root / body.video_id / "source.video")
-                cfg.perception.calibration_path = str(self.root / body.video_id / "calibration.json")
-                cfg.perception.scoreboard_roi_path = str(self.root / body.video_id / "scoreboard_roi.json")
-                cfg.perception.save_calibration = True
-                cfg.perception.broadcast = "on" if body.broadcast else "off"
-                # The scorebug must be explicitly configured before it can gate live play. Without
-                # one, court visibility gates cutaways; replay footage still needs operator review.
-                cfg.perception.broadcast_config.live_requires_scorebug = False
+                cfg = self.video_config(body.video_id, self.detector, broadcast=body.broadcast,
+                                        home_name=body.home_name, away_name=body.away_name)
                 if type(self.detector).__name__ == "StudentDetector":
-                    # its person scores are centre-heatmap peaks (lower than a classifier's): ByteTrack thresholds to
-                    # match, and boxes re-drawn from the tracked camera (perception/broadcast.py)
-                    cfg.perception.pipeline.tracker = {"high_thresh": 0.3, "low_thresh": 0.1, "new_track_thresh": 0.35,
-                                                       **cfg.perception.pipeline.tracker}
-                    cfg.perception.broadcast_config.rectify_boxes = True
                     self.detector.reset()
                 source = await asyncio.to_thread(VideoFileSource, cfg.source.path, realtime=True)
             await self.stop()
@@ -426,9 +391,11 @@ class Workspace:
 
 
 def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "runs/studio",
-                      auth_token: str | None = None, detector: Any = None, lab_runs: Path | None = None) -> Any:
+                      auth_token: str | None = None, detector: Any = None, lab_runs: Path | None = None,
+                      detector_factory: Callable[[], Any] | None = None, auto_preanalyze: bool = True) -> Any:
     lab = Lab(lab_runs)
-    workspace = Workspace(config or load_config(), Path(root), detector, nba_root=lab.runs / "nba", repo=lab.repo)
+    workspace = Workspace(config or load_config(), Path(root), detector, nba_root=lab.runs / "nba", repo=lab.repo,
+                          detector_factory=detector_factory, auto_preanalyze=auto_preanalyze)
     app = create_app(workspace.hub, workspace, auth_token, workspace.cfg.server, upload_max_body=UPLOAD_LIMIT)
     app.state.workspace = workspace
     inner = app.router.lifespan_context
@@ -440,6 +407,7 @@ def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "ru
                 yield state
             finally:
                 app.state.lab.shutdown()
+                await workspace.stop_preanalyses()
                 await workspace.stop()
                 if workspace.model_task is not None:
                     # A model load runs in a thread: wait for it before releasing the process.
@@ -481,7 +449,10 @@ def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "ru
                 record = {"id": video_id, "name": Path(name.replace("\\", "/")).name[:160] or "Game video",
                           "bytes": size, "created": time.time(), **metadata}
                 (directory / "video.json").write_text(json.dumps(record))
-                return record
+                if workspace.auto_preanalyze and workspace.preanalysis_ready():
+                    # analysed ahead in the background, so it can be replayed at full speed (server/preanalysis.py)
+                    workspace.enqueue_preanalysis(video_id)
+                return {**record, "replay": workspace.replay_status(video_id)}
             except BaseException as exc:
                 # Only this incomplete upload is removed; valid footage and past analyses are kept.
                 path.unlink(missing_ok=True)
@@ -521,6 +492,43 @@ def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "ru
         return FileResponse(workspace.root / video_id / "source.video",
                             media_type=VIDEO_TYPES.get(Path(name).suffix.lower(), "video/mp4"),
                             headers={"Cache-Control": "private, max-age=86400"})
+
+    def replay_out(video_id: str) -> Path:
+        out = workspace.replay_dir(video_id) if re.fullmatch(r"[a-f0-9]{32}", video_id) else None
+        if out is None:
+            raise HTTPException(404, "This video has not been analysed ahead.")
+        return out
+
+    @app.get("/api/studio/replay/{video_id}", dependencies=[read])
+    async def replay_status(video_id: str) -> Any:
+        if not re.fullmatch(r"[a-f0-9]{32}", video_id):
+            raise HTTPException(404, "Video not found.")
+        return workspace.replay_info(video_id)
+
+    @app.post("/api/studio/replay/{video_id}/start", dependencies=[write])
+    async def replay_start(video_id: str, body: PreanalyseIn) -> Any:
+        if not re.fullmatch(r"[a-f0-9]{32}", video_id):
+            raise HTTPException(404, "Video not found.")
+        return workspace.enqueue_preanalysis(video_id, body.stride)
+
+    @app.post("/api/studio/replay/{video_id}/stop", dependencies=[write])
+    async def replay_stop(video_id: str) -> Any:
+        if not re.fullmatch(r"[a-f0-9]{32}", video_id):
+            raise HTTPException(404, "Video not found.")
+        return workspace.stop_preanalysis(video_id)
+
+    @app.get("/api/studio/replay/{video_id}/chunk/{k}", dependencies=[read])
+    async def replay_chunk(video_id: str, k: int) -> Response:
+        # one minute of the recording (server/preanalysis.py), as written so far
+        path = preanalysis.chunk_path(replay_out(video_id), k)
+        if not 0 <= k < 100_000 or not path.is_file():
+            raise HTTPException(404, "Not analysed this far yet.")
+        return Response(await asyncio.to_thread(path.read_bytes), media_type="application/x-ndjson",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/studio/replay/{video_id}/state", dependencies=[read])
+    async def replay_view(video_id: str, t: float = Query(..., ge=0, le=1e6)) -> Any:
+        return await asyncio.to_thread(preanalysis.replay_state, replay_out(video_id), t)
 
     @app.get("/api/studio/export", dependencies=[read])
     async def export() -> Response:

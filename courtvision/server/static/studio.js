@@ -448,7 +448,7 @@
       queueMarks();
     }
     if (msg.type === "reset") {
-      focusedTrack = ""; $("studio-clear-focus").hidden = true; renderTracks([]);
+      focusedTrack = ""; $("studio-clear-focus").hidden = true; renderTracks([]); lastMonitorKey = "";
       lastVision = null; processedT = 0; progress(0); marks.clear(); queueMarks();
       text("vision-people", "—"); setVision("vision-ball", "Awaiting video", "idle"); setVision("vision-court", "Not configured", "warn");
       if (workspace?.active || !isStudio) { $("studio-frame").hidden = true; $("studio-loading").hidden = false; }

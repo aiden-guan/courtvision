@@ -684,9 +684,30 @@ body:not(.has-session) .scrub-head { display: none; }
 body.watching .poss-ribbon { height: 18px; cursor: pointer; }
 .poss-head { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; border-radius: 1px; background: #fff; box-shadow: 0 0 8px rgba(255, 255, 255, 0.7); pointer-events: none; }
 #watch-video { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: contain; background: #000; }
-.watch-exit { position: absolute; right: 34px; top: 12px; z-index: 4; display: none; }
-body.watching .watch-exit { display: inline-flex; }
-body.watching .feed-rec, body.watching .scrub, body.watching .transport-row { display: none; }
+#replay-canvas { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; pointer-events: none; }
+body.watching .feed-rec, body.watching .scrub, body.watching .transport-row, body.watching #studio-loading { display: none; }
+/* how the feed plays (static/playback.js) */
+.mode-switch { position: absolute; left: 50%; top: 10px; z-index: 4; transform: translateX(-50%); display: flex; gap: 2px; padding: 3px; border-radius: 9px; }
+.mode-switch[hidden] { display: none; }
+.mode-switch button { height: 24px; padding: 0 11px; border-radius: 6px; color: rgba(255, 255, 255, 0.72); font: 600 11.5px/1 var(--font); white-space: nowrap; }
+.mode-switch button:hover:not(:disabled) { color: #fff; background: rgba(255, 255, 255, 0.08); }
+.mode-switch button[aria-pressed="true"] { color: #111; background: #fff; }
+.mode-switch button:disabled { color: rgba(255, 255, 255, 0.3); cursor: default; }
+/* analysing ahead (static/replay.js) */
+.pre-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); min-width: 0; }
+.pre-row[hidden] { display: none; }
+.pre-text { display: grid; min-width: 0; flex: 1; }
+.pre-text strong { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.pre-text strong::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ink-4); flex: none; }
+.pre-text strong[data-tone="good"]::before { background: var(--good); }
+.pre-text strong[data-tone="busy"]::before { background: var(--ember); animation: pulse 1.2s ease-in-out infinite; }
+.pre-text strong[data-tone="bad"]::before { background: var(--bad); }
+.pre-text span { color: var(--ink-3); font-size: 11.5px; line-height: 1.4; }
+.pre-bar { position: relative; width: 120px; height: 4px; flex: none; border-radius: 4px; background: var(--hover); overflow: hidden; }
+.pre-bar[hidden] { display: none; }
+.pre-bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--ember); }
+.pre-row select { flex: none; max-width: 190px; }
+.pre-row .link-btn { flex: none; color: var(--ember); }
 body.watching .poss-feed { bottom: 72px; }  /* above the video's own controls */
 .poss-ribbon svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .poss-ribbon .rib-home { fill: var(--home); }

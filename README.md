@@ -322,6 +322,8 @@ can be reopened; previous run outputs stay in separate `runs/studio/analyses/` f
 ask about the game or run any command; the [workspace guide](docs/STUDIO.md) covers the views, Ask and the model lab.
 A recording analysed as an NBA game ([NBA.md](docs/NBA.md)) also shows its possession analysis on the feed: the
 team with the ball and each shot decided from the video. **Watch** (`W`) plays it at full speed with seeking.
+Uploads are also analysed ahead in the background, and **Replay** (`R`) then plays the whole live analysis at full
+speed with seeking.
 
 The starter model detects generic people and sports balls. It does not identify NBA players, distinguish every
 replay, or produce official statistics. The NBA broadcast pipeline ([docs/NBA.md](docs/NBA.md)) adds a

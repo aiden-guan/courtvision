@@ -53,15 +53,41 @@ missed, its value, P(made), and whether it was found at a rim visit the engine r
 and turnovers show the same way. The band under the feed covers the whole game: who had the ball by the analysis
 (upper) and by the play-by-play (lower), with a tick for each decided shot (tall: made). `B` hides or shows all of it.
 
-**Watch** (in the Possession cell, or `W`) plays the recording itself at full speed with its sound and draws the
-analysis for the time playing. The live analysis pauses meanwhile and resumes on **Back to live analysis**. Click the
-band to jump to any moment. The browser has to be able to play the file; H.264 MP4 works.
+**Watch** (at the top of the feed, in the Possession cell, or `W`) plays the recording itself at full speed with its
+sound and draws the analysis for the time playing. The live analysis pauses meanwhile and resumes on **Live**. Click
+the band to jump to any moment. The browser has to be able to play the file; H.264 MP4 works.
 
 Everything shown comes from the video except the play-by-play. That is placed on video time through the scorebug
 clock and is shown only to judge the analysis by. The held-out accuracies in the panel are the run's own: the team
 with the ball in settled play, and made or missed on real shots. So far they come from one game. A video that no game
 folder analyses shows "Not analysed": add it with `tools/nba_new_game.py` and run the steps in NBA.md through
 `timeline`.
+
+## Replay: the analysis done ahead
+
+The switch at the top of the feed picks how it plays:
+
+- **Live** analyses the video as it plays. With the NBA detector that is about 5 to 8 frames a second on an M3 Pro,
+  so the feed runs at a quarter to a sixth of real time and cannot seek.
+- **Watch** (`W`) plays the recording at full speed with the game's possession analysis (above).
+- **Replay** (`R`) plays the recording at full speed with the live analysis done ahead of time: the tracking boxes,
+  the plays, the box score, the court lens and the narration follow the video, and it seeks.
+
+Replay needs the video analysed ahead. An upload starts that in the background when a detector is installed
+(the NBA detector or a downloaded checkpoint; the first download of the starter detector still needs **Start
+analysis**); any other video starts with **Analyse ahead** in the row under the status cells. The row shows how far
+it has got and about how long is left; **Stop** ends it, and Replay works up to where it got. It runs the same pipeline
+and settings as Live, unpaced, one video at a time, with Jev, Claude and spoken narration off: no cloud calls. It
+takes a while, at the analysis's own pace: about 5 hours at every frame for a 79-minute game on an M3 Pro. **Every
+2nd frame** or **every 3rd frame** finishes 2 or 3 times sooner; the boxes then update 15 or 10 times a second, and
+the plays come from fewer frames. Replay plays up to what has been analysed so far and pauses there. Live analysis
+at the same time slows both.
+
+Each analysis ahead is kept in `runs/studio/<video id>/replays/<run>/`: `status.json`, the recording in minutes
+(`chunks/NNNN.jsonl`: each analysed frame's boxes and every message the live view got, with its video time),
+`sparse.jsonl` (events, narration, insights and captions, to rebuild the view at any moment for a seek) and
+`analysis/` (the events and stats, as a live run saves them). A full game takes about 250 MB. Analysing again starts
+a new run beside the old one. Closing the Studio stops a running analysis; Replay then works up to where it got.
 
 ## Jev setup
 
@@ -116,7 +142,7 @@ must be configured and verified for the broadcast. Fouls, substitutions and time
 Every source frame is processed. The monitor reports measured inference rate; video can run behind wall time
 when inference is slower than the input frame rate. The current monitor is a sequence of processed JPEGs and
 does not play source audio. It supports pause/speed/restart, not random seeking of the stateful event engine.
-Watch mode plays an analysed recording with sound and seeking, but it shows the saved analysis, not the live engine.
+Watch and Replay play the recording with sound and seeking; they show saved analysis, not the engine running now.
 
 Footage persists at `runs/studio/<video id>/source.video`. Each run is saved independently under
 `runs/studio/analyses/<run id>/`. There is no automatic retention deletion. Reopening a video starts a fresh

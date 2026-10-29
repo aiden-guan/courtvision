@@ -5,6 +5,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Replay: the live analysis done ahead, played at full speed
+
+- The Studio analyses a video ahead of time, in the background (`courtvision/server/preanalysis.py`): the same
+  pipeline and settings as the live view, unpaced, with no cloud calls, one video at a time. It records each analysed
+  frame's boxes and every message the live view gets, with its video time, cut into minutes. An upload starts it when
+  a detector is installed; **Analyse ahead** starts it for any video, at every frame or every 2nd or 3rd frame (2 or 3
+  times sooner). On an M3 Pro it runs at about a quarter of real time.
+- A third way to play the feed, **Replay** (`R`), beside **Live** and **Watch**: the recording at full speed with the
+  tracking boxes drawn over it and the plays, box score, court lens and narration replayed in time with it. It
+  seeks, and plays up to what has been analysed so far. The switch sits at the top of the feed
+  (`static/playback.js`, `static/replay.js`).
+- `StudioGame` moved to `courtvision/server/studio_game.py` (still importable from `courtvision.server.studio`).
+
+---
+
 ## [Unreleased] — Plays that need review say why, and what to do
 
 - Each flagged play in the Studio says why the engine flagged it, in plain words (for example "The ball changed

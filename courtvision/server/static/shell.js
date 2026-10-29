@@ -41,7 +41,8 @@
       { id: "plays:review", group: "Plays", label: "Show the plays that need review", icon: "alert" },
       { id: "view:overlay", group: "View", label: "Toggle the tracking overlay", icon: "people", keys: ["O"], when: () => active },
       { id: "view:possession", group: "View", label: "Toggle the possession analysis", icon: "chart", keys: ["B"], when: () => !!(window.CVPossession && window.CVPossession.data) },
-      { id: "view:watch", group: "View", label: window.CVPossession && window.CVPossession.watching ? "Back to the live analysis" : "Watch the analysed game at full speed", icon: "film", keys: ["W"], when: () => !!(window.CVPossession && window.CVPossession.data) },
+      { id: "view:watch", group: "View", label: window.CVPlayback && window.CVPlayback.mode === "watch" ? "Back to the live analysis" : "Watch the analysed game at full speed", icon: "film", keys: ["W"], when: () => !!(window.CVPlayback && window.CVPlayback.can("watch")) },
+      { id: "view:replay", group: "View", label: window.CVPlayback && window.CVPlayback.mode === "replay" ? "Back to the live analysis" : "Replay the analysis done ahead, at full speed", icon: "film", keys: ["R"], when: () => !!(window.CVPlayback && window.CVPlayback.can("replay")) },
       { id: "view:fullscreen", group: "View", label: "Expand the game feed", icon: "film", keys: ["F"], when: () => active },
       { id: "view:rail", group: "View", label: "Toggle the side panel", icon: "chart", keys: ["]"] },
       { id: "lens:broadcast", group: "View", label: "Court lens: broadcast camera", icon: "court" },
@@ -81,7 +82,8 @@
       case "view":
         if (arg === "overlay") studio().toggleOverlay && studio().toggleOverlay();
         else if (arg === "possession") window.CVPossession && window.CVPossession.toggle();
-        else if (arg === "watch") window.CVPossession && window.CVPossession.watch();
+        else if (arg === "watch") window.CVPlayback && window.CVPlayback.toggle("watch");
+        else if (arg === "replay") window.CVPlayback && window.CVPlayback.toggle("replay");
         else if (arg === "fullscreen") studio().fullscreen && studio().fullscreen();
         else if (arg === "rail") toggleRail();
         else if (arg === "theme") toggleTheme();
@@ -298,7 +300,7 @@
     const rows = [
       [`${MOD} K`, "Ask or jump to anything"], ["/", "Ask"], ["G then L, S, B, C", "Live, box score, board, game controls"],
       ["G then M, R, T", "Court mapping, scoreboard, model lab"], ["P", "Pause or resume"], ["M", "Mute narration"],
-      ["D", "Mark dead ball"], ["A", "Add a play"], ["O", "Tracking overlay"], ["B", "Possession analysis"], ["W", "Watch the analysed game"], ["F", "Expand the game feed"], ["]", "Side panel"], ["?", "This list"],
+      ["D", "Mark dead ball"], ["A", "Add a play"], ["O", "Tracking overlay"], ["B", "Possession analysis"], ["W", "Watch the analysed game"], ["R", "Replay the analysis done ahead"], ["F", "Expand the game feed"], ["]", "Side panel"], ["?", "This list"],
     ];
     $("shortcut-list").replaceChildren(...rows.flatMap(([k, v]) => [gen().el("dt", { text: v }), gen().el("dd", null, ...k.split(" ").map((x) => (x === "then" ? gen().el("span", { class: "muted", text: " then " }) : gen().el("kbd", { text: x }))))]));
     if (!$("shortcuts-dialog").open) $("shortcuts-dialog").showModal();
@@ -332,7 +334,8 @@
     if (k === "]") { ev.preventDefault(); toggleRail(); return; }
     if (k === "o" || k === "O") { ev.preventDefault(); studio().toggleOverlay && studio().toggleOverlay(); return; }
     if ((k === "b" || k === "B") && window.CVPossession && window.CVPossession.data) { ev.preventDefault(); window.CVPossession.toggle(); return; }
-    if ((k === "w" || k === "W") && window.CVPossession && window.CVPossession.data) { ev.preventDefault(); window.CVPossession.watch(); return; }
+    if ((k === "w" || k === "W") && window.CVPlayback && window.CVPlayback.can("watch")) { ev.preventDefault(); window.CVPlayback.toggle("watch"); return; }
+    if ((k === "r" || k === "R") && window.CVPlayback && window.CVPlayback.can("replay")) { ev.preventDefault(); window.CVPlayback.toggle("replay"); return; }
     if (k === "f" || k === "F") { if (!document.body.classList.contains("has-session")) return; ev.preventDefault(); studio().fullscreen && studio().fullscreen(); }
   }
 

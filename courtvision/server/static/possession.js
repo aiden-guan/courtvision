@@ -1,17 +1,18 @@
 /* The open video's analysis on the feed: who has the ball and each decided shot, from its game's analysed run
    (tools/nba_analyze.py <game> timeline, found by courtvision/nba/results.py), drawn for the time of the frame on
-   screen. When the game has a play-by-play it is shown beside them as the reference. Watch mode plays the recording
-   itself at full speed (the live analysis pauses meanwhile), and the band under the feed seeks it. */
+   screen, or for the time playing in Watch and Replay (static/playback.js), where the band under the feed seeks.
+   When the game has a play-by-play it is shown beside them as the reference. */
 (() => {
   "use strict";
   const $ = id => document.getElementById(id);
   const SHOW_S = 3.5, PLAY_S = 4;  // how long a decided play, and a play-by-play line, stay on the feed
   const CARD_KINDS = new Set(["shot_made", "shot_missed", "rebound", "steal", "turnover"]);
   let A = null, loaded = "", fetching = "", failed = false, frameT = NaN, cardsKey = "";
-  let watching = false, resumeLive = false, raf = 0, hinted = "";
+  let hinted = "";
   let segT = [], backT = [], evT = [], madeT = [], points = [], refT = [], playT = [];
   const token = () => { try { return sessionStorage.getItem("cv-token") || ""; } catch { return ""; } };
   const headers = () => (token() ? { Authorization: `Bearer ${token()}` } : {});
+  const playing = () => (window.CVPlayback?.mode || "live") !== "live";  // Watch or Replay: the <video> sets the time
   const duration = () => window.CVStudio?.workspace?.active?.duration_s;
   const text = (id, value) => { if ($(id).textContent !== String(value)) $(id).textContent = value; };
   const pct = x => `${Math.round(x * 100)}%`;
@@ -116,6 +117,7 @@
   function status() {
     const ws = window.CVStudio?.workspace, video = ws?.active && !ws.active.demo;
     const cell = $("vision-poss");
+    const watching = window.CVPlayback?.mode === "watch";
     $("poss-switch").hidden = $("poss-watch").hidden = !A;
     text("poss-watch", watching ? "Live view" : "Watch");
     $("poss-watch").title = watching ? "Back to the live analysis (W)" : "Play the recording at full speed with the analysis on it (W)";
@@ -123,7 +125,7 @@
       const m = A.measures || {}, short = [], long = [];
       if (m.possession != null) { short.push(`ball ${pct(m.possession)}`); long.push(`the team with the ball ${pct(m.possession)} of settled play`); }
       if (m.made != null) { short.push(`made/missed ${pct(m.made)}`); long.push(`made or missed ${pct(m.made)} of real shots`); }
-      text("vision-poss", watching ? "Watching" : $("poss-toggle").checked ? "On the feed" : "Hidden");
+      text("vision-poss", playing() ? "On the recording" : $("poss-toggle").checked ? "On the feed" : "Hidden");
       cell.dataset.tone = "good";
       $("poss-cell").title = `${A.game}, run ${A.tag}${A.jev ? " (with Jev)" : ""}. ` +
         (long.length ? `Right on held-out halves against the play-by-play: ${long.join(", ")}.` : "No play-by-play to score it against.");
@@ -145,16 +147,15 @@
       if (fetching !== want) return;
       A = doc; loaded = want; cardsKey = ""; index(); ribbon(); render(frameT);
       const id = window.CVStudio?.workspace?.active?.id;
-      if (id && hinted !== id) { hinted = id; window.CV?.toast?.("This game has a possession analysis. Press W to watch it at full speed."); }
+      if (id && hinted !== id && !playing()) { hinted = id; window.CV?.toast?.("This game has a possession analysis. Press W to watch it at full speed."); }
     } catch {
       if (fetching === want) { A = null; loaded = want; failed = true; ribbon(); render(NaN); }
     } finally { if (fetching === want) fetching = ""; status(); }
   }
 
   function sync() {
-    const ws = window.CVStudio?.workspace, run = ws?.analysis;
+    const run = window.CVStudio?.workspace?.analysis;
     const want = run ? `${run.game}/${run.tag}/${run.version}` : "";
-    if (watching && (!want || ws?.active?.id !== $("watch-video").dataset.video)) watch(false);
     if (!want) {
       if (A || loaded) { A = null; loaded = ""; failed = false; ribbon(); render(NaN); }
     } else if (want !== loaded && want !== fetching) load(want);
@@ -167,54 +168,27 @@
     render(frameT); status();
   }
 
-  // Watch mode: the recording itself in a <video> over the live frame, the analysis drawn for its time
-  function watch(on) {
-    const v = $("watch-video"), active = window.CVStudio?.workspace?.active;
-    if (on === watching || (on && !(A && active?.id))) return;
-    watching = on;
-    document.body.classList.toggle("watching", on);
-    cancelAnimationFrame(raf);
-    if (on) {
-      const live = window.CVStudio.status;
-      resumeLive = !!live && !live.paused && !live.finished;
-      if (resumeLive) window.CV?.control?.("pause");
-      const start = Number.isFinite(frameT) ? frameT : 0;
-      v.dataset.video = active.id;
-      v.src = `api/studio/video/${active.id}${token() ? `?token=${encodeURIComponent(token())}` : ""}`;
-      v.addEventListener("loadedmetadata", () => { v.currentTime = start; v.play().catch(() => { /* the controls start it */ }); }, { once: true });
-      v.hidden = false;
-      const tick = () => { if (!watching) return; render(v.currentTime); head(v.currentTime); raf = requestAnimationFrame(tick); };
-      raf = requestAnimationFrame(tick);
-    } else {
-      v.pause(); v.removeAttribute("src"); v.load(); v.hidden = true; delete v.dataset.video;
-      $("poss-head").hidden = true;
-      if (resumeLive) window.CV?.control?.("resume");
-      resumeLive = false;
-      render(window.CVStudio?.processedT ?? NaN);
-    }
-    status();
-  }
   function head(t) {
     const span = duration();
     $("poss-head").hidden = !(span > 0);
     if (span > 0) $("poss-head").style.left = `${Math.min(100, Math.max(0, t / span * 100))}%`;
   }
 
-  window.CVPossession = { get data() { return A; }, get watching() { return watching; }, toggle, watch: () => watch(!watching) };
+  window.CVPossession = { get data() { return A; }, toggle };
   $("poss-toggle").addEventListener("change", () => { render(frameT); status(); });
-  $("poss-watch").addEventListener("click", () => watch(!watching));
-  $("watch-exit").addEventListener("click", () => watch(false));
-  $("watch-video").addEventListener("error", () => {
-    if (!watching) return;
-    watch(false);
-    window.CV?.toast?.("This browser cannot play this recording. The live view still shows the analysis.", "error");
-  });
-  $("poss-ribbon").addEventListener("click", ev => {  // in watch mode the band seeks
+  $("poss-watch").addEventListener("click", () => window.CVPlayback?.toggle("watch"));
+  $("poss-ribbon").addEventListener("click", ev => {  // in Watch and Replay the band seeks
     const span = duration(), box = $("poss-ribbon").getBoundingClientRect();
-    if (!watching || !(span > 0)) return;
-    $("watch-video").currentTime = Math.min(span, Math.max(0, (ev.clientX - box.left) / box.width * span));
+    if (!playing() || !(span > 0)) return;
+    window.CVPlayback.seek(Math.min(span, Math.max(0, (ev.clientX - box.left) / box.width * span)));
   });
   window.addEventListener("cv-studio", sync);
-  window.addEventListener("cv-frame", ev => { if (!watching) render(ev.detail.t); });
-  window.addEventListener("courtvision-message", ev => { if (ev.detail.type === "reset" && !watching) render(NaN); });
+  window.addEventListener("cv-frame", ev => { if (!playing()) render(ev.detail.t); });
+  window.addEventListener("cv-playback", ev => { render(ev.detail.t); head(ev.detail.t); });
+  window.addEventListener("cv-playback-mode", ev => {
+    $("poss-head").hidden = ev.detail.mode === "live";
+    if (ev.detail.mode === "live") render(window.CVStudio?.processedT ?? NaN);
+    status();
+  });
+  window.addEventListener("courtvision-message", ev => { if (ev.detail.type === "reset" && !playing()) render(NaN); });
 })();
