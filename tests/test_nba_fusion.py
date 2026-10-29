@@ -552,6 +552,21 @@ def test_scorebug_make_keeps_the_bugs_team_whatever_half_the_camera_is_on() -> N
 DREB = aim_track((0, 10, 80.0), (10, 20, 15.0), (20, 53, 80.0), (53, 90, 15.0))
 
 
+def test_reset_to_24_in_play_with_no_shot_before_it_and_the_play_turning_round_is_a_steal() -> None:
+    # home attacks the right half, where the camera is at the reset; the play turns to the left half at 53 s
+    ev = [Event("p1", EventKind.PASS, 48.0, 0, team=AWAY, player_id="a1")]  # the engine's team labels play no part
+    bug = SIDES + [BugEvent(52.0, "reset24", shot_clock_before=12.0), BugEvent(53.0, "run24", shot_clock_before=24.0)]
+    out = fuse(ev, bug, only("reset_steals", "rim_misses"), direction=DREB, periods=PERIODS)
+    st, to = of(out, EventKind.STEAL), of(out, EventKind.TURNOVER)
+    assert [(e.t, e.team) for e in st] == [(52.0, AWAY)] and [(e.t, e.team) for e in to] == [(52.0, HOME)]
+    assert st[0].attrs["fused"] == "shot clock reset in play with no shot" and st[0].attrs["inferred"]
+    assert of(out, EventKind.SHOT_MISSED) == []  # the reset is the steal's, not a rim touch
+    shooting = ev + shot("s1", 47.0, 47.5, HOME)  # a shot in the rebound window before the reset: no steal
+    assert of(fuse(shooting, bug, only("reset_steals"), direction=DREB, periods=PERIODS), EventKind.STEAL) == []
+    stays = aim_track((0, 10, 80.0), (10, 20, 15.0), (20, 90, 80.0))  # the play stays in the half: no steal
+    assert of(fuse(ev, bug, only("reset_steals"), direction=stays, periods=PERIODS), EventKind.STEAL) == []
+
+
 def test_camera_leaving_the_half_after_a_miss_makes_a_defensive_rebound_of_the_other_team() -> None:
     ev = shot("s1", 49.0, 50.0, HOME) + [Event("rb", EventKind.REBOUND, 51.5, 0, team=HOME, player_id="h2",
                                                attrs={"offensive": True})]

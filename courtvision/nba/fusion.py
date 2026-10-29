@@ -44,7 +44,9 @@ so its effect on the box score can be measured on its own:
    so the shot clock resets to 24 with it, and no shot or score explains that reset (a possession that ends in a shot
    is no turnover). An engine steal or turnover with no such reset near it is dropped. ``deadball_turnovers``: a
    reset to 24 at a stoppage with no shot or free throw before it is a dead-ball turnover (out of bounds, a
-   violation, an offensive foul) of the team that had the ball.
+   violation, an offensive foul) of the team that had the ball. ``reset_steals`` (run before ``rim_misses``): a
+   reset to 24 in play with no shot attempt before it, after which the camera leaves the half the play was in, is a
+   steal the engine missed (the ball changed hands in play), not a rim touch.
 
 Times: the ESPN bug shows a basket ``score_lag_s`` after it; a shot result is a little after its release.
 """
@@ -174,6 +176,7 @@ class FusionConfig:
     bug_rebounds: bool = True
     oreb_misses: bool = True
     orphan_rebounds: bool = True  # engine rebounds with no miss just before them are dropped (pass 5)
+    reset_steals: bool = True  # a reset to 24 in play with no shot before it and the ball changing hands: a steal
     turnover_resets: bool = True  # engine steals / turnovers need a reset to 24 that no shot explains (pass 7)
     deadball_turnovers: bool = True  # a reset to 24 at a stoppage with no shot before it: a turnover (pass 7)
     team_rebounds: bool = True  # bug_rebounds: a clock stop before any possession sign is a team rebound (no player's)
@@ -306,6 +309,28 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
         i = int(np.searchsorted(clock_t, t, side="right")) - 1
         return i < 0 or clock[i][1]
 
+    sides = attack_sides(scores, direction, cfg.score_lag_s) if direction is not None else {}
+
+    def period_at(t: float) -> int | None:
+        if not periods:
+            return None
+        i = int(np.searchsorted(np.array([p[0] for p in periods]), t, side="right")) - 1
+        return periods[max(0, min(i, len(periods) - 1))][1]
+
+    def attacker(t: float) -> tuple[Team | None, str | None]:
+        if direction is None:
+            return None, None
+        side = direction.side(t)
+        h = _half(period_at(t))
+        if side is None or h is None:
+            return None, side
+        for team in (Team.HOME, Team.AWAY):
+            if sides.get((h, team)) == side:
+                return team, side
+        return None, side
+
+    if cfg.reset_steals and direction is not None and sides:
+        _reset_steals(by_id, bug, cfg, running, direction, attacker)
     if cfg.rim_misses:
         cur = sorted(by_id.values(), key=lambda e: e.t)
         for r in (b for b in bug if b.kind == "reset24"):
@@ -342,26 +367,6 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
     if cfg.flight_values and flights and court is not None:
         _flight_values(by_id, attempts, flights, court, cfg)
     out = sorted(by_id.values(), key=lambda e: e.t)
-    sides = attack_sides(scores, direction, cfg.score_lag_s) if direction is not None else {}
-
-    def period_at(t: float) -> int | None:
-        if not periods:
-            return None
-        i = int(np.searchsorted(np.array([p[0] for p in periods]), t, side="right")) - 1
-        return periods[max(0, min(i, len(periods) - 1))][1]
-
-    def attacker(t: float) -> tuple[Team | None, str | None]:
-        if direction is None:
-            return None, None
-        side = direction.side(t)
-        h = _half(period_at(t))
-        if side is None or h is None:
-            return None, side
-        for team in (Team.HOME, Team.AWAY):
-            if sides.get((h, team)) == side:
-                return team, side
-        return None, side
-
     if cfg.shot_teams and sides:
         res_by_shot = {e.shot_id: e for e in out if e.kind in (EventKind.SHOT_MADE, EventKind.SHOT_MISSED) and e.shot_id}
         fixed = []
@@ -492,6 +497,42 @@ def _bug_rebounds(events: list[Event], bug: list[BugEvent], cfg: FusionConfig,
         settled.add(m.event_id)
     out.sort(key=lambda e: e.t)
     return out, settled
+
+
+def _reset_steals(by_id: dict[str, Event], bug: list[BugEvent], cfg: FusionConfig, running: Any,
+                  direction: PlayDirection, attacker: Any) -> None:
+    """Steals the engine missed, from the shot clock (pass 2a, before the rim touches). A reset to 24 in play is a rim
+    touch or a change of possession; with no engine shot attempt in the ``rebound_window_s`` before it (no shot that
+    could have reached the rim or been blocked), no shot result within ``reset_window_s`` and no score change within
+    ``reset_make_after_s`` after it, it is a change of possession in play: the ball was stolen. The camera names the
+    teams (the engine's team labels flip too easily around a steal): the team attacking the half it aims at on the
+    reset lost the ball, and the camera has to leave that half (as for a defensive rebound) within
+    ``rebound_window_s``: a steal of the other team and a turnover of that one."""
+    cur = sorted(by_id.values(), key=lambda e: e.t)
+    scores = [b for b in bug if b.kind == "score"]
+    lo, hi = cfg.reset_window_s
+    n_new = 0
+    for r in (b for b in bug if b.kind == "reset24"):
+        if not running(r.t):
+            continue  # a dead-ball reset: ``deadball_turnovers`` (pass 7)
+        if any(0.0 <= s.t - r.t <= cfg.reset_make_after_s for s in scores):
+            continue
+        if any(e.kind in (EventKind.TURNOVER, EventKind.STEAL) and abs(e.t - r.t) <= cfg.reset_turnover_s for e in cur):
+            continue  # the engine has it
+        if any(e.kind is EventKind.SHOT_ATTEMPT and r.t - cfg.rebound_window_s <= e.t <= r.t for e in cur) \
+                or any(e.kind in (EventKind.SHOT_MADE, EventKind.SHOT_MISSED) and lo <= e.t - r.t <= hi for e in cur):
+            continue  # a shot's rim touch, rebound or block
+        lost, side = attacker(r.t)
+        if lost is None or side is None or direction.leaves(side, r.t, r.t + cfg.rebound_window_s,
+                                                             cfg.oreb_hold_s) is None:
+            continue
+        got = lost.other()
+        n_new += 1
+        for kind, team in ((EventKind.STEAL, got), (EventKind.TURNOVER, lost)):
+            e = Event(f"fuse-st{n_new}{kind.value[0]}", kind, r.t, 0, team=team, player_id=f"{team.value}-unknown",
+                      confidence=0.5, source="scoreboard",
+                      attrs={"fused": "shot clock reset in play with no shot", "inferred": True})
+            by_id[e.event_id] = e
 
 
 def _bug_turnovers(events: list[Event], bug: list[BugEvent], cfg: FusionConfig, running: Any) -> list[Event]:
