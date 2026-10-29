@@ -249,6 +249,21 @@ Truth3d exceeds the 0.98 simulator target; mono and video remain below 0.85. The
 adds pump fakes and changes the generated games, so these figures are not a controlled before/after
 comparison with round 4. [Complete aggregate report](docs/bench/round5-heldout.md).
 
+### NBA broadcast accuracy
+
+Measured on one real game so far, Lakers @ Warriors (2024-12-25, ESPN), against the ESPN box score and
+play-by-play (research use; how it works: [docs/NBA.md](docs/NBA.md)). Measurements of 2026-10-29:
+
+| What | Result | Measured on |
+|---|---|---|
+| Ball found within 15 px | **95.7%** (3.5% wrong, 0.8% missed); earlier student 88.3%, RF-DETR Nano starter 25.8% | 256 labelled frames of held-out teacher clips |
+| Court registration, no clicks | 22,160 of 26,103 Q1 frames tracked (most of the rest are replays, close-ups and cut-aways) | first quarter |
+| Points, field goals made, threes made | exact for both teams (from the scorebug) | first quarter and the full scorebug scan |
+| Box score, 13 stats x 2 teams | sum of absolute count errors / sum of true counts: 0.305 before the fusion work, **0.068** after (13 of 190 counts off) | first quarter: **in-sample**, the quarter the fusion rules were developed on |
+
+Held-out quarters (Q2-Q4, never used for tuning) and further games are the real test; `tools/nba_loop.py` records
+every evaluation in `runs/nba/leaderboard.jsonl`.
+
 ---
 
 ## Quickstart
