@@ -56,8 +56,8 @@ What makes other games work without hand tuning:
   recognition of whole frames at ~30 moments: the fields are told apart by how they behave (a game clock that counts
   down, scores that never decrease, a 0-24 shot clock beside the clock), home and away by the teams' codes and the
   play-by-play scores. The layout is saved as `scorebug_profile.json` (check its notes for "ASSUMED" or "GUESSED");
-  the court tracker masks that bug and the studio reads with it. When discovery fails it falls back to the ESPN 2024
-  layout with a warning.
+  the court tracker masks that bug (`nba_track_court.py --scorebug-profile` names another) and the studio reads with
+  it. When discovery fails it falls back to the ESPN 2024 layout with a warning.
 * **Frame rates and sizes.** Settings counted in frames are defined at 29.97 fps and converted (59.94 / 50 fps work
   alike); pixel settings scale with the frame height (720p to 4K). Variable-frame-rate recordings use decoder
   timestamps; converting them first is faster (`ffmpeg -i in.mp4 -fps_mode cfr -r 30000/1001 out.mp4`). Interlaced
