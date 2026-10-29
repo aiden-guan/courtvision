@@ -606,7 +606,8 @@ DREB = aim_track((0, 10, 80.0), (10, 20, 15.0), (20, 53, 80.0), (53, 90, 15.0))
 def test_reset_to_24_in_play_with_no_shot_before_it_and_the_play_turning_round_is_a_steal() -> None:
     # home attacks the right half, where the camera is at the reset; the play turns to the left half at 53 s
     ev = [Event("p1", EventKind.PASS, 48.0, 0, team=AWAY, player_id="a1")]  # the engine's team labels play no part
-    bug = SIDES + [BugEvent(52.0, "reset24", shot_clock_before=12.0), BugEvent(53.0, "run24", shot_clock_before=24.0)]
+    # the thief has the ball at once: the count goes on from the reset (the 24 read once: a reset24 + run24 pair)
+    bug = SIDES + [BugEvent(52.0, "reset24", shot_clock_before=12.0), BugEvent(53.0, "run24", shot_clock_before=12.0)]
     out = fuse(ev, bug, only("reset_steals", "rim_misses"), direction=DREB, periods=PERIODS)
     st, to = of(out, EventKind.STEAL), of(out, EventKind.TURNOVER)
     assert [(e.t, e.team) for e in st] == [(52.0, AWAY)] and [(e.t, e.team) for e in to] == [(52.0, HOME)]
@@ -616,6 +617,10 @@ def test_reset_to_24_in_play_with_no_shot_before_it_and_the_play_turning_round_i
     assert of(fuse(shooting, bug, only("reset_steals"), direction=DREB, periods=PERIODS), EventKind.STEAL) == []
     stays = aim_track((0, 10, 80.0), (10, 20, 15.0), (20, 90, 80.0))  # the play stays in the half: no steal
     assert of(fuse(ev, bug, only("reset_steals"), direction=stays, periods=PERIODS), EventKind.STEAL) == []
+    # the 24 held (read twice, then a count from 24): the ball was loose after a rim touch the engine did not see
+    held = SIDES + [BugEvent(52.0, "reset24", shot_clock_before=12.0), BugEvent(54.0, "run24", shot_clock_before=24.0)]
+    out = fuse(ev, held, only("reset_steals", "rim_misses"), direction=DREB, periods=PERIODS)
+    assert of(out, EventKind.STEAL) == [] and [e.t for e in of(out, EventKind.SHOT_MISSED)] == [52.0]
 
 
 def test_camera_leaving_the_half_after_a_miss_makes_a_defensive_rebound_of_the_other_team() -> None:

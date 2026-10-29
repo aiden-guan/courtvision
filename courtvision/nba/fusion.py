@@ -358,8 +358,7 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
                 continue
             if any(e.kind is EventKind.SHOT_ATTEMPT and not _is_ft(e) and lo <= e.t - r.t <= 0.0 for e in cur):
                 continue  # a shot in the air at the reset (its result, seen late, can come well after the rim)
-            if cfg.held_resets and any(b.kind == "run24" and b.shot_clock_before == r.shot_clock_before
-                                       and 0.0 < b.t - r.t <= 2.0 for b in bug):
+            if cfg.held_resets and _counts_at_once(r, bug):
                 continue  # the count started with the reset (the 24 never held): a team had the ball, no rim touch
             add_shot(r.t, possession_at(cur, r.t - cfg.inferred_release_s), 2, False, "shot clock reset (rim touch)")
     if cfg.oreb_misses:
@@ -512,6 +511,13 @@ def _bug_rebounds(events: list[Event], bug: list[BugEvent], cfg: FusionConfig,
     return out, settled
 
 
+def _counts_at_once(r: BugEvent, bug: list[BugEvent]) -> bool:
+    """The shot clock counts straight on from a reset to 24 (the 24 not read twice: scorebug_events' reset24 + run24
+    pair from the value before the reset): a team had the ball at the reset. After a rim touch the 24 holds while the
+    ball is loose and starts when a player gains it."""
+    return any(b.kind == "run24" and b.shot_clock_before == r.shot_clock_before and 0.0 < b.t - r.t <= 2.0 for b in bug)
+
+
 def _reset_steals(by_id: dict[str, Event], bug: list[BugEvent], cfg: FusionConfig, running: Any,
                   direction: PlayDirection, attacker: Any) -> None:
     """Steals the engine missed, from the shot clock (pass 2a, before the rim touches). A reset to 24 in play is a rim
@@ -520,7 +526,9 @@ def _reset_steals(by_id: dict[str, Event], bug: list[BugEvent], cfg: FusionConfi
     ``reset_make_after_s`` after it, it is a change of possession in play: the ball was stolen. The camera names the
     teams (the engine's team labels flip too easily around a steal): the team attacking the half it aims at on the
     reset lost the ball, and the camera has to leave that half (as for a defensive rebound) within
-    ``rebound_window_s``: a steal of the other team and a turnover of that one."""
+    ``rebound_window_s``: a steal of the other team and a turnover of that one. A rim touch looks the same when the
+    engine missed the shot, so the shot clock must also count at once (``_counts_at_once``: the thief has the ball,
+    while after a rim touch the 24 holds as long as the ball is loose)."""
     cur = sorted(by_id.values(), key=lambda e: e.t)
     scores = [b for b in bug if b.kind == "score"]
     lo, hi = cfg.reset_window_s
@@ -535,6 +543,8 @@ def _reset_steals(by_id: dict[str, Event], bug: list[BugEvent], cfg: FusionConfi
         if any(e.kind is EventKind.SHOT_ATTEMPT and r.t - cfg.rebound_window_s <= e.t <= r.t for e in cur) \
                 or any(e.kind in (EventKind.SHOT_MADE, EventKind.SHOT_MISSED) and lo <= e.t - r.t <= hi for e in cur):
             continue  # a shot's rim touch, rebound or block
+        if not _counts_at_once(r, bug):
+            continue  # the 24 held: a loose ball after a rim touch (a shot the engine did not see), not a steal
         lost, side = attacker(r.t)
         if lost is None or side is None or direction.leaves(side, r.t, r.t + cfg.rebound_window_s,
                                                              cfg.oreb_hold_s) is None:
