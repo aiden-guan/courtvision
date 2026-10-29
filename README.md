@@ -257,7 +257,7 @@ play-by-play (research use; how it works: [docs/NBA.md](docs/NBA.md)). Measureme
 | What | Result | Measured on |
 |---|---|---|
 | Ball found within 15 px | **95.7%** (3.5% wrong, 0.8% missed); earlier student 88.3%, RF-DETR Nano starter 25.8% | 256 labelled frames of held-out teacher clips |
-| Court registration, no clicks | 22,160 of 26,103 Q1 frames tracked (most of the rest are replays, close-ups and cut-aways) | first quarter |
+| Court registration, no clicks | of 26,103 frames: 22,160 tracking, 44 held, 173 re-acquired, 3,726 without the court (not in view or not found) | first quarter |
 | Points, field goals made, threes made | exact for both teams (from the scorebug) | first quarter and the full scorebug scan |
 | Box score, 13 stats x 2 teams | sum of absolute count errors / sum of true counts: 0.305 before the fusion work, **0.068** after (13 of 190 counts off) | first quarter: **in-sample**, the quarter the fusion rules were developed on |
 
