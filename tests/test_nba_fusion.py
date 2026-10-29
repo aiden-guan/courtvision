@@ -743,3 +743,76 @@ def test_inferred_miss_takes_its_value_from_the_last_dribble_but_not_after_a_pas
     near = [Event("d1", EventKind.DRIBBLE, 27.5, 0, team=AWAY, player_id="a1", x=80.0, y=25.0)]  # in the lane: 2
     miss3 = of(fuse(near, [BugEvent(30.0, "reset24", shot_clock_before=9.0)], cfg, court=NBA), EventKind.SHOT_MISSED)[0]
     assert miss3.value == 2 and miss3.attrs["value_from"] == "ball handler"
+
+
+# --------------------------------------------------------------------------- fusion: restarts, whistles, free throws
+
+
+def stoppage(stop: float, start: float, clock: float = 300.0) -> list[BugEvent]:
+    return [BugEvent(stop, "clock_stop", game_clock=clock), BugEvent(start, "clock_start", game_clock=clock - 1.0)]
+
+
+def test_a_reset_as_play_resumes_infers_no_field_goal_miss() -> None:
+    # free throws from 100 s to 140 s: the last one missed, the defence rebounds and the clock starts at 140 s
+    ev = [Event("p1", EventKind.POSSESSION, 90.0, 0, team=HOME)]
+    bug = stoppage(100.0, 140.0) + [BugEvent(125.0, "score", HOME, 1), BugEvent(140.4, "reset24", shot_clock_before=9.0),
+                                    BugEvent(170.0, "reset14", shot_clock_before=5.0)]
+    cfg = only("rim_misses", "oreb_misses", "restart_guard")
+    on = fuse(ev, [*bug, BugEvent(141.0, "reset14", shot_clock_before=24.0)], cfg)
+    assert [e.t for e in of(on, EventKind.SHOT_MISSED)] == [168.5]  # only the live-ball 14 at 170 s
+    off = fuse(ev, bug, dataclasses.replace(cfg, restart_guard=False))
+    assert [e.t for e in of(off, EventKind.SHOT_MISSED)] == [140.4, 168.5]
+
+
+def test_no_rebound_is_inferred_for_a_miss_with_a_whistle_right_after_it() -> None:
+    ev = shot("s1", 49.0, 50.0, HOME)
+    bug = SIDES + [BugEvent(51.5, "clock_stop", game_clock=300.0)]  # out of bounds: a team rebound
+    out = fuse(ev, bug, only("rebounds", "no_rebound_at_whistle"), direction=DREB, periods=PERIODS)
+    assert of(out, EventKind.REBOUND) == []
+    kept = fuse(ev, bug, only("rebounds"), direction=DREB, periods=PERIODS)
+    assert len(of(kept, EventKind.REBOUND)) == 1
+
+
+def test_free_throw_rebound_from_the_reset_as_play_resumes() -> None:
+    cfg = only("ft_rebounds")
+    base = stoppage(100.0, 140.0) + [BugEvent(125.0, "score", HOME, 1)]
+    dreb = of(fuse([], [*base, BugEvent(140.4, "reset24", shot_clock_before=9.0)], cfg), EventKind.REBOUND)
+    assert [(r.t, r.team, r.attrs["offensive"], r.attrs["fused"]) for r in dreb] == [
+        (140.0, AWAY, False, "free-throw rebound")]
+    oreb = of(fuse([], [*base, BugEvent(141.0, "reset14", shot_clock_before=24.0)], cfg), EventKind.REBOUND)
+    assert [(r.team, r.attrs["offensive"]) for r in oreb] == [(HOME, True)]
+    # a made last free throw: the 24 is set during the stoppage, long before the inbound starts the clock
+    made = [*base, BugEvent(128.0, "reset24", shot_clock_before=9.0)]
+    assert of(fuse([], made, cfg), EventKind.REBOUND) == []
+    # free throws of both teams in one stoppage (technicals): no call
+    both = [*base, BugEvent(110.0, "score", AWAY, 1), BugEvent(140.4, "reset24", shot_clock_before=9.0)]
+    assert of(fuse([], both, cfg), EventKind.REBOUND) == []
+
+
+# --------------------------------------------------------------------------- fusion: team map
+
+
+def swapped_game(n_swapped: int, n_same: int) -> tuple[list[Event], list[BugEvent]]:
+    """Home baskets every 30 s: the engine's make next to each is labelled away (``n_swapped``) or home."""
+    ev: list[Event] = []
+    bug: list[BugEvent] = []
+    for k in range(n_swapped + n_same):
+        t = 30.0 * k + 10.0
+        ev += shot(f"s{k}", t - 1.0, t, AWAY if k < n_swapped else HOME, made=True)
+        bug.append(BugEvent(t + 2.0, "score", HOME, 2))
+    ev.append(Event("rb", EventKind.REBOUND, 500.0, 0, team=AWAY, player_id="p9", attrs={"offensive": False}))
+    return ev, bug
+
+
+def test_engine_teams_the_other_way_round_are_swapped_from_the_scorebug() -> None:
+    ev, bug = swapped_game(5, 0)
+    out = ids(fuse(ev, bug, only("team_map", "makes")))
+    assert out["rb"].team is HOME and out["rb"].attrs["team_from"] == "scorebug team map"
+    assert all(out[f"s{k}r"].team is HOME and out[f"s{k}a"].team is HOME for k in range(5))
+
+
+def test_team_map_needs_enough_and_clear_votes() -> None:
+    for n_swapped, n_same in ((3, 0), (3, 2)):  # too few votes; not a clear majority
+        ev, bug = swapped_game(n_swapped, n_same)
+        out = ids(fuse(ev, bug, only("team_map", "makes")))
+        assert out["rb"].team is AWAY and "team_from" not in out["rb"].attrs

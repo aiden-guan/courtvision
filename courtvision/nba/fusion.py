@@ -4,6 +4,10 @@ The camera sees who had the ball and where it went; the scorebug knows for certa
 much, and its shot clock resets when the ball touches the rim. Each pass below is switchable (``FusionConfig``)
 so its effect on the box score can be measured on its own:
 
+0. ``team_map``: the engine's HOME / AWAY are jersey clusters, bound to the real teams only when the game's colours
+   are configured (``perception/teams.py``: otherwise the order is arbitrary). The scorebug names the team of
+   every basket: when the engine's own makes at the score changes are mostly of the other team, the engine's
+   labels are swapped throughout.
 1. ``makes``: every confirmed score change is a made basket of that team and value: the nearest engine shot
    result (made or missed, any team) within the window before the bug update is turned into that make (team,
    value; its attempt follows), else an attempt and a make are inferred (no shooter). Engine makes with no score
@@ -43,10 +47,16 @@ so its effect on the box score can be measured on its own:
    attempt is inferred for the team that kept the ball. ``orphan_rebounds`` (first): a rebound recovers a missed
    shot, so an engine rebound whose latest shot result before it is a make (the other team inbounds the ball), or
    that has no shot result within ``rebound_window_s`` before it, is dropped.
-6. ``handler_values`` (off by default: to be measured): an inferred miss (no shot seen, no 3-D flight) takes 2 or 3
+   Resets right at a restart of the game clock (``restart_guard``) are neither: play resumes there after free
+   throws (a missed last one is rebounded as the clock starts) or an inbound.
+6. ``no_rebound_at_whistle``: a miss followed at once by a clock stop (the ball out of bounds, a foul on the
+   rebound) gets no inferred rebound: a team rebound is not in the box score. ``ft_rebounds`` (off by default: to be
+   measured): a reset as play resumes after a team's free throws marks a missed last free throw and its rebound
+   (14: the shooters kept the ball, 24: the defence got it).
+7. ``handler_values`` (off by default: to be measured): an inferred miss (no shot seen, no 3-D flight) takes 2 or 3
    points from where the shooting team last had the ball just before the release (the engine's possession /
    dribble / pass positions), at the basket that team attacks.
-7. ``turnover_resets``: a steal or a turnover hands the ball to the other team, which gets a fresh 24 (NBA rule 7),
+8. ``turnover_resets``: a steal or a turnover hands the ball to the other team, which gets a fresh 24 (NBA rule 7),
    so the shot clock resets to 24 with it, and no shot or score explains that reset (a possession that ends in a shot
    is no turnover). An engine steal or turnover with no such reset near it is dropped. ``deadball_turnovers``: a
    reset to 24 at a stoppage with no shot before it and no free throw in the stoppage (the 24 is often set before
@@ -171,6 +181,9 @@ def attack_sides(scores: list[BugEvent], direction: PlayDirection, lag_s: float)
 
 @dataclass
 class FusionConfig:
+    team_map: bool = True
+    team_map_min_votes: int = 4  # baskets matched to an engine shot of a known team before the labels can swap
+    team_map_share: float = 0.75  # the share of them on the other team that swaps the labels
     makes: bool = True
     ft_trips: bool = True
     rim_misses: bool = True
@@ -178,7 +191,7 @@ class FusionConfig:
     rimless_misses: bool = True  # engine misses the shot clock shows no sign of (no rim touch, no stop) are dropped
     assists: bool = True
     flight_values: bool = True  # misses take 2 / 3 from a 3-D flight that reaches the rim near them
-    handler_values: bool = False  # inferred misses take 2 / 3 from the ball handler's last position (pass 6)
+    handler_values: bool = False  # inferred misses take 2 / 3 from the ball handler's last position (pass 7)
     shot_teams: bool = True
     teams_at_rim: bool = True  # shot_teams: the camera half when the ball reaches the rim (the result), not the release
     rebounds: bool = True
@@ -186,11 +199,16 @@ class FusionConfig:
     oreb_misses: bool = True
     orphan_rebounds: bool = True  # engine rebounds with no miss just before them are dropped (pass 5)
     reset_steals: bool = True  # a reset to 24 in play with no shot before it and the ball changing hands: a steal
-    turnover_resets: bool = True  # engine steals / turnovers need a reset to 24 that no shot explains (pass 7)
-    deadball_turnovers: bool = True  # a reset to 24 at a stoppage with no shot or free throw: a turnover (pass 7)
+    turnover_resets: bool = True  # engine steals / turnovers need a reset to 24 that no shot explains (pass 8)
+    deadball_turnovers: bool = True  # a reset to 24 at a stoppage with no shot or free throw: a turnover (pass 8)
     team_rebounds: bool = False  # bug_rebounds: a clock stop before any possession sign is a team rebound (no player's)
     rebound_window_s: float = 6.0  # the rebound of a miss happens within this
     bug_rebound_window_s: float = 8.0  # the shot clock shows who got the ball within this after the miss
+    restart_guard: bool = True  # resets at a restart of the clock infer no field-goal miss (pass 2)
+    restart_window_s: tuple[float, float] = (-1.5, 3.0)  # reset time - clock start: "at the restart"
+    no_rebound_at_whistle: bool = True  # a miss with a whistle right after it gets no inferred rebound (pass 6)
+    whistle_after_miss_s: float = 2.5  # a clock stop this soon after a miss is that whistle
+    ft_rebounds: bool = False  # a reset as play resumes after free throws: the last one missed, its rebound (pass 6)
     oreb_hold_s: float = 2.0  # the camera must stay in the other half this long to call a defensive rebound
     and_one_window_s: float = 90.0  # a team's basket this soon before its lone free throw (clock stopped): an and-one
     shot_deep_ft: float = 17.0  # a put-back attempt is taken with the camera this deep in the half (not mid-pan)
@@ -207,6 +225,31 @@ class FusionConfig:
     inferred_release_s: float = 1.0  # an inferred attempt is released this long before its rim touch / make
     assist_window_s: float = 3.5
     assist_possession: bool = True  # pass 3: the assist is the last pass in the scorer's possession, any team label
+
+
+def _team_swap(events: list[Event], scores: list[BugEvent], cfg: FusionConfig) -> bool:
+    """Whether the engine's HOME / AWAY are the other way round (pass 0): a score change with exactly one engine make
+    (of a known team) in its make window votes with that make's team against the scorebug's. Engine misses do not
+    vote: next to a basket they are as often the other team's shots."""
+    same = other = 0
+    makes = [e for e in _results(events) if e.kind is EventKind.SHOT_MADE and e.team is not None
+             and e.source != "scoreboard"]
+    for s in scores:
+        if s.team is None:
+            continue
+        tm = s.t - cfg.score_lag_s
+        ft = s.points == 1
+        lo, hi = cfg.ft_window_s if ft else cfg.make_window_s
+        cands = [e for e in makes if _is_ft(e) == ft and lo <= e.t - tm <= hi]
+        if len(cands) != 1:
+            continue
+        c = cands[0]
+        if c.team is s.team:
+            same += 1
+        else:
+            other += 1
+    n = same + other
+    return n >= cfg.team_map_min_votes and other >= cfg.team_map_share * n
 
 
 def _results(events: list[Event]) -> list[Event]:
@@ -283,6 +326,13 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
         attempts[sid] = att
 
     scores = [b for b in bug if b.kind == "score"]
+    if cfg.team_map:
+        swap = _team_swap(list(by_id.values()), scores, cfg)
+        if swap:
+            for e in list(by_id.values()):
+                if e.team is not None:
+                    by_id[e.event_id] = _replace(e, team=e.team.other(), attrs={"team_from": "scorebug team map"})
+            attempts = {sid: by_id.get(a.event_id, a) for sid, a in attempts.items()}
     if cfg.makes:
         used: set[str] = set()
         for s in scores:
@@ -318,6 +368,17 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
         i = int(np.searchsorted(clock_t, t, side="right")) - 1
         return i < 0 or clock[i][1]
 
+    starts = [b.t for b in bug if b.kind == "clock_start"]
+    stops = [b.t for b in bug if b.kind == "clock_stop"]
+
+    def at_restart(t: float) -> bool:
+        """Play resuming: after free throws (a missed last one rebounded) or an inbound, not a field goal's rim."""
+        lo, hi = cfg.restart_window_s
+        return cfg.restart_guard and any(lo <= t - st <= hi for st in starts)
+
+    def in_play(t: float) -> bool:
+        return running(t) and not at_restart(t)
+
     if cfg.rimless_misses:
         _rimless_misses(by_id, attempts, bug, cfg, running)
     sides = attack_sides(scores, direction, cfg.score_lag_s) if direction is not None else {}
@@ -341,12 +402,12 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
         return None, side
 
     if cfg.reset_steals and direction is not None and sides:
-        _reset_steals(by_id, bug, cfg, running, direction, attacker)
+        _reset_steals(by_id, bug, cfg, in_play, direction, attacker)  # play resuming at a restart is no steal
     if cfg.rim_misses:
         cur = sorted(by_id.values(), key=lambda e: e.t)
         for r in (b for b in bug if b.kind == "reset24"):
-            if not running(r.t):
-                continue  # a dead-ball reset (foul, violation, out of bounds), not a rim touch
+            if not running(r.t) or at_restart(r.t):
+                continue  # a dead-ball reset (foul, violation, out of bounds) or play resuming, not a rim touch
             if any(0.0 <= s.t - r.t <= cfg.reset_make_after_s for s in scores):
                 continue  # the reset was a make
             if any(e.kind in (EventKind.TURNOVER, EventKind.STEAL) and abs(e.t - r.t) <= cfg.reset_turnover_s for e in cur):
@@ -363,10 +424,11 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
             add_shot(r.t, possession_at(cur, r.t - cfg.inferred_release_s), 2, False, "shot clock reset (rim touch)")
     if cfg.oreb_misses:
         cur = sorted(by_id.values(), key=lambda e: e.t)
-        stops = [b.t for b in bug if b.kind == "clock_stop"]
         for r in (b for b in bug if b.kind == "reset14"):
-            # a foul or a kicked ball also sets 14, but it stops the game clock
-            if not (running(r.t) and running(r.t + 1.5)) or any(r.t - 0.5 <= t <= r.t + 1.5 for t in stops):
+            # a foul or a kicked ball also sets 14, but it stops the game clock; a missed last free throw's
+            # offensive rebound sets it as the clock starts
+            if not (running(r.t) and running(r.t + 1.5)) or any(r.t - 0.5 <= t <= r.t + 1.5 for t in stops) \
+                    or at_restart(r.t):
                 continue
             if any(e.kind in (EventKind.SHOT_MISSED, EventKind.SHOT_MADE) and r.t - 6.0 <= e.t <= r.t + 0.5
                    for e in cur):
@@ -401,7 +463,9 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
     if cfg.bug_rebounds:
         out, settled = _bug_rebounds(out, bug, cfg, running)
     if cfg.rebounds and sides:
-        out = _fix_rebounds(out, cfg, direction, attacker, settled)  # type: ignore[arg-type]
+        out = _fix_rebounds(out, cfg, direction, attacker, settled, stops)  # type: ignore[arg-type]
+    if cfg.ft_rebounds:
+        out = _ft_rebounds(out, bug, cfg)
     if cfg.handler_values and court is not None:
         out = _handler_values(out, cfg, court, attacker)
     if cfg.turnover_resets or cfg.deadball_turnovers:
@@ -535,7 +599,7 @@ def _reset_steals(by_id: dict[str, Event], bug: list[BugEvent], cfg: FusionConfi
     n_new = 0
     for r in (b for b in bug if b.kind == "reset24"):
         if not running(r.t):
-            continue  # a dead-ball reset: ``deadball_turnovers`` (pass 7)
+            continue  # a dead-ball reset: ``deadball_turnovers`` (pass 8)
         if any(0.0 <= s.t - r.t <= cfg.reset_make_after_s for s in scores):
             continue
         if any(e.kind in (EventKind.TURNOVER, EventKind.STEAL) and abs(e.t - r.t) <= cfg.reset_turnover_s for e in cur):
@@ -559,7 +623,7 @@ def _reset_steals(by_id: dict[str, Event], bug: list[BugEvent], cfg: FusionConfi
 
 
 def _bug_turnovers(events: list[Event], bug: list[BugEvent], cfg: FusionConfig, running: Any) -> list[Event]:
-    """Steals and turnovers from the shot clock (pass 7). The team that gains the ball gets a fresh 24, so a turnover
+    """Steals and turnovers from the shot clock (pass 8). The team that gains the ball gets a fresh 24, so a turnover
     shows as a reset to 24 that no shot explains: no shot result within ``reset_window_s`` of it (the rim touch), no
     score change within ``reset_make_after_s`` after it and, at a stoppage, none since the whistle (the free throws).
     ``turnover_resets``: an engine steal or turnover with no such reset within ``reset_turnover_s`` (of the whistle,
@@ -622,9 +686,10 @@ def _bug_turnovers(events: list[Event], bug: list[BugEvent], cfg: FusionConfig, 
 
 
 def _fix_rebounds(events: list[Event], cfg: FusionConfig, direction: PlayDirection,
-                  attacker: Any, settled: set[str] | None = None) -> list[Event]:
+                  attacker: Any, settled: set[str] | None = None, stops: list[float] | None = None) -> list[Event]:
     """Re-type / re-team the rebound after each missed field goal from where the play goes next (pass 5); misses in
-    ``settled`` (the shot clock decided them) are left alone."""
+    ``settled`` (the shot clock decided them) are left alone. A miss with a clock stop right after it (``stops``;
+    the ball out of bounds, a foul) gets no inferred rebound (``no_rebound_at_whistle``)."""
     out = list(events)
     misses = [e for e in out if e.kind is EventKind.SHOT_MISSED and not _is_ft(e) and not e.attrs.get("blocked_oob")
               and e.event_id not in (settled or set())]
@@ -650,12 +715,53 @@ def _fix_rebounds(events: list[Event], cfg: FusionConfig, direction: PlayDirecti
             r = min(rebs, key=lambda e: abs(e.t - t_reb))
             if r.team is not reb_team or bool(r.attrs.get("offensive")) != offensive:
                 out[out.index(r)] = _replace(r, team=reb_team, attrs={"offensive": offensive, "fused": "play direction"})
+        elif cfg.no_rebound_at_whistle and any(m.t - 0.5 <= t <= m.t + cfg.whistle_after_miss_s for t in stops or ()):
+            continue  # out of bounds or a foul: a team rebound, not in the box score
         else:
             n_new += 1
             out.append(Event(f"fuse-reb{n_new}", EventKind.REBOUND, min(m.t + 1.5, max(m.t + 0.5, t_reb)), m.frame_idx,
                              team=reb_team,
                              player_id=f"{reb_team.value}-unknown", confidence=0.5, source="cv",
                              attrs={"offensive": offensive, "fused": "play direction", "inferred": True}))
+    out.sort(key=lambda e: e.t)
+    return out
+
+
+def _ft_rebounds(events: list[Event], bug: list[BugEvent], cfg: FusionConfig) -> list[Event]:
+    """The rebound of a missed last free throw (pass 6): a stoppage in which one team made free throws, ended by a
+    restart of the clock with a shot-clock reset at it (``restart_window_s``). After a made last free throw the
+    reset to 24 comes during the stoppage, before the inbound; after a missed one, at the rebound, which starts the
+    clock: 14 when the shooters kept the ball (offensive), 24 when the defence got it."""
+    out = list(events)
+    made_ft = [b for b in bug if b.kind == "score" and b.points == 1 and b.team is not None]
+    stops = sorted(b.t for b in bug if b.kind == "clock_stop")
+    resets = sorted((b for b in bug if b.kind in ("reset24", "reset14")), key=lambda b: b.t)
+    lo, hi = cfg.restart_window_s
+    n_new = 0
+    for st in sorted(b.t for b in bug if b.kind == "clock_start"):
+        stop = max((t for t in stops if t < st), default=None)
+        if stop is None:
+            continue
+        fts = [b for b in made_ft if stop - 1.0 < b.t <= st + 1.0]
+        teams = {b.team for b in fts}
+        r = next((b for b in resets if lo <= b.t - st <= hi), None)
+        if len(teams) != 1 or r is None:
+            continue  # no free throws, both teams shot (technicals), or no sign of a rebound
+        team = fts[0].team
+        assert team is not None
+        offensive = r.kind == "reset14"
+        reb_team = team if offensive else team.other()
+        rebs = [e for e in out if e.kind is EventKind.REBOUND and -2.0 <= e.t - st <= 2.0]
+        if rebs:
+            rb = min(rebs, key=lambda e: abs(e.t - st))
+            if rb.team is not reb_team or bool(rb.attrs.get("offensive")) != offensive:
+                out[out.index(rb)] = _replace(rb, team=reb_team, attrs={"offensive": offensive,
+                                                                       "fused": "free-throw rebound"})
+            continue
+        n_new += 1
+        out.append(Event(f"fuse-ftreb{n_new}", EventKind.REBOUND, st, 0, team=reb_team,
+                         player_id=f"{reb_team.value}-unknown", confidence=0.5, source="cv",
+                         attrs={"offensive": offensive, "fused": "free-throw rebound", "inferred": True}))
     out.sort(key=lambda e: e.t)
     return out
 
@@ -762,7 +868,7 @@ def _flight_values(by_id: dict[str, Event], attempts: dict[str, Event], flights:
 
 
 def _handler_values(events: list[Event], cfg: FusionConfig, court: Any, attacker: Any) -> list[Event]:
-    """2 or 3 points for inferred misses from the shooting team's last ball position before the release (pass 6):
+    """2 or 3 points for inferred misses from the shooting team's last ball position before the release (pass 7):
     the dribbler's or the new possessor's position (not after a pass: its event carries the passer's); the basket
     is the one the camera says that team attacks, else the nearer one."""
     out = list(events)

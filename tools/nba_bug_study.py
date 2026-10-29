@@ -5,7 +5,9 @@ checked on a real game (research use; docs/NBA.md).
 
     .venv/bin/python tools/nba_bug_study.py runs/nba/<game> [--start S --end S] [--split S]
 
-For each kind (``reset24`` split by whether the game clock runs, ``reset14`` likewise, ``run24``) it counts the true
+For each kind (``reset24`` split by whether the game clock runs, stops or has just restarted (within
+``FusionConfig.restart_window_s`` of a clock start: play resuming after free throws or an inbound), ``reset14``
+likewise, ``run24``) it counts the true
 action nearest to the event in a window: missed / made field goal, missed / made free throw, offensive / defensive /
 team rebound, steal, turnover, block, foul, or none. It also gives the time from a running ``reset24`` to the next
 ``run24`` for each of the true causes (a rim touch then a defensive rebound waits for the rebound; a steal starts
@@ -92,13 +94,20 @@ def is_fg_miss(a) -> bool:  # noqa: ANN001
 
 def kinds(bug: list[BugEvent], acts: list, running) -> dict:  # noqa: ANN001
     """The true action next to each shot-clock event (``counts``) and the running reset24 -> run24 times."""
+    starts = [b.t for b in bug if b.kind == "clock_start"]
+    lo_r, hi_r = FusionConfig().restart_window_s
+
+    def state(t: float) -> str:
+        if any(lo_r <= t - s <= hi_r for s in starts):
+            return "restart"
+        return "running" if running(t) else "stopped"
     counts: dict[str, Counter] = defaultdict(Counter)
     gaps: dict[str, list[float]] = defaultdict(list)
     runs = [b.t for b in bug if b.kind == "run24"]
     for b in bug:
         if b.kind not in WINDOWS:
             continue
-        key = b.kind if b.kind == "run24" else f"{b.kind} ({'running' if running(b.t) else 'stopped'})"
+        key = b.kind if b.kind == "run24" else f"{b.kind} ({state(b.t)})"
         a, z = WINDOWS[b.kind]
         near = [(t, c) for t, c, _ in acts if a <= t - b.t <= z]
         if b.kind == "run24":
@@ -107,7 +116,7 @@ def kinds(bug: list[BugEvent], acts: list, running) -> dict:  # noqa: ANN001
         else:
             cause = min(near, key=lambda r: abs(r[0] - b.t))[1] if near else "none"
         counts[key][cause] += 1
-        if b.kind == "reset24" and running(b.t):
+        if b.kind == "reset24" and state(b.t) == "running":
             nxt = next((t for t in runs if 0.0 < t - b.t <= 6.0), None)
             if nxt is not None:
                 gaps[cause].append(round(nxt - b.t, 2))
