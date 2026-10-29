@@ -24,7 +24,9 @@ so its effect on the box score can be measured on its own:
    put-back basket of the shooting team decides an offensive or a defensive rebound; such misses are settled before
    the camera's pass, which handles the rest. ``oreb_misses``: a reset to 14 while the game clock runs, with no shot
    just before it, is an offensive rebound of a miss nobody saw: a missed attempt is inferred for the team that kept
-   the ball.
+   the ball. ``orphan_rebounds`` (first): a rebound recovers a missed shot, so an engine rebound whose latest shot
+   result before it is a make (the other team inbounds the ball), or that has no shot result within
+   ``rebound_window_s`` before it, is dropped.
 6. ``handler_values`` (off by default: to be measured): an inferred miss (no shot seen, no 3-D flight) takes 2 or 3
    points from where the shooting team last had the ball just before the release (the engine's possession /
    dribble / pass positions), at the basket that team attacks.
@@ -160,6 +162,7 @@ class FusionConfig:
     rebounds: bool = True
     bug_rebounds: bool = True
     oreb_misses: bool = True
+    orphan_rebounds: bool = True  # engine rebounds with no miss just before them are dropped (pass 5)
     turnover_resets: bool = True  # engine steals / turnovers need a reset to 24 that no shot explains (pass 7)
     deadball_turnovers: bool = True  # a reset to 24 at a stoppage with no shot before it: a turnover (pass 7)
     rebound_window_s: float = 6.0  # the rebound of a miss happens within this
@@ -343,6 +346,8 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
                     e = _replace(e, team=team, attrs={"team_from": "camera half"})
             fixed.append(e)
         out = fixed
+    if cfg.orphan_rebounds:
+        out = _orphan_rebounds(out, cfg)
     settled: set[str] = set()
     if cfg.bug_rebounds:
         out, settled = _bug_rebounds(out, bug, cfg, running)
@@ -388,6 +393,22 @@ def _set_rebound(out: list[Event], m: Event, nxt_t: float, window_s: float, team
         return
     out.append(Event(new_id, EventKind.REBOUND, t_reb, m.frame_idx, team=team, player_id=f"{team.value}-unknown",
                      confidence=0.5, source="cv", attrs={"offensive": offensive, "fused": why, "inferred": True}))
+
+
+def _orphan_rebounds(events: list[Event], cfg: FusionConfig) -> list[Event]:
+    """Engine rebounds with nothing to rebound (pass 5): a rebound is the recovery of a missed shot, so the latest
+    shot result at or before it (within ``rebound_window_s``) must be a miss. A rebound right after a make (the
+    other team inbounds the ball) or with no shot before it is dropped."""
+    results = sorted(_results(events), key=lambda e: e.t)
+    rt = np.array([e.t for e in results])
+    out = []
+    for e in events:
+        if e.kind is EventKind.REBOUND:
+            i = int(np.searchsorted(rt, e.t, side="right")) - 1
+            if i < 0 or results[i].kind is not EventKind.SHOT_MISSED or e.t - results[i].t > cfg.rebound_window_s:
+                continue
+        out.append(e)
+    return out
 
 
 def _bug_rebounds(events: list[Event], bug: list[BugEvent], cfg: FusionConfig,

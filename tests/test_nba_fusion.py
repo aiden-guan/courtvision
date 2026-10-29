@@ -563,6 +563,17 @@ def test_each_miss_takes_only_the_signs_before_the_next_miss() -> None:
     assert [(r.team, r.attrs["offensive"]) for r in reb] == [(HOME, True), (AWAY, False)]
 
 
+def test_engine_rebound_after_a_make_or_with_no_miss_just_before_it_is_dropped() -> None:
+    def reb(eid: str, t: float, team: Team) -> Event:
+        return Event(eid, EventKind.REBOUND, t, 0, team=team, player_id=f"{team.value}-1", attrs={"offensive": False})
+
+    ev = [reb("rb0", 20.0, HOME)]  # no shot before it
+    ev += shot("s1", 49.0, 50.0, HOME, made=True) + [reb("rb1", 51.0, AWAY)]  # after a make: the inbound
+    ev += shot("s2", 69.0, 70.0, AWAY) + [reb("rb2", 71.0, HOME), reb("rb3", 78.0, HOME)]  # rb3: 8 s after the miss
+    out = fuse(ev, [], only("orphan_rebounds"))
+    assert [e.event_id for e in of(out, EventKind.REBOUND)] == ["rb2"]
+
+
 def test_reset_to_14_with_no_shot_seen_infers_a_miss_and_its_offensive_rebound() -> None:
     ev = [Event("p1", EventKind.POSSESSION, 40.0, 0, team=AWAY), Event("p2", EventKind.DRIBBLE, 45.0, 0, team=AWAY)]
     bug = [BugEvent(48.0, "reset14", shot_clock_before=6.0)]
