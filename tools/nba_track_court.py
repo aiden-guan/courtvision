@@ -43,6 +43,31 @@ from courtvision.perception.scorebug_ocr import ESPN_2024  # noqa: E402
 ESPN_EXCLUDE = [(ESPN_2024.logo_box[0] - 10, ESPN_2024.ocr_box[1] - 6, 1000, 125)]  # the bug and its lower row
 
 
+def bug_exclude(scorebug_path: str) -> list[tuple[int, int, int, int]]:
+    """Boxes (x, y, w, h of a 1920x1080 frame) the court evidence ignores: the scorebug ``nba_scan_scorebug.py``
+    found for this video (``scorebug_profile.json`` beside its reads), with a margin of half its height above and
+    below for a second row; else the ESPN 2024 bug."""
+    from courtvision.perception.scorebug_layout import load_profile
+
+    path = Path(scorebug_path).with_name("scorebug_profile.json")
+    if not path.is_file():
+        return ESPN_EXCLUDE
+    try:
+        prof = load_profile(path)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"warning: {path}: {exc}; masking the ESPN 2024 bug", file=sys.stderr, flush=True)
+        return ESPN_EXCLUDE
+    if prof.name == ESPN_2024.name:
+        return ESPN_EXCLUDE
+    sx, sy = 1920.0 / prof.ref_size[0], 1080.0 / prof.ref_size[1]
+    out = []
+    for x, y, w, h in (prof.ocr_box, prof.logo_box):
+        mx, my = 10.0, 0.5 * h
+        out.append((int(round((x - mx) * sx)), int(round((y - my) * sy)), int(round((w + 2 * mx) * sx)),
+                    int(round((h + 2 * my) * sy))))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video")
@@ -69,7 +94,7 @@ def main() -> int:
         print(f"warning: --stride {args.stride} leaves {args.stride - 1} frames between tracked frames; the camera "
               f"track fills gaps of up to {fill} at {fps:.2f} fps, so no two tracked frames would be joined",
               file=sys.stderr, flush=True)
-    cfg = BroadcastTrackerConfig(evidence=EvidenceConfig(exclude=ESPN_EXCLUDE))
+    cfg = BroadcastTrackerConfig(evidence=EvidenceConfig(exclude=bug_exclude(args.scorebug)))
     rows = [json.loads(line) for line in open(args.scorebug)]
     if args.center:
         center = np.array([float(v) for v in args.center.split(",")])
