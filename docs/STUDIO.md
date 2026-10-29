@@ -4,10 +4,36 @@ Run `.venv/bin/python -m courtvision studio --open`, or double-click `Start Cour
 The default address is `http://127.0.0.1:8000`. The server binds localhost; a non-loopback bind requires
 `--auth-token`. Enter the token in dashboard settings. Detector setup is an explicit action from Start analysis.
 
-Select a person in **Tracked people** to highlight their brackets and dim other person tracks.
-**All tracks** restores the full overlay; **Tracking** switches to clean footage. The labels show detector
-confidence, not identity confidence. The bottom marker is the bounding-box base, not a measured joint.
+Select a person under **People** in the Live side panel to highlight their brackets and dim other person tracks.
+**Show all tracks** restores the full overlay; the **Tracking overlay** switch shows clean footage. The labels show
+detector confidence, not identity confidence. The bottom marker is the bounding-box base, not a measured joint.
 Simulator players are labelled separately and cannot be selected as camera detections.
+
+## Finding your way around
+
+The sidebar holds the views: **Live** (footage, the court lens, team comparison, and plays / people / narration /
+insights in the side panel), **Box score** (player lines, shot chart, decision grades), **Board** (pinned answers),
+**Game controls** (score and clock override, playback, substitutions), **Court mapping**, **Scoreboard** and
+**Model lab**. Press `⌘K` (or `/`) to ask a question or run any command; `G` then `L`, `S`, `B`, `C`, `M`, `R` or `T`
+opens a view; `?` lists every shortcut.
+
+The **court lens** draws the mapped floor in perspective. Players stand on their floor position with their number;
+the ball is drawn at its tracked height (feet) with a floor shadow, so 3-D ball flights read as arcs. Drag to orbit,
+double-click to reset, or pick the broadcast, overhead or baseline camera. Hover a player for their position and
+speed; click for their card.
+
+**Ask** answers on this Mac from the live game: team comparisons, leaders by stat, shot charts, player cards,
+momentum, the review queue, tracking health and the training loop. Answers are cards built from live data blocks:
+pin one to the Board and it keeps updating as the game runs. With Anthropic credentials (`scripts/mac/courtvision.sh
+keys`), `⌘↵` sends a question to Claude (`claude-opus-5-5`, low effort), which chooses the blocks and writes a short
+summary from a snapshot of the game; its numbers on the card still come from the game data. Questions the device
+cannot place go to Claude automatically when a key is set. Each Claude answer is a billed API request.
+
+The **Model lab** reads the NBA learning loop (the data of `tools/nba_loop.py status` and `next`). **Run next step**
+starts `tools/nba_loop.py run --max-steps 1`; **Run every ready step** runs the loop until nothing is ready. Both apply
+the loop's guards: a step does not start while another CourtVision job runs or with less than 25% of memory free,
+and the watchdog stops it below 8%. **Stop** sends the loop its interrupt, which stops the step's whole process tree.
+Logs go to `runs/nba/logs/studio-loop-*.log`. Closing the Studio stops a run it started.
 
 ## Jev setup
 

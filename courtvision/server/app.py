@@ -539,6 +539,10 @@ def create_app(
 
     _register_reads(app, hub, cfg, controller, Depends(require_read))
     _register_writes(app, hub, cfg, controller, Depends(require_write))
+    from courtvision.server.ask import Asker, register_ask
+
+    app.state.asker = Asker(hub)
+    register_ask(app, app.state.asker, Depends(require_read), Depends(require_write))
     _register_ws(app, hub, cfg, token)
     _register_static(app, static_dir)
     return app

@@ -5,6 +5,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Studio redesign: court lens, Ask and the model lab
+
+- Rebuilt the Studio dashboard as a keyboard-first workspace: a sidebar with seven views (Live, Box score, Board,
+  Game controls, Court mapping, Scoreboard, Model lab), a broadcast-style scorebug with a draining shot clock, and a
+  Live view with the camera monitor, a score-margin timeline, the court lens and a side panel for plays, people,
+  narration and insights. Graphite chrome; colour comes only from the teams, the ball and status. Light and dark.
+  Local Archivo and IBM Plex Mono type; `static/studio.css` is folded into `static/styles.css`.
+- Added the court lens (`static/lens.js`): the tracked floor in perspective as a lit night arena, players as pins with
+  trails, and the ball drawn at its tracked height with a shadow and flight trail. Drag to orbit; broadcast, overhead
+  and baseline cameras. The empty stage runs the same lens on a scripted possession.
+- Added generative cards (`static/genui.js`): ⌘K / `/` opens Ask, which runs commands or answers questions about the
+  game as live cards built from typed blocks (team duel, leaders, shot chart, plays, player card, momentum, tracking,
+  model lab). Answers are composed on the device; with Anthropic credentials, open questions can go to Claude
+  (`POST /api/ask`, structured output on `claude-opus-5-5` at low effort). Data blocks name live sources, never
+  numbers, so cards cannot show figures the game data does not hold. Cards pin to the Board and stay live. The Live
+  side panel opens with a briefing composed from the workspace state (setup steps, review queue, runs, leaders).
+- Added the model lab (`courtvision/server/lab.py`, `GET /api/lab`): the NBA learning loop's model versions, each
+  game's stages, the next step and its command, free memory, other jobs and the leaderboard. It can start
+  `tools/nba_loop.py run` (one step, or every ready step) with the loop's own memory guard and watchdog, stop it,
+  show its log, and promote a candidate that passes the held-out rule.
+- `G` then a letter switches views; `P`, `M`, `D`, `A`, `O`, `F`, `]` and `?` act anywhere outside text fields.
+- See [the workspace guide](docs/STUDIO.md).
+
+---
+
+## [Unreleased] — NBA broadcasts: analysis, evaluation and the learning loop
+
+- Added NBA broadcast analysis scored against the ESPN box score and play-by-play (research use;
+  [docs/NBA.md](docs/NBA.md)): scorebug reading with Apple Vision, click-free court registration and tracking, a
+  ResNet-18 CenterNet student detector trained on the footage, one ball path with 3-D ballistic fits, and scorebug
+  fusion of the event engine's output.
+- Added the learning loop (`tools/nba_loop.py`): every analysed game is scored and mined for training data, and a
+  model becomes current only when it does better on games it was not fitted on. `nba_mac_jobs.sh` takes
+  `DET_WORKERS` for parallel full-game detection.
+- Any NBA game recording joins with one command (`tools/nba_new_game.py`, or `--batch` for a CSV), from the ESPN
+  event found by date and teams. Scorebug layouts are discovered for any broadcaster (`scorebug_profile.json`, else
+  the ESPN 2024 layout); frame rates (29.97 / 59.94 / 50 fps, variable-rate video) and sizes (720p to 4K) are
+  converted.
+- Scorebug fusion rules: shot-clock resets mark rim touches (a reset that counts at once is a change of possession),
+  engine misses with no sign on the shot clock are dropped, a shot takes the team attacking the camera's half at the
+  rim, rebounds follow the reset to 14 or 24, steals and turnovers need a reset no shot explains, assists take the
+  last pass in the scorer's possession, and `team_map` swaps engine teams the scorebug contradicts. Team rebounds and
+  dead-ball turnovers are off by default: their triggers failed on Q2-Q4.
+- Court tracking masks the scorebug the scan found (`nba_track_court.py --scorebug-profile` names another), reads
+  line evidence only around the projected court, and re-acquires sooner after a loss in play. `tools/court_bench.py`
+  is a fixed-seed synthetic arena benchmark for it; those gains are synthetic only so far.
+- Measured on one game, Lakers @ Warriors (2024-12-25): box-score error 0.305 before the fusion work, **0.068**
+  after, on the first quarter (in-sample: the fusion rules were tuned on it); ball within 15 px on 95.7% of 256
+  held-out labelled frames. See [NBA broadcast accuracy](README.md#nba-broadcast-accuracy).
+
+---
+
 ## [Unreleased] — video studio and round 5
 
 - Made the Mac launcher self-installing: `Start CourtVision.command` now finds or installs Python, builds
@@ -12,12 +64,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   (`scripts/mac/courtvision.sh`).
 - Added `courtvision studio --open` and a Mac launcher: local video upload, actual processed-frame monitor,
   player/ball overlays, pause/speed/restart, saved court setup, recent footage and JSON export.
-- Reworked the dashboard around the footage, with local Manrope typography, a restrained neutral palette,
-  tracking status and a court-landmark guide. Existing operator/stats tools remain available.
+- Reworked the dashboard around the footage, with a restrained neutral palette, tracking status and a
+  court-landmark guide. Existing operator/stats tools remain available.
 - Added streamed uploads with decoder validation and existing auth/Origin/Host guards. Separate run folders
   preserve prior outputs; new analyses clear old hub snapshots, events and queued replay messages.
 - Integrated round 5, including pump fakes, transition-confirmed mono steals and reviewed truth3d fixes.
-  Held-out simulator F1: truth3d **0.991**, mono **0.815**, video **0.792**. NBA event accuracy is unmeasured.
+  Held-out simulator F1: truth3d **0.991**, mono **0.815**, video **0.792**. NBA broadcast accuracy is reported in the NBA broadcasts entry.
 - Re-pinned the rendered CLI fixture to a settled-possession window after the simulator flow changed;
   retained its original event assertion. Added workspace integration tests and refreshed timing documentation.
 - See [workspace validation and limitations](docs/STUDIO.md).

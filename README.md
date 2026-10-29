@@ -305,20 +305,24 @@ courtvision studio --open
 On a Mac, double-click **`Start CourtVision.command`** instead. The workspace opens at
 [localhost:8000](http://127.0.0.1:8000/).
 
-1. Choose **Open video**, select an MP4, MOV, MKV or AVI (up to 8 GB), and start analysis.
+1. Choose **Load footage**, select an MP4, MOV, MKV or AVI (up to 8 GB), and **Start analysis**.
    The first run prepares an RF-DETR Nano COCO starter checkpoint (about 350 MB). The footage stays local.
-2. Watch player/ball overlays on the actual processed frame. Pause, resume, adjust speed, or expand the monitor.
-3. Use **Court setup** to freeze a frame and mark at least four known floor landmarks. The reference diagram
-   identifies the selected point. Apply setup and resume; setup is saved with this video.
-4. Review the play-by-play and box score. Use **Game controls** for score, lineup, and event corrections.
-   **Export analysis** downloads the current events, stats, transcript, and timing report as JSON.
+2. Watch player/ball overlays on the actual processed frame and the court lens. Pause, resume, adjust speed, or
+   expand the game feed.
+3. Use **Court mapping** (or **Map court**) to match at least four well-spread floor landmarks on a frozen frame.
+   The reference diagram identifies the selected point. **Apply mapping** and resume; the mapping is saved with
+   this video.
+4. Review the plays and the **Box score**. Use **Game controls** for score, lineup, and event corrections.
+   **Export** downloads the current events, stats, transcript, and timing report as JSON.
 
-**Explore the demo** runs a clearly labelled simulated game without downloading a detector. Recent footage
-can be reopened; previous run outputs stay in separate `runs/studio/analyses/` folders.
+**Run the demo game** runs a clearly labelled simulated game without downloading a detector. Recent footage
+can be reopened; previous run outputs stay in separate `runs/studio/analyses/` folders. Press `⌘K` (or `/`) to
+ask about the game or run any command; the [workspace guide](docs/STUDIO.md) covers the views, Ask and the model lab.
 
-The starter model detects generic people and sports balls. It does not automatically identify NBA players,
-read arbitrary TV scorebugs, distinguish every replay, or produce official statistics. A basketball-trained
-checkpoint, validated identity/scoreboard setup, and labelled real-game evaluation are still needed for that.
+The starter model detects generic people and sports balls. It does not identify NBA players, distinguish every
+replay, or produce official statistics. The NBA broadcast pipeline ([docs/NBA.md](docs/NBA.md)) adds a
+basketball-trained detector, click-free court registration and scorebug reading; it has been measured on one game
+so far (see [NBA broadcast accuracy](#nba-broadcast-accuracy)).
 Jev and Claude are optional; missing keys leave local rule-based decisions and template commentary available.
 
 ### Running the Stack
@@ -401,7 +405,8 @@ Jev and Claude are optional; missing keys leave local rule-based decisions and t
 
 ### Application Server & UI
 - **Server**: FastAPI, Uvicorn, Asynchronous WebSockets
-- **Dashboard**: HTML5 Canvas top-down court visualization, responsive event stream, real-time stat cards
+- **Dashboard**: HTML5 Canvas court lens (the tracked floor in perspective, players and the ball at its height),
+  responsive event stream, real-time stat cards, Ask answer cards and the model lab
 
 ---
 
@@ -457,7 +462,7 @@ CourtVision has 2,075 deterministic, network-free tests (6 more skip when option
 ## Limitations
 
 - **Simulator-Scored Baseline**: Current benchmark numbers are derived from the seeded simulator and synthetic renderer. Accuracy on arbitrary in-the-wild handheld footage is unmeasured.
-- **Starter detector and NBA broadcasts**: Upload/playback, generic detections and manual court setup are usable locally. Automatic NBA identity, scorebug OCR and replay recognition are not validated. Ball occlusion, camera changes and tiny broadcast balls can suppress or misclassify events. The studio's statistics are estimates for review.
+- **Starter detector and NBA broadcasts**: Upload/playback, generic detections and manual court mapping are usable locally. Automatic NBA identity and replay recognition are not validated; scorebug reading and click-free court registration have been measured on one ESPN game only ([NBA broadcast accuracy](#nba-broadcast-accuracy)). Ball occlusion, camera changes and tiny broadcast balls can suppress or misclassify events. The studio's statistics are estimates for review.
 - **Fixed-Camera Assumption**: The homography model assumes a fixed camera position or a calibrated pan/tilt/zoom head with fixed center. Unconstrained dynamic camera motion breaks the planar homography.
 - **Monocular Occlusion Challenges**: In single-camera footage without stereoscopic height estimation, steals, turnovers, and blocks remain challenging (held-out mono F1, round 4: steals 0.50, turnovers 0.68, blocks 0.27). One camera cannot tell a ball high over the shooter from one in the box of a player behind him on the same camera ray, nor a pump fake that draws a defender's jump from a shot he turns back (both recorded as strict expected-failure tests); the hold-time block path for a shot swatted straight back into the shooter's hands is therefore off by default (`hold_block_confirm_s`).
 - **Video Compression Artifacts**: Lossy H.264 compression degrades ball detection accuracy compared to lossless FFV1 encoding.

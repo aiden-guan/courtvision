@@ -7,6 +7,7 @@
   let isStudio = true, lastVideoKey = "", processedT = 0;
   let lastMonitorKey = "";
   let focusedTrack = "", trackKey = "";
+  let notice = { message: "", calibration: false };
   const headers = extra => {
     let token = "";
     try { token = sessionStorage.getItem("cv-token") || ""; } catch { /* optional */ }
@@ -25,6 +26,7 @@
     const sec = Math.max(0, Math.floor(value));
     return `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
   };
+  const changed = () => window.dispatchEvent(new CustomEvent("cv-studio"));
   async function api(path, data) {
     const response = await fetch(path, {
       method: data === undefined ? "GET" : "POST", headers: headers(data === undefined ? {} : { "Content-Type": "application/json" }),
@@ -38,15 +40,11 @@
     }
     return result;
   }
+  // Workspace notices are composed into the briefing (static/genui.js), not a banner.
   function notify(message, calibration = false) {
-    const notice = $("studio-notice");
-    notice.replaceChildren(document.createTextNode(message));
-    if (calibration) {
-      const button = document.createElement("button");
-      button.type = "button"; button.textContent = "Map court";
-      button.addEventListener("click", setupCourt); notice.append(button);
-    }
-    notice.hidden = !message;
+    if (notice.message === message && notice.calibration === calibration) return;
+    notice = { message: message || "", calibration };
+    changed();
   }
   function uploadStatus(message, error = false) {
     text("studio-upload-status", message);
@@ -58,10 +56,10 @@
   }
   function chooseFile(file) {
     if (!file || busy) return;
-    if (file.size > 8 * 1024 ** 3) { uploadStatus("This video exceeds 8 GB. Trim it into smaller clips.", true); return; }
+    if (file.size > 8 * 1024 ** 3) { uploadStatus("This video is over 8 GB. Trim it into shorter clips.", true); return; }
     selected = file;
     text("studio-filename", file.name);
-    text("studio-file-detail", `${(file.size / 1024 ** 2).toFixed(1)} MB · Ready to analyze`);
+    text("studio-file-detail", `${(file.size / 1024 ** 2).toFixed(1)} MB · ready to analyse`);
     $("studio-start").disabled = false;
     uploadStatus("");
   }
@@ -76,22 +74,22 @@
     if (Number.isFinite(status.speed)) $("studio-speed").value = String(status.speed);
     document.body.classList.toggle("has-session", hasActive);
     document.body.dataset.analysis = !hasActive ? "" : status.finished ? "complete" : status.paused ? "paused" : "live";
-    const label = status.finished ? "Analysis complete" : status.paused ? "Analysis paused" : "Analysis in progress";
-    text("studio-session-label", label);
+    text("studio-session-label", status.finished ? "Analysis complete" : status.paused ? "Paused" : "Analysing");
     if (Number.isFinite(status.t)) processedT = status.t;
     text("studio-time", clock(processedT));
     const duration = workspace?.active?.duration_s;
     if (duration) progress(Math.min(100, processedT / duration * 100));
     if (status.finished) { progress(100); text("studio-throughput", "Analysis complete"); }
     if (status.error || workspace?.error) notify(status.error || workspace.error);
-    else if (status.finished && status.needs_calibration) notify("Tracking complete. Reopen this video and map the court to produce spatial events and statistics.");
+    else if (status.finished && status.needs_calibration) notify("Tracking complete. Reopen this video and map the court to produce spatial plays and statistics.");
     else if (status.needs_calibration && !workspace?.active?.demo) {
-      notify("Image tracking is active. Map at least four court landmarks to enable spatial events and statistics.", true);
+      notify("Image tracking is running. Map at least four court landmarks to unlock spatial plays and statistics.", true);
     } else if (hasActive && !workspace?.active?.demo && lastVision?.calibrated) {
       notify(lastVision.gate && lastVision.gate !== "live" ?
-        "Court is out of view. Spatial events are paused until the game camera returns." :
-        "Estimated events · Generic detector · Verify team assignments, player identities and scoreboard. Replays need review.");
-    } else if (workspace?.active?.demo) notify("Simulator demo · This game demonstrates the workspace using synthetic tracking and event data.");
+        "The court is out of view. Spatial plays pause until the game camera returns." :
+        "Estimated plays from a generic detector. Verify teams, player identities and the scoreboard; replays need review.");
+    } else if (workspace?.active?.demo) notify("Simulator demo: synthetic tracking and plays that show the workspace.");
+    changed();
   }
   function receiveVision(vision) {
     if (!vision || !Number.isFinite(vision.people)) return;
@@ -101,7 +99,7 @@
     if (!vision.calibrated) setVision("vision-court", "Needs setup", "warn");
     else if (vision.gate && vision.gate !== "live") setVision("vision-court", "Out of view", "warn");
     else setVision("vision-court", "Mapped", "good");
-    text("studio-throughput", Number.isFinite(vision.fps) ? `${vision.fps.toFixed(1)} frames/s · ${Math.round(vision.inference_ms)} ms` : "Analyzing");
+    text("studio-throughput", Number.isFinite(vision.fps) ? `${vision.fps.toFixed(1)} fps · ${Math.round(vision.inference_ms)} ms` : "Analysing");
     renderTracks(vision.tracks || []);
   }
   function setFocus(id) {
@@ -110,6 +108,7 @@
     if (focusedTrack) $("studio-overlay").checked = true;
     for (const row of $("track-list").children) row.setAttribute("aria-pressed", String(row.dataset.track === focusedTrack));
     lastMonitorKey = "";
+    window.dispatchEvent(new CustomEvent("cv-focus", { detail: { id: focusedTrack } }));
   }
   function renderTracks(tracks, synthetic = false) {
     const ids = tracks.map(track => [track.id, track.team]);
@@ -117,7 +116,7 @@
     text("track-count", String(tracks.length).padStart(2, "0"));
     $("track-empty").hidden = !!tracks.length;
     text("track-instruction", synthetic ? "Simulated player positions from the demo." : "Select a track to highlight it in the feed.");
-    text("track-foot-note", synthetic ? "Simulator data · Not camera detections" : "Image-space tracking · IDs are provisional");
+    text("track-foot-note", synthetic ? "Simulator data · not camera detections" : "Image-space tracking · IDs are provisional");
     if (focusedTrack && !tracks.some(track => track.id === focusedTrack)) setFocus(focusedTrack);
     if (key !== trackKey) {
       trackKey = key;
@@ -130,10 +129,10 @@
         row.dataset.team = track.team || "unknown";
         row.setAttribute("aria-pressed", String(track.id === focusedTrack));
         row.disabled = synthetic || !isStudio;
-        marker.className = "track-marker"; marker.textContent = "⌖"; marker.setAttribute("aria-hidden", "true");
-        name.textContent = track.id;
-        detail.textContent = synthetic ? "Simulated player" : track.team ? `${track.team === "home" ? "Home" : "Away"} · provisional` : "Person · unassigned team";
-        value.className = "track-confidence"; value.title = "Detection confidence; does not verify identity";
+        marker.className = "track-marker"; marker.setAttribute("aria-hidden", "true");
+        name.textContent = track.jersey != null && synthetic ? `#${track.jersey} · ${track.id}` : track.id;
+        detail.textContent = synthetic ? "Simulated player" : track.team ? `${track.team === "home" ? "Home" : "Away"} · provisional` : "Person · team not assigned";
+        value.className = "track-confidence"; value.title = "Detection confidence; it does not verify identity";
         info.append(name, detail); row.append(marker, info, value);
         row.addEventListener("click", () => setFocus(track.id));
         $("track-list").append(row);
@@ -143,15 +142,46 @@
       const confidence = tracks[index].confidence;
       const row = $("track-list").children[index];
       row.lastChild.textContent = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : synthetic ? "SIM" : "—";
-      row.style.setProperty("--conf", Number.isFinite(confidence) ? confidence : 0);
+      row.lastChild.style.setProperty("--conf", Number.isFinite(confidence) ? confidence : 0);
     }
+  }
+  function renderSystem(data) {
+    const model = data.model;
+    const ready = model.state === "ready", loading = model.state === "loading", failed = model.state === "error";
+    $("sys-detector").dataset.tone = ready ? "good" : loading ? "busy" : failed ? "bad" : "idle";
+    text("sys-detector-label", ready ? (model.name || "Detector ready") : loading ? "Preparing detector…" : failed ? "Detector setup failed" : "Detector not prepared");
+    $("sys-detector").title = model.error || model.name || "";
+    text("studio-model-note", ready ? (model.name.includes("COCO") ? "Local detector ready. Generic person and ball detections: review results before using them as statistics." : "Configured local detector ready. Review its detections on this footage.") :
+      loading ? "Preparing the local detector. The first download is about 350 MB." :
+      model.error || "First use prepares a local detector (about 350 MB). Generic player and ball detections need review.");
+    const jevMode = data.status?.jev;
+    const claude = !!data.capabilities?.claude;
+    text("studio-cloud", jevMode === "live" ? "Jev live · local vision" : data.capabilities?.jev ? (claude ? "Jev and Claude keys set" : "Jev key set · next session") : claude ? "Claude key set" : "Local only · no cloud keys");
+    $("sys-cloud").dataset.tone = jevMode === "live" || claude || data.capabilities?.jev ? "good" : "idle";
+  }
+  function renderRecent(data) {
+    const key = JSON.stringify((data.videos || []).map(v => v.id));
+    if (key === lastVideoKey) return;
+    lastVideoKey = key;
+    $("studio-video-list").replaceChildren();
+    for (const video of (data.videos || []).slice(0, 6)) {
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "recent-video"; button.title = `Open ${video.name}`;
+      const thumb = document.createElement("span"), name = document.createElement("span"), duration = document.createElement("span");
+      thumb.className = "rv-thumb"; thumb.setAttribute("aria-hidden", "true");
+      name.className = "rv-name"; name.textContent = video.name.replace(/\.[^.]+$/, "");
+      duration.className = "rv-dur"; duration.textContent = clock(video.duration_s);
+      button.append(thumb, name, duration); button.addEventListener("click", () => queueStart(video.id));
+      $("studio-video-list").append(button);
+    }
+    $("studio-recent").hidden = !(data.videos || []).length;
   }
   function renderWorkspace(data) {
     workspace = data;
     const active = data.active;
     if (!active && activeId) {
       activeId = null; lastStatus = null; lastVision = null; processedT = 0;
-      text("studio-title", "Game studio"); text("studio-subtitle", "Open game footage to start.");
+      text("studio-title", "Game studio");
       text("studio-session-label", "Ready for footage"); text("monitor-source", "No footage open");
       document.body.dataset.analysis = "";
       text("studio-time", "00:00"); text("studio-duration", "--:--"); text("studio-throughput", "Awaiting footage");
@@ -167,8 +197,7 @@
     document.body.classList.toggle("has-session", !!active);
     if (active) {
       text("studio-title", active.name.replace(/\.[^.]+$/, ""));
-      text("studio-subtitle", active.demo ? "Simulated game · synthetic tracking and events" : "Your footage · analyzed on this Mac");
-      text("monitor-source", active.demo ? "SIMULATOR DEMO" : `${active.width} × ${active.height} · ${Number(active.fps).toFixed(0)} fps source`);
+      text("monitor-source", active.demo ? "Simulator demo" : `${active.width}×${active.height} · ${Number(active.fps).toFixed(0)} fps`);
       text("studio-duration", clock(active.duration_s));
       $("monitor-badge").hidden = false;
       text("monitor-badge", active.demo ? "SIMULATOR DEMO" : "COMPUTER VISION · ESTIMATED");
@@ -180,7 +209,7 @@
         $("studio-loading").hidden = false;
         $("studio-empty").hidden = true;
       }
-    }
+    } else if (!isStudio) $("studio-empty").hidden = true;
     receiveVision(data.vision); receiveStatus(data.status); queueMarks();
     if (active?.demo && data.frame) {
       text("vision-people", (data.frame.players || []).length);
@@ -188,27 +217,11 @@
       setVision("vision-court", "Simulator map", "good");
       renderTracks(data.frame.players || [], true);
     }
-    const model = data.model;
-    text("studio-model-note", model.state === "ready" ? (model.name.includes("COCO") ? "Local detector ready · Generic person and ball detections. Review results before using them as statistics." : "Configured local detector ready. Review its detections on this footage.") :
-      model.state === "loading" ? "Preparing the local detector. The first download is about 350 MB." :
-      model.error || "First use prepares a local detector (about 350 MB). Generic player and ball detections need review.");
-    const jevMode = data.status?.jev;
-    text("studio-cloud", jevMode === "live" ? "Jev live mode · Local vision" : data.capabilities.jev ? "Jev key configured · Ready for next session" : "Local vision · Jev key not configured");
-    const key = JSON.stringify((data.videos || []).map(v => v.id));
-    if (key !== lastVideoKey) {
-      lastVideoKey = key;
-      $("studio-video-list").replaceChildren();
-      for (const video of (data.videos || []).slice(0, 8)) {
-        const button = document.createElement("button");
-        button.type = "button"; button.className = "recent-video";
-        const name = document.createElement("span"), duration = document.createElement("span");
-        name.textContent = video.name; duration.textContent = `${clock(video.duration_s)}  ↗`;
-        button.append(name, duration); button.addEventListener("click", () => queueStart(video.id));
-        $("studio-video-list").append(button);
-      }
-      $("studio-recent").hidden = !(data.videos || []).length;
-    }
+    renderSystem(data);
+    renderRecent(data);
+    changed();
   }
+  // The timeline: key-play ticks and the score margin (home above the line, away below).
   function renderMarks() {
     marksQueued = false;
     const duration = workspace?.active?.duration_s, nodes = [];
@@ -220,6 +233,29 @@
       nodes.push(node);
     }
     $("timeline-marks").replaceChildren(...nodes);
+    const svgEl = $("momentum"), series = window.CV ? window.CV.S.margin : [];
+    svgEl.replaceChildren();
+    if (!(duration > 0) || series.length < 2) return;
+    const peak = Math.max(6, ...series.map(([, m]) => Math.abs(m)));
+    const X = t => Math.min(1000, Math.max(0, t / duration * 1000)), Y = m => 12 - (m / peak) * 11;
+    let d = `M${X(series[0][0]).toFixed(1)} 12`;
+    for (let i = 0; i < series.length; i++) {
+      const [t, m] = series[i], next = series[i + 1];
+      d += ` L${X(t).toFixed(1)} ${Y(m).toFixed(2)}`;
+      if (next) d += ` L${X(next[0]).toFixed(1)} ${Y(m).toFixed(2)}`;
+    }
+    const lastT = Math.max(series[series.length - 1][0], processedT);
+    d += ` L${X(lastT).toFixed(1)} ${Y(series[series.length - 1][1]).toFixed(2)} L${X(lastT).toFixed(1)} 12 Z`;
+    const ns = "http://www.w3.org/2000/svg";
+    const mk = (tag, attrs) => { const el = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
+    const defs = mk("defs", {}), clipTop = mk("clipPath", { id: "mom-top" }), clipBot = mk("clipPath", { id: "mom-bot" });
+    clipTop.append(mk("rect", { x: 0, y: 0, width: 1000, height: 12 }));
+    clipBot.append(mk("rect", { x: 0, y: 12, width: 1000, height: 12 }));
+    defs.append(clipTop, clipBot);
+    svgEl.append(defs,
+      mk("path", { d, class: "mom-home", "clip-path": "url(#mom-top)" }),
+      mk("path", { d, class: "mom-away", "clip-path": "url(#mom-bot)" }),
+      mk("line", { x1: 0, x2: 1000, y1: 12, y2: 12, class: "mom-zero" }));
   }
   function queueMarks() { if (!marksQueued) { marksQueued = true; requestAnimationFrame(renderMarks); } }
   function tick() {
@@ -243,8 +279,9 @@
         isStudio = false; document.body.classList.add("has-session");
         text("studio-title", "Game workspace");
         $("studio-empty").hidden = true;
+        changed();
       }
-    } finally { if (!stopped) setTimeout(poll, 1500); }
+    } finally { if (!stopped && isStudio) setTimeout(poll, 1500); }
   }
   async function monitor() {
     try {
@@ -282,12 +319,12 @@
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `api/studio/upload?name=${encodeURIComponent(file.name)}`);
       for (const [key, value] of Object.entries(headers({"Content-Type":"application/octet-stream"}))) xhr.setRequestHeader(key, value);
-      $("studio-upload-progress").hidden = false;
+      $("studio-upload-wrap").hidden = false;
       xhr.upload.onprogress = event => {
         if (event.lengthComputable) {
           const percent = Math.round(event.loaded / event.total * 100);
           $("studio-upload-progress").value = percent;
-          uploadStatus(percent === 100 ? "Checking video…" : `Copying video to your local workspace… ${percent}%`);
+          uploadStatus(percent === 100 ? "Checking the video…" : `Copying the video to this Mac's workspace… ${percent}%`);
         }
       };
       xhr.onload = () => {
@@ -296,7 +333,7 @@
         if (xhr.status >= 200 && xhr.status < 300) resolve(body);
         else reject(new Error(typeof body.detail === "string" ? body.detail : `Upload failed (${xhr.status}).`));
       };
-      xhr.onerror = () => reject(new Error("Upload interrupted. Check that the local server is running and retry."));
+      xhr.onerror = () => reject(new Error("Upload interrupted. Check that the local server is running, then retry."));
       xhr.send(file);
     });
   }
@@ -305,19 +342,20 @@
     busy = true; $("studio-start").disabled = true;
     if (workspace?.model.state !== "ready") {
       pending = id;
-      uploadStatus("Preparing the detector. Your video will open when it is ready.");
+      uploadStatus("Preparing the detector. The video opens when it is ready.");
+      if (!$("studio-dialog").open) window.CV?.toast("Preparing the detector. The video opens when it is ready.");
       try { await api("api/studio/prepare", {}); }
       catch (error) { pending = null; busy = false; $("studio-start").disabled = false; uploadStatus(error.message, true); }
     } else await startVideo(id);
   }
   async function startVideo(id) {
-    uploadStatus("Opening game feed…");
+    uploadStatus("Opening the game feed…");
     try {
       const data = await api("api/studio/start", { video_id:id, home_name:$("studio-home").value,
         away_name:$("studio-away").value, broadcast:$("studio-broadcast").checked });
-      renderWorkspace(data); $("studio-dialog").close(); $("tab-live").click();
-      $("studio-upload-progress").hidden = true; uploadStatus("");
-    } catch (error) { uploadStatus(error.message, true); }
+      renderWorkspace(data); if ($("studio-dialog").open) $("studio-dialog").close(); $("tab-live").click();
+      $("studio-upload-wrap").hidden = true; uploadStatus("");
+    } catch (error) { uploadStatus(error.message, true); window.CV?.toast(error.message, "error"); }
     finally { busy = false; $("studio-start").disabled = !selected; }
   }
   async function setupCourt() {
@@ -325,16 +363,53 @@
     try {
       await api("api/control", { action:"pause" });
       $("tab-calibration").click(); $("btn-cal-load").click();
-      notify("The video is paused. Mark four or more known court points spread across the visible floor. Apply setup, then resume analysis from Live analysis.");
+      window.CV?.toast("Paused. Mark four or more court points spread across the floor, apply, then resume.");
     } catch (error) { notify(error.message); }
   }
+  async function startDemo() {
+    if (busy) return; busy = true; $("studio-demo").disabled = true;
+    try { renderWorkspace(await api("api/studio/start", {demo:true})); $("tab-live").click(); }
+    catch (error) { notify(error.message); window.CV?.toast(error.message, "error"); }
+    finally { busy = false; $("studio-demo").disabled = false; }
+  }
+  async function exportJson() {
+    try {
+      const response = await fetch("api/studio/export", {headers:headers()});
+      if (!response.ok) throw new Error("Export failed. Check the local server and retry.");
+      const url = URL.createObjectURL(await response.blob()), a = document.createElement("a");
+      a.href = url; a.download = "courtvision-analysis.json"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      window.CV?.toast("Analysis exported");
+    } catch (error) { notify(error.message); window.CV?.toast(error.message, "error"); }
+  }
+  async function togglePlay() {
+    if (lastStatus?.finished && workspace?.active) {
+      if (workspace.active.demo) await startDemo();
+      else await queueStart(workspace.active.id);
+      return;
+    }
+    try { const result = await api("api/control", {action:lastStatus?.paused ? "resume" : "pause"}); receiveStatus(result.result); }
+    catch (error) { notify(error.message); }
+  }
+  async function fullscreen() {
+    try { if (document.fullscreenElement) await document.exitFullscreen(); else await $("monitor-screen").requestFullscreen(); }
+    catch { window.CV?.toast("Fullscreen is unavailable in this browser. Enlarge the window instead.", "error"); }
+  }
+
+  window.CVStudio = {
+    get workspace() { return workspace; }, get status() { return lastStatus; }, get vision() { return lastVision; },
+    get notice() { return notice; }, get isStudio() { return isStudio; }, get processedT() { return processedT; },
+    get focus() { return focusedTrack; },
+    openDialog, startDemo, setupCourt, exportJson, togglePlay, fullscreen, queueStart, setFocus,
+    toggleOverlay() { $("studio-overlay").checked = !$("studio-overlay").checked; lastMonitorKey = ""; },
+  };
+
   $("studio-open").addEventListener("click", openDialog);
-  $("studio-settings").addEventListener("click", () => $("btn-settings").click());
   $("studio-clear-focus").addEventListener("click", () => setFocus(focusedTrack));
   $("studio-empty-open").addEventListener("click", openDialog);
   $("studio-close").addEventListener("click", () => $("studio-dialog").close());
   $("studio-file").addEventListener("change", e => chooseFile(e.target.files[0]));
   $("studio-calibrate").addEventListener("click", setupCourt);
+  $("studio-overlay").addEventListener("change", () => { lastMonitorKey = ""; });
   $("studio-form").addEventListener("submit", async event => {
     event.preventDefault(); if (!selected || busy) return;
     busy = true; $("studio-start").disabled = true;
@@ -352,37 +427,15 @@
   $("studio-dropzone").addEventListener("drop", event => {
     event.preventDefault(); $("studio-dropzone").classList.remove("dragging"); chooseFile(event.dataTransfer.files[0]);
   });
-  $("studio-demo").addEventListener("click", async () => {
-    if (busy) return; busy = true; $("studio-demo").disabled = true;
-    try { renderWorkspace(await api("api/studio/start", {demo:true})); }
-    catch (error) { notify(error.message); }
-    finally { busy = false; $("studio-demo").disabled = false; }
-  });
-  $("studio-play").addEventListener("click", async () => {
-    if (lastStatus?.finished && workspace?.active) {
-      if (workspace.active.demo) $("studio-demo").click();
-      else await queueStart(workspace.active.id);
-      return;
-    }
-    try { const result = await api("api/control", {action:lastStatus?.paused ? "resume" : "pause"}); receiveStatus(result.result); }
-    catch (error) { notify(error.message); }
-  });
+  $("studio-demo").addEventListener("click", startDemo);
+  $("studio-play").addEventListener("click", togglePlay);
   $("studio-speed").addEventListener("change", async () => {
     try { await api("api/control", {action:"speed", value:Number($("studio-speed").value)}); }
     catch (error) { notify(error.message); }
   });
-  $("studio-fullscreen").addEventListener("click", async () => {
-    try { if (document.fullscreenElement) await document.exitFullscreen(); else await $("monitor-screen").requestFullscreen(); }
-    catch { notify("Fullscreen is unavailable in this browser. Enlarge the window to expand the feed."); }
-  });
-  $("studio-export").addEventListener("click", async () => {
-    try {
-      const response = await fetch("api/studio/export", {headers:headers()});
-      if (!response.ok) throw new Error("Export failed. Check the local server and retry.");
-      const url = URL.createObjectURL(await response.blob()), a = document.createElement("a");
-      a.href = url; a.download = "courtvision-analysis.json"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) { notify(error.message); }
-  });
+  $("studio-fullscreen").addEventListener("click", fullscreen);
+  $("studio-export").addEventListener("click", exportJson);
+  window.addEventListener("cv-update", ev => { if (ev.detail.keys.includes("compare")) queueMarks(); });
   window.addEventListener("courtvision-message", event => {
     const msg = event.detail;
     if (msg.type === "vision") receiveVision(msg);
@@ -397,7 +450,7 @@
       focusedTrack = ""; $("studio-clear-focus").hidden = true; renderTracks([]);
       lastVision = null; processedT = 0; progress(0); marks.clear(); queueMarks();
       text("vision-people", "—"); setVision("vision-ball", "Awaiting video", "idle"); setVision("vision-court", "Not configured", "warn");
-      $("studio-frame").hidden = true; $("studio-loading").hidden = false;
+      if (workspace?.active || !isStudio) { $("studio-frame").hidden = true; $("studio-loading").hidden = false; }
     }
     if (msg.type === "frame" && (workspace?.active?.demo || !isStudio)) {
       text("vision-people", (msg.players || []).length);

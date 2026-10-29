@@ -11,7 +11,6 @@ import copy
 import json
 import logging
 import math
-import os
 import time
 import uuid
 from pathlib import Path
@@ -28,9 +27,11 @@ from courtvision.credentials import runtime_env
 from courtvision.perception.rfdetr_adapter import RFDETRConfig, RFDETRDetector
 from courtvision.perception.tracker import ByteTracker
 from courtvision.perception.broadcast import ShotBoundaryDetector
-from courtvision.pipeline import FrameItem, LiveGame, VideoFileSource, make_source, write_run_dir, _collect
+from courtvision.pipeline import (FrameItem, LiveGame, VideoFileSource, _collect, anthropic_credential_source, make_source,
+                                  write_run_dir)
 from courtvision.server.app import HubJSONResponse, create_app
 from courtvision.server.hub import Hub, status_msg
+from courtvision.server.lab import Lab, register_lab
 from courtvision.types import ObjClass
 
 log = logging.getLogger(__name__)
@@ -239,7 +240,7 @@ class Workspace:
                 "vision": getattr(game, "vision", None),
                 "error": getattr(game, "failure", None),
                 "capabilities": {"jev": bool(runtime_env().get("TYPESAFE_API_KEY")),
-                                 "claude": bool(os.getenv("ANTHROPIC_API_KEY"))}}
+                                 "claude": anthropic_credential_source() is not None}}
 
     def student_weights(self) -> Path | None:
         """The NBA broadcast student detector (training/train_student.py), when one is installed in the data folder's
@@ -382,7 +383,7 @@ class Workspace:
 
 
 def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "runs/studio",
-                      auth_token: str | None = None, detector: Any = None) -> Any:
+                      auth_token: str | None = None, detector: Any = None, lab_runs: Path | None = None) -> Any:
     workspace = Workspace(config or load_config(), Path(root), detector)
     app = create_app(workspace.hub, workspace, auth_token, workspace.cfg.server, upload_max_body=UPLOAD_LIMIT)
     app.state.workspace = workspace
@@ -394,12 +395,17 @@ def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "ru
             try:
                 yield state
             finally:
+                app.state.lab.shutdown()
                 await workspace.stop()
                 if workspace.model_task is not None:
                     # A model load runs in a thread: wait for it before releasing the process.
                     await workspace.model_task
     app.router.lifespan_context = lifespan
     read, write = Depends(app.state.require_read), Depends(app.state.require_write)
+    app.state.asker.studio_state = workspace.state
+    lab = Lab(lab_runs)
+    app.state.lab = lab
+    register_lab(app, lab, read, write)
 
     @app.get("/api/studio", dependencies=[read])
     async def studio_state() -> Any:

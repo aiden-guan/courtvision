@@ -8,7 +8,7 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
 
 | Stage | Module | What it solves |
 |---|---|---|
-| Scorebug | `perception/scorebug_ocr.py`, `perception/vision_ocr.py` | Reads the ESPN/ABC bug (scores, period, game clock with tenths, shot clock) with Apple Vision text recognition. No glyph training. Its layout moves when the shot clock is off, so fields are told apart by pattern and order rather than by fixed boxes. |
+| Scorebug | `perception/scorebug_ocr.py`, `perception/scorebug_layout.py`, `perception/vision_ocr.py` | Reads the bug (scores, period, game clock with tenths, shot clock) with Apple Vision text recognition. No glyph training. The ESPN/ABC layout is hand-measured; other broadcasters' layouts are discovered per video (see "Adding a game"). Its layout moves when the shot clock is off, so fields are told apart by pattern and order rather than by fixed boxes. |
 | Court | `perception/court_search.py`, `perception/broadcast_court.py` | **No clicks.** The main NBA camera sits at half court, high behind the near sideline, and only pans, tilts and zooms. The camera centre is estimated once per game; each frame then needs only pan, tilt, roll and zoom. |
 | Detection | `perception/student.py`, `training/train_student.py` | A ResNet-18 CenterNet trained on this footage. It sees the current and two previous frames (motion makes a blurred ball stand out), at 960x544. |
 | Ball | `nba/analyze.py` (`link_ball`), `perception/ball3d.py` | One ball path through the per-frame candidates (dynamic programme; the camera's turn between frames is removed from the motion cost). Ballistic stretches are fitted in 3-D: gravity fixes the depth a single camera cannot see. |
@@ -35,6 +35,11 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
    recently seen views, then a pan/tilt/zoom search at the known centre, and accepts only a camera the game camera
    can be (focal length in the prior's field of view, looking down into the aim box, nearly level, a tight fit).
    Close-ups and replays fail it and stay "lost", which the broadcast gate treats as not live.
+   Tracked frames read line evidence only around the court projected through the predicted camera, grown by
+   `track_margin_ft` (4 ft by default; `nba_track_court.py --track-margin-ft 0` restores the frame-wide floor mask),
+   and after a loss in play re-acquisition is also tried 1, 4, 10 and 20 frames later
+   (`--no-reacquire-after-loss` turns that off). Both were measured only on the fixed-seed synthetic arenas of
+   `tools/court_bench.py`, not yet on broadcast footage.
 
 ## Adding a game
 
@@ -132,9 +137,10 @@ shot-clock rules).
 ## In the studio
 
 Copy the trained student to `runs/studio/models/nba-student.pt` and the studio uses it instead of the COCO starter.
-With **broadcast** on and no saved calibration, the court is registered automatically. Six frames, a second apart,
-give the camera centre, which is saved next to the video's calibration. On macOS the ESPN scorebug is read with
-Vision.
+With **Broadcast footage** on and no saved calibration, the court is registered automatically. Six frames, a second
+apart, give the camera centre, which is saved next to the video's calibration. On macOS the scorebug is read with
+Vision, using the `scorebug_profile.json` that `nba_scan_scorebug.py` saved for the video (beside it or in its game
+folder), else the ESPN 2024 layout. The **Model lab** view shows the learning loop above and can run its next step.
 
 ## Results
 
