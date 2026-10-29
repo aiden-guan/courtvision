@@ -253,11 +253,24 @@ comparison with round 4. [Complete aggregate report](docs/bench/round5-heldout.m
 
 ## Quickstart
 
-### Prerequisites
-- Python 3.11 or newer (this workspace uses 3.12)
-- virtualenv / pip
+### On a Mac: double-click
 
-### Installation
+Double-click **`Start CourtVision.command`** in the repo folder. The first time, it:
+
+1. finds Python 3.11+ (or offers to install 3.12 with Homebrew or [uv](https://docs.astral.sh/uv/)),
+2. creates `.venv` and installs CourtVision with the video-analysis extras (about 1-2 GB, mostly PyTorch),
+3. asks for your Anthropic and TypeSafe API keys (both optional, input hidden) and saves them in the
+   macOS login Keychain under "CourtVision", never in the repo or a dotfile,
+4. offers to add **CourtVision** to `~/Applications` so you can start it from Spotlight, Launchpad or the Dock.
+
+Later launches skip straight to the Studio, reinstall only when `pyproject.toml` changes, and just reopen
+the browser tab if the Studio is already running. Close the Terminal window to stop it.
+Run `scripts/mac/courtvision.sh keys` to replace or remove keys, `scripts/mac/courtvision.sh setup` to
+reinstall, and `scripts/mac/courtvision.sh install-app` if you move the repo folder.
+
+### Manual install
+
+Python 3.11 or newer (this workspace uses 3.12).
 
 ```bash
 # Create and activate virtual environment
@@ -274,7 +287,7 @@ pip install -e ".[cv,dev]"
 courtvision studio --open
 ```
 
-On this Mac, double-click **`Start CourtVision.command`**. The workspace opens at
+On a Mac, double-click **`Start CourtVision.command`** instead. The workspace opens at
 [localhost:8000](http://127.0.0.1:8000/).
 
 1. Choose **Open video**, select an MP4, MOV, MKV or AVI (up to 8 GB), and start analysis.
