@@ -34,9 +34,11 @@ so its effect on the box score can be measured on its own:
 5. ``bug_rebounds``: the shot clock says the same more directly (NBA rule 7): after a missed field goal the first of
    a reset to 14 (the offence kept the ball), a count down from a fresh 24 (``run24``: the defence got it) or a
    put-back basket of the shooting team decides an offensive or a defensive rebound; such misses are settled before
-   the camera's pass, which handles the rest. ``team_rebounds``: the game clock stopping first (the ball out of
-   bounds, a loose-ball foul) means no player gained the ball: a team rebound, which the box score credits to no
-   player, so the engine's rebounds up to the stop go and the miss is settled with none. ``oreb_misses``: a reset to
+   the camera's pass, which handles the rest. ``team_rebounds`` (off by default): the game clock stopping first
+   (the ball out of bounds, a loose-ball foul) means no player gained the ball: a team rebound, which the box score
+   credits to no player, so the engine's rebounds up to the stop go and the miss is settled with none. Off: on
+   Q2-Q4 of Lakers @ Warriors (not tuned on) the play-by-play had a team rebound after 7 of the 15 such misses, a
+   player's rebound (then a foul) after 7 (``tools/nba_bug_study.py --split``). ``oreb_misses``: a reset to
    14 while the game clock runs, with no shot just before it, is an offensive rebound of a miss nobody saw: a missed
    attempt is inferred for the team that kept the ball. ``orphan_rebounds`` (first): a rebound recovers a missed
    shot, so an engine rebound whose latest shot result before it is a make (the other team inbounds the ball), or
@@ -46,9 +48,10 @@ so its effect on the box score can be measured on its own:
    dribble / pass positions), at the basket that team attacks.
 7. ``turnover_resets``: a steal or a turnover hands the ball to the other team, which gets a fresh 24 (NBA rule 7),
    so the shot clock resets to 24 with it, and no shot or score explains that reset (a possession that ends in a shot
-   is no turnover). An engine steal or turnover with no such reset near it is dropped. ``deadball_turnovers``: a
-   reset to 24 at a stoppage with no shot or free throw before it is a dead-ball turnover (out of bounds, a
-   violation, an offensive foul) of the team that had the ball. ``reset_steals`` (run before ``rim_misses``): a
+   is no turnover). An engine steal or turnover with no such reset near it is dropped. ``deadball_turnovers`` (off
+   by default): a reset to 24 at a stoppage with no shot or free throw before it is a dead-ball turnover (out of
+   bounds, a violation, an offensive foul) of the team that had the ball. Off: on Q2-Q4 of Lakers @ Warriors (not
+   tuned on) 6 of the 16 such resets were turnovers and 9 fouls, which the scorebug does not tell apart. ``reset_steals`` (run before ``rim_misses``): a
    reset to 24 in play with no shot attempt before it, after which the camera leaves the half the play was in, is a
    steal the engine missed (the ball changed hands in play), not a rim touch.
 
@@ -184,8 +187,8 @@ class FusionConfig:
     orphan_rebounds: bool = True  # engine rebounds with no miss just before them are dropped (pass 5)
     reset_steals: bool = True  # a reset to 24 in play with no shot before it and the ball changing hands: a steal
     turnover_resets: bool = True  # engine steals / turnovers need a reset to 24 that no shot explains (pass 7)
-    deadball_turnovers: bool = True  # a reset to 24 at a stoppage with no shot before it: a turnover (pass 7)
-    team_rebounds: bool = True  # bug_rebounds: a clock stop before any possession sign is a team rebound (no player's)
+    deadball_turnovers: bool = False  # a reset to 24 at a stoppage with no shot before it: a turnover (pass 7)
+    team_rebounds: bool = False  # bug_rebounds: a clock stop before any possession sign is a team rebound (no player's)
     rebound_window_s: float = 6.0  # the rebound of a miss happens within this
     bug_rebound_window_s: float = 8.0  # the shot clock shows who got the ball within this after the miss
     oreb_hold_s: float = 2.0  # the camera must stay in the other half this long to call a defensive rebound
