@@ -10,8 +10,8 @@
 #
 # A step refuses to start while another CourtVision job runs or with less than MIN_FREE % of memory free, and a
 # watchdog stops it if free memory falls below WATCH_FREE % while it runs. Each step logs to $G/logs/<step>.log.
-# G, PY, EPOCHS (the training run's --epochs), DATA (teacher folders, space separated), WEIGHTS, DET_DIR, MIN_FREE
-# and WATCH_FREE can be set in the environment.
+# G, PY, EPOCHS (the training run's --epochs), DATA (teacher folders, space separated), WEIGHTS, DET_DIR, DET_WORKERS
+# (parallel detection processes of full, 1 by default), MIN_FREE and WATCH_FREE can be set in the environment.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if command -v caffeinate >/dev/null && [ -z "${NBA_AWAKE:-}" ]; then  # macOS: no sleep while a job runs
@@ -24,6 +24,7 @@ Q1_END=${Q1_END:-871}
 EPOCHS=${EPOCHS:-12}
 DATA=${DATA:-$G/teacher}
 WEIGHTS=${WEIGHTS:-runs/models/student/best.pt}
+DET_WORKERS=${DET_WORKERS:-1}  # each detection process takes about 1.7 GB; two share the GPU about 1.5-2x faster
 MIN_FREE=${MIN_FREE:-25}
 WATCH_FREE=${WATCH_FREE:-8}
 JOBS="tools/nba_(analyze|track_court|teacher_labels|scan_scorebug|ball_bench|diagnose|fusion_ab|calibrate_fusion|hard_examples|bug_study|loop)\.py|courtvision\.training\.(train_student|pseudo_labels|nba_cue_rows|fit_cue_models|ball_labels)"
@@ -129,7 +130,8 @@ case "$step" in
         root=${2:-$G}
         det=${DET_DIR:-detections-full}  # its own folder: detections/ holds the Q1 cache of the earlier weights
         {
-            "$PY" tools/nba_analyze.py "$root" detect --workers 1 --chunks 8 --weights "$WEIGHTS" --det-dir "$det"
+            "$PY" tools/nba_analyze.py "$root" detect --workers "$DET_WORKERS" --chunks 8 --weights "$WEIGHTS" \
+                --det-dir "$det"
             evaluate "$root" full 0 0 "$det"
         } 2>&1 | tee "$G/logs/full.log"
         ;;
