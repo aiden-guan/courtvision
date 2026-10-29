@@ -434,6 +434,33 @@ def test_engine_miss_the_shot_clock_shows_no_sign_of_is_dropped_with_its_rebound
     assert "s1r" in ids(fuse(ev, unread, only("rimless_misses")))
 
 
+def test_rimless_misses_keep_blocked_shots_and_misses_with_the_shot_clock_off_or_unread() -> None:
+    bug = [BugEvent(114.7, "run24", shot_clock_before=24.0), BugEvent(130.5, "reset24", shot_clock_before=9.0)]
+    att, res = shot("s1", 117.1, 117.5, HOME)
+    block = Event("bk", EventKind.BLOCK, 117.5, 0, team=AWAY, player_id="a1", shot_id="s1")
+    blocked = [att, dataclasses.replace(res, attrs={**res.attrs, "blocked": True}), block]
+    assert {"s1a", "s1r", "bk"} <= set(ids(fuse(blocked, bug, only("rimless_misses"))))  # a block never reaches the rim
+    assert "bk" not in ids(fuse([att, res, block], bug, only("rimless_misses")))  # dropped with its miss
+    late = [BugEvent(114.7, "run24", shot_clock_before=24.0, game_clock=20.0),  # under 24 s: the shot clock is off
+            BugEvent(130.5, "reset24", shot_clock_before=9.0, game_clock=4.0)]
+    assert "s1r" in ids(fuse([att, res], late, only("rimless_misses")))
+    other = [BugEvent(100.0, "score", AWAY, 2), BugEvent(140.0, "clock_stop", game_clock=200.0)]  # no shot-clock read
+    assert "s1r" in ids(fuse([att, res], other, only("rimless_misses")))
+
+
+def test_assist_possession_falls_back_to_the_team_labels_where_the_shot_clock_says_nothing() -> None:
+    ev = shot("s1", 109.0, 110.0, HOME, made=True, player="h1") + [Event("p1", EventKind.PASS, 107.0, 0, team=AWAY,
+                                                                          player_id="a7")]
+    read = [BugEvent(100.0, "run24", shot_clock_before=24.0)]
+    assert [a.player_id for a in of(fuse(ev, read, only("assists", "assist_possession")), EventKind.ASSIST)] == ["a7"]
+    unread = [BugEvent(10.0, "run24", shot_clock_before=24.0)]  # no shot-clock read in the 24 s before the release
+    assert of(fuse(ev, unread, only("assists", "assist_possession")), EventKind.ASSIST) == []
+    off = [BugEvent(100.0, "run24", shot_clock_before=24.0, game_clock=15.0)]  # the shot clock off
+    assert of(fuse(ev, off, only("assists", "assist_possession")), EventKind.ASSIST) == []
+    stolen = ev + [Event("st", EventKind.STEAL, 108.0, 0, team=HOME, player_id="h4")]  # the ball changed hands
+    assert of(fuse(stolen, read, only("assists", "assist_possession")), EventKind.ASSIST) == []
+
+
 def test_shot_clock_reset_while_the_game_clock_is_stopped_is_no_rim_touch() -> None:
     # out of bounds at 25 s: the clock stops, the shot clock is reset for the other team at 30 s, play resumes at 45 s
     ev = [Event("p2", EventKind.PASS, 20.0, 0, team=AWAY, player_id="a1")]

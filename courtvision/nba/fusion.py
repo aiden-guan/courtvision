@@ -479,20 +479,31 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
             final.append(e)
         out = final
         assisted = {e.shot_id for e in out if e.kind is EventKind.ASSIST}
-        resets = [b.t for b in bug if b.kind in ("reset24", "reset14", "run24")]
+        resets = np.array(sorted(b.t for b in bug if b.kind in ("reset24", "reset14", "run24")))
+        changes = np.array(sorted(x.t for x in out if x.kind in (EventKind.STEAL, EventKind.TURNOVER)))
+        game_clock = sorted((b.t, b.game_clock) for b in bug if b.game_clock is not None)
+        all_passes = sorted((p for p in out if p.kind is EventKind.PASS and p.team is not None), key=lambda p: p.t)
+        pass_t = np.array([p.t for p in all_passes])
+
+        def n_in(ts: np.ndarray, t0: float, t1: float) -> int:  # how many of the sorted ``ts`` lie in (t0, t1]
+            return int(np.searchsorted(ts, t1, side="right") - np.searchsorted(ts, t0, side="right"))
+
         for e in [e for e in out if e.kind is EventKind.SHOT_MADE and not _is_ft(e) and e.shot_id not in assisted]:
             att = attempts.get(e.shot_id or "")
             t_rel = att.t if att is not None else e.t - cfg.inferred_release_s
+            # the shot clock tells the possession only where it was read (in the 24 s before the release) and is on
+            gc = [g for tb, g in game_clock if tb <= t_rel]
+            told = cfg.assist_possession and n_in(resets, t_rel - 24.0, t_rel) > 0 and not (gc and gc[-1] < 24.0)
 
             def teammate(p: Event) -> bool:
-                if not cfg.assist_possession or not resets:
-                    return p.team is e.team and p.team is not None
-                # no shot-clock reset since the pass: the scoring team (the bug's) had the ball all along
-                return p.team is not None and not any(p.t < t <= t_rel for t in resets)
+                if not told:
+                    return p.team is e.team
+                # no shot-clock reset and no engine steal / turnover since the pass: the scoring team (the bug's)
+                # had the ball all along, whatever team the engine gave the pass
+                return n_in(resets, p.t, t_rel) == 0 and n_in(changes, p.t, t_rel) == 0
 
-            passes = [p for p in out if p.kind is EventKind.PASS and teammate(p)
-                      and 0.0 <= t_rel - p.t <= cfg.assist_window_s
-                      and (e.player_id is None or p.player_id != e.player_id)]
+            i0, i1 = np.searchsorted(pass_t, t_rel - cfg.assist_window_s), np.searchsorted(pass_t, t_rel, side="right")
+            passes = [p for p in all_passes[i0:i1] if teammate(p) and (e.player_id is None or p.player_id != e.player_id)]
             if passes:
                 p = max(passes, key=lambda p: p.t)
                 out.append(Event(new_id("a"), EventKind.ASSIST, p.t, p.frame_idx, team=e.team, player_id=p.player_id,
@@ -817,22 +828,32 @@ def _rimless_misses(by_id: dict[str, Event], attempts: dict[str, Event], bug: li
     """Drop the engine's missed field goals the scorebug shows no sign of (pass 2c): a miss that reaches the rim
     resets the shot clock, the next possession shows on it (a count from 24, a reset to 14), a put-back scores, and a
     foul on the shot or the ball out of bounds stops the game clock. With the game clock running and the shot clock
-    read around the miss (a sign within 24 s on either side: a possession cannot run longer), none of these within
-    ``reset_window_s`` of its result leaves the engine's call (a pass, a dribble taken for a release) unsupported:
-    the miss, its attempt and the engine's rebound of it are dropped."""
+    read around the miss (a shot-clock event within 24 s on either side: a possession cannot run longer; not with
+    under 24 s on the game clock, when the shot clock is off), none of these within ``reset_window_s`` of its result
+    leaves the engine's call (a pass, a dribble taken for a release) unsupported: the miss and what hangs on it (its
+    attempt, the engine's rebound, block and assist of it) are dropped. A blocked shot stops before the rim and
+    shows nothing: it is kept."""
+    reads = sorted(b.t for b in bug if b.kind in ("reset24", "reset14", "run24"))
     signs = sorted(b.t for b in bug if b.kind in ("reset24", "reset14", "run24", "score", "clock_stop"))
+    clocks = sorted((b.t, b.game_clock) for b in bug if b.game_clock is not None)
     lo, hi = cfg.reset_window_s
+
+    def clock_off(t: float) -> bool:
+        before = [g for tb, g in clocks if tb <= t]
+        return bool(before) and before[-1] < 24.0
+
     for e in [e for e in by_id.values() if e.kind is EventKind.SHOT_MISSED and not _is_ft(e)
-              and e.source != "scoreboard" and not e.attrs.get("inferred")]:
-        if not running(e.t) or not any(e.t - 24.0 <= t < e.t for t in signs) or not any(e.t < t <= e.t + 24.0
-                                                                                        for t in signs):
-            continue  # a dead ball, or the shot clock not read here
+              and e.source != "scoreboard" and not e.attrs.get("inferred")
+              and not e.attrs.get("blocked") and not e.attrs.get("blocked_oob")]:
+        if not running(e.t) or clock_off(e.t) or not any(e.t - 24.0 <= t < e.t for t in reads) \
+                or not any(e.t < t <= e.t + 24.0 for t in reads):
+            continue  # a dead ball, or the shot clock off or not read here
         if any(-hi <= t - e.t <= -lo for t in signs):
             continue
         by_id.pop(e.event_id, None)
         if e.shot_id:
             for x in [x for x in by_id.values() if x.shot_id == e.shot_id and x.kind in
-                      (EventKind.SHOT_ATTEMPT, EventKind.REBOUND)]:
+                      (EventKind.SHOT_ATTEMPT, EventKind.REBOUND, EventKind.BLOCK, EventKind.ASSIST)]:
                 by_id.pop(x.event_id, None)
             attempts.pop(e.shot_id, None)
 
