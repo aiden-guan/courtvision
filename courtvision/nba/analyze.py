@@ -351,8 +351,12 @@ def link_ball(cache: DetectionCache, camera: CameraTrack, config: BallLinkConfig
 
 
 def build_ball_track(cache: DetectionCache, camera: CameraTrack, config: BallLinkConfig | None = None,
-                     flight_config: FlightSearchConfig | None = None) -> BallTrack:
+                     flight_config: FlightSearchConfig | None = None, court: CourtSpec | None = None) -> BallTrack:
+    """The linked ball path and its 3-D flights; flights that come down at a rim are refitted through it (the
+    rim pins the depth a single camera sees poorly: ``ball3d.find_flights``)."""
     cfg = config or BallLinkConfig()
+    court = court or court_for("nba")
+    baskets = {side: court.basket_xy(side) for side in ("left", "right")}
     path = link_ball(cache, camera, cfg)
     flights: list[Flight3D] = []
     frames = sorted(path)
@@ -370,7 +374,8 @@ def build_ball_track(cache: DetectionCache, camera: CameraTrack, config: BallLin
         t = np.array([f / camera.fps for f in seg])
         uv = np.array([path[f][:2] for f in seg])
         cams = [camera.get(f) for f in seg]
-        flights += find_flights(t, uv, cams, camera.image_size, frames=np.array(seg), config=flight_config)  # type: ignore[arg-type]
+        flights += find_flights(t, uv, cams, camera.image_size, frames=np.array(seg), config=flight_config,  # type: ignore[arg-type]
+                                court_wh=(court.length, court.width), baskets=baskets, rim_height=court.rim_height)
     return BallTrack(path, flights)
 
 

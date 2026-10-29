@@ -161,8 +161,9 @@ class FusionConfig:
     and_one_window_s: float = 90.0  # a team's basket this soon before its lone free throw (clock stopped): an and-one
     shot_deep_ft: float = 17.0  # a put-back attempt is taken with the camera this deep in the half (not mid-pan)
     flight_match_s: float = 1.5  # a flight's rim pass this close to a missed shot's result is that shot
+    release_z_ft: float = 8.5  # the flight is followed back to this height for the release point (ball3d.release_point)
     handler_window_s: float = 2.5  # pass 6: the ball handler's position this long before the release at most
-    three_margin_ft: float = 0.5  # release beyond the arc by this much counts as a three (the ball is ahead of the feet)
+    three_margin_ft: float = 0.5  # release point beyond the arc by this much (ft; may be negative) counts as a three
     score_lag_s: float = 2.0  # ESPN: bug update after the ball goes in (median, Lakers @ Warriors)
     make_window_s: tuple[float, float] = (-3.5, 1.5)  # engine result time - (bug time - lag)
     ft_window_s: tuple[float, float] = (-4.0, 2.0)
@@ -501,8 +502,10 @@ def _ft_trips(by_id: dict[str, Event], bug: list[BugEvent], cfg: FusionConfig, a
 
 def _flight_values(by_id: dict[str, Event], attempts: dict[str, Event], flights: list[Any], court: Any,
                    cfg: FusionConfig) -> None:
-    """2 or 3 points for missed field goals from the release point of the 3-D flight that reaches a rim near them."""
-    from courtvision.perception.ball3d import rim_pass
+    """2 or 3 points for missed field goals from the release point of the 3-D flight that reaches a rim near them
+    (the flight followed back to ``release_z_ft``: the detector loses the ball at the release, so its first
+    observation is already on the way to the rim)."""
+    from courtvision.perception.ball3d import release_point, rim_pass
 
     baskets = {side: court.basket_xy(side) for side in ("left", "right")}
     passes = []
@@ -517,8 +520,8 @@ def _flight_values(by_id: dict[str, Event], attempts: dict[str, Event], flights:
         if not near:
             continue
         _, side, f = min(near, key=lambda p: abs(p[0] - e.t))
-        x, y = float(f.p0[0]), float(f.p0[1])
-        value = 3 if court.is_three(x, y, side) and _arc_margin(court, x, y, side) >= cfg.three_margin_ft else 2
+        x, y = release_point(f, cfg.release_z_ft)
+        value = 3 if _arc_margin(court, x, y, side) >= cfg.three_margin_ft else 2
         if value != e.value or e.x is None:
             by_id[e.event_id] = _replace(e, value=value, x=x, y=y, attrs={"value_from": "3-D flight"})
             att = attempts.get(e.shot_id or "")

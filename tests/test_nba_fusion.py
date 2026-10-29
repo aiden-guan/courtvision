@@ -408,6 +408,16 @@ def test_missed_shot_takes_two_or_three_points_from_its_3d_flight_release_point(
     assert out["f1r"].value == 1 and out["f1r"].x is None
 
 
+def test_flight_value_follows_the_flight_back_to_the_release_when_the_ball_is_first_seen_high() -> None:
+    # released 1.5 ft beyond the arc of the right basket; the detector first sees the ball 0.3 s later, 6 ft on
+    full = flight_to((63.5, 25.0, 8.5), (88.75, 25.0, 10.0), 10.0)
+    t0 = 10.3
+    seen = Flight3D(t0, full.t1, full.at(t0), full.velocity(t0), rms_px=1.0, n_obs=25)
+    assert seen.p0[0] > 65.0 + 3.0 and seen.p0[2] > 12.0  # inside the arc, well above the release height
+    out = ids(fuse(shot("s1", 10.0, 11.2, HOME), [], only("flight_values"), flights=[seen], court=NBA))
+    assert out["s1r"].value == 3 and abs(out["s1r"].x - 63.5) < 0.1 and abs(out["s1r"].y - 25.0) < 0.1
+
+
 def test_flight_value_keeps_the_makes_pass_changes_to_the_attempt() -> None:
     ev = shot("s1", 10.0, 11.5, HOME, made=True)  # the engine called it in; the scorebug shows no score change
     three = flight_to((30.0, 25.0, 7.5), (5.25, 26.0, 10.0), 10.0)
