@@ -35,6 +35,28 @@ the loop's guards: a step does not start while another CourtVision job runs or w
 and the watchdog stops it below 8%. **Stop** sends the loop its interrupt, which stops the step's whole process tree.
 Logs go to `runs/nba/logs/studio-loop-*.log`. Closing the Studio stops a run it started.
 
+## The possession analysis on the feed
+
+When the open video has been analysed as an NBA game (`tools/nba_analyze.py <game> timeline`, [NBA.md](NBA.md)), the
+Studio draws that analysis on the feed. It looks under `runs/nba` for a game folder whose `game.json` names this
+video, or a copy of it (same size, same first and last MiB), and takes its newest run with a timeline. The panel at
+the top left shows the team with the ball ("bringing it up" while it is still in its back court) and the score from
+the shots decided from the video. When the game has a play-by-play, the panel also shows the play-by-play's team with
+the ball, whether the two agree, and its latest line. Each decided shot stays on the feed for a few seconds: made or
+missed, its value, P(made), and whether it was found at a rim visit the engine reported nothing at. Rebounds, steals
+and turnovers show the same way. The band under the feed covers the whole game: who had the ball by the analysis
+(upper) and by the play-by-play (lower), with a tick for each decided shot (tall: made). `B` hides or shows all of it.
+
+**Watch** (in the Possession cell, or `W`) plays the recording itself at full speed with its sound and draws the
+analysis for the time playing. The live analysis pauses meanwhile and resumes on **Back to live analysis**. Click the
+band to jump to any moment. The browser has to be able to play the file; H.264 MP4 works.
+
+Everything shown comes from the video except the play-by-play. That is placed on video time through the scorebug
+clock and is shown only to judge the analysis by. The held-out accuracies in the panel are the run's own: the team
+with the ball in settled play, and made or missed on real shots. So far they come from one game. A video that no game
+folder analyses shows "Not analysed": add it with `tools/nba_new_game.py` and run the steps in NBA.md through
+`timeline`.
+
 ## Jev setup
 
 Double-click `Set up Jev.command`, or run `.venv/bin/python -m courtvision.credentials` in this folder.
@@ -88,6 +110,7 @@ must be configured and verified for the broadcast. Fouls, substitutions and time
 Every source frame is processed. The monitor reports measured inference rate; video can run behind wall time
 when inference is slower than the input frame rate. The current monitor is a sequence of processed JPEGs and
 does not play source audio. It supports pause/speed/restart, not random seeking of the stateful event engine.
+Watch mode plays an analysed recording with sound and seeking, but it shows the saved analysis, not the live engine.
 
 Footage persists at `runs/studio/<video id>/source.video`. Each run is saved independently under
 `runs/studio/analyses/<run id>/`. There is no automatic retention deletion. Reopening a video starts a fresh

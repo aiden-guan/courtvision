@@ -11,6 +11,7 @@ import copy
 import json
 import logging
 import math
+import re
 import time
 import uuid
 from pathlib import Path
@@ -24,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from courtvision.config import AppConfig, load_config
 from courtvision.credentials import runtime_env
+from courtvision.nba import results as game_results
 from courtvision.perception.rfdetr_adapter import RFDETRConfig, RFDETRDetector
 from courtvision.perception.tracker import ByteTracker
 from courtvision.perception.broadcast import ShotBoundaryDetector
@@ -31,11 +33,14 @@ from courtvision.pipeline import (FrameItem, LiveGame, VideoFileSource, _collect
                                   write_run_dir)
 from courtvision.server.app import HubJSONResponse, create_app
 from courtvision.server.hub import Hub, status_msg
-from courtvision.server.lab import Lab, register_lab
+from courtvision.server.lab import REPO, Lab, register_lab
 from courtvision.types import ObjClass
 
 log = logging.getLogger(__name__)
 UPLOAD_LIMIT = 8 * 1024**3
+VIDEO_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+               ".mkv": "video/x-matroska", ".avi": "video/x-msvideo"}
+ANALYSIS_RECHECK_S = 10.0  # how often the open video's analysis is looked for again (a run may finish meanwhile)
 
 
 def probe_video(path: Path) -> dict[str, Any]:
@@ -204,8 +209,13 @@ class StartIn(BaseModel):
 
 
 class Workspace:
-    def __init__(self, cfg: AppConfig, root: Path, detector: Any = None):
+    def __init__(self, cfg: AppConfig, root: Path, detector: Any = None, nba_root: Path | None = None,
+                 repo: Path = REPO):
         self.cfg, self.root = cfg, root.resolve()
+        # analysed games (tools/nba_analyze.py): runs/nba/<game>; a game.json's relative video path is from the repo
+        self.nba_root, self.repo = (nba_root or repo / "runs" / "nba").resolve(), repo
+        self._analysis: tuple[str, float, tuple[Path, str, float] | None] | None = None  # (video id, looked at, run)
+        self._analysis_doc: tuple[tuple[Path, str, float], dict[str, Any]] | None = None
         self.root.mkdir(parents=True, exist_ok=True)
         self.hub = Hub(cfg.hub)
         self.game: LiveGame | None = None
@@ -231,7 +241,7 @@ class Workspace:
         return sorted(videos, key=lambda x: x.get("created", 0), reverse=True)
 
     def state(self) -> dict[str, Any]:
-        game = self.game
+        game, run = self.game, self.analysis_run()
         return {"enabled": True, "active": self.active, "videos": self.videos(),
                 "model": {"state": self.model_state, "error": self.model_error,
                           "name": self.model_name},
@@ -240,7 +250,40 @@ class Workspace:
                 "vision": getattr(game, "vision", None),
                 "error": getattr(game, "failure", None),
                 "capabilities": {"jev": bool(runtime_env().get("TYPESAFE_API_KEY")),
-                                 "claude": anthropic_credential_source() is not None}}
+                                 "claude": anthropic_credential_source() is not None},
+                "analysis": {"game": run[0].name, "tag": run[1], "version": run[2]} if run else None}
+
+    def analysis_run(self) -> tuple[Path, str, float] | None:
+        """The open video's analysed run (``courtvision/nba/results.py``): None for the demo or a video no game folder
+        analyses. Looked for again every ``ANALYSIS_RECHECK_S``, so a run finished meanwhile appears."""
+        active = self.active
+        if not active or active.get("demo"):
+            return None
+        vid, now = str(active["id"]), time.monotonic()
+        if self._analysis is None or self._analysis[0] != vid or now - self._analysis[1] > ANALYSIS_RECHECK_S:
+            try:
+                run = game_results.find_run(self.root / vid / "source.video", self.nba_root, self.repo)
+            except OSError:
+                log.exception("Could not look for this video's analysis")
+                run = None
+            self._analysis = (vid, now, run)
+        return self._analysis[2]
+
+    def analysis(self) -> dict[str, Any]:
+        """The open video's possession timeline and decided events, read once per run. Without the game's ESPN
+        summary the teams are the names given when the video was opened."""
+        run = self.analysis_run()
+        if run is None:
+            raise HTTPException(404, "No possession analysis for this video. Add it as a game (tools/nba_new_game.py) "
+                                     "and run the analysis through nba_analyze.py <game> timeline (docs/NBA.md).")
+        if self._analysis_doc is None or self._analysis_doc[0] != run:
+            self._analysis_doc = (run, game_results.load(run[0], run[1]))
+        doc = self._analysis_doc[1]
+        if doc["teams"] is None:
+            names = self.game.config.game if self.game is not None else self.cfg.game
+            doc = {**doc, "teams": {"home": {"abbr": names.home_name, "name": names.home_name},
+                                    "away": {"abbr": names.away_name, "name": names.away_name}}}
+        return doc
 
     def student_weights(self) -> Path | None:
         """The NBA broadcast student detector (training/train_student.py), when one is installed in the data folder's
@@ -384,7 +427,8 @@ class Workspace:
 
 def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "runs/studio",
                       auth_token: str | None = None, detector: Any = None, lab_runs: Path | None = None) -> Any:
-    workspace = Workspace(config or load_config(), Path(root), detector)
+    lab = Lab(lab_runs)
+    workspace = Workspace(config or load_config(), Path(root), detector, nba_root=lab.runs / "nba", repo=lab.repo)
     app = create_app(workspace.hub, workspace, auth_token, workspace.cfg.server, upload_max_body=UPLOAD_LIMIT)
     app.state.workspace = workspace
     inner = app.router.lifespan_context
@@ -403,7 +447,6 @@ def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "ru
     app.router.lifespan_context = lifespan
     read, write = Depends(app.state.require_read), Depends(app.state.require_write)
     app.state.asker.studio_state = workspace.state
-    lab = Lab(lab_runs)
     app.state.lab = lab
     register_lab(app, lab, read, write)
 
@@ -462,6 +505,22 @@ def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "ru
             raise HTTPException(404, "Waiting for the first frame.")
         return Response(image, media_type="image/jpeg", headers={"Cache-Control": "no-store",
                                                                  "X-Video-Time": str(t)})
+
+    @app.get("/api/studio/analysis", dependencies=[read])
+    async def analysis() -> Any:
+        return await asyncio.to_thread(workspace.analysis)
+
+    @app.get("/api/studio/video/{video_id}", dependencies=[Depends(app.state.require_media)])
+    async def video(video_id: str) -> Response:
+        # The footage itself, for watching an analysed game at full speed in the browser (static/possession.js);
+        # ranges are served, so it seeks.
+        meta = workspace.root / video_id / "video.json"
+        if not re.fullmatch(r"[a-f0-9]{32}", video_id) or not meta.is_file():
+            raise HTTPException(404, "Video not found.")
+        name = str(json.loads(meta.read_text()).get("name", ""))
+        return FileResponse(workspace.root / video_id / "source.video",
+                            media_type=VIDEO_TYPES.get(Path(name).suffix.lower(), "video/mp4"),
+                            headers={"Cache-Control": "private, max-age=86400"})
 
     @app.get("/api/studio/export", dependencies=[read])
     async def export() -> Response:

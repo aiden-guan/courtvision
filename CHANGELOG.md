@@ -5,6 +5,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — The possession analysis in the Studio, and watching it at full speed
+
+- The Studio draws an analysed game on its feed (`courtvision/nba/results.py`, `static/possession.js`). Opening a
+  recording that a game folder under `runs/nba` analyses (the same file, or a copy of it) shows the team with the
+  ball, the score from the shots decided from the video, each decided shot (made or missed, its value, P(made),
+  whether it was found at a rim visit), rebounds, steals and turnovers, and a band of the whole game under the feed.
+  With a play-by-play, its team with the ball and latest line are shown beside them. **Watch** (`W`) plays the
+  recording itself at full speed with sound and seeking (`GET /api/studio/video/<id>`, served in ranges; the token
+  may come in the query, as for the websocket), with the live analysis paused meanwhile.
+- Added `tools/nba_overlay.py`, which renders the same onto a clip of the game with ffmpeg. `--auto SECONDS` picks the
+  stretch with the most going on.
+- `nba_analyze.py timeline` now keeps the play-by-play it was scored against in `timeline.json` (`reference`), and
+  the stretches the team with the ball spends in its back court (`back_court`).
+
+---
+
 ## [Unreleased] — Possession timeline and shots from the video (no scorebug), and the Jev frame probe
 
 - Added the possession timeline (`courtvision/nba/timeline.py`, `tools/nba_analyze.py <game> timeline`): which team

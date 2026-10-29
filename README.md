@@ -320,6 +320,8 @@ On a Mac, double-click **`Start CourtVision.command`** instead. The workspace op
 **Run the demo game** runs a clearly labelled simulated game without downloading a detector. Recent footage
 can be reopened; previous run outputs stay in separate `runs/studio/analyses/` folders. Press `⌘K` (or `/`) to
 ask about the game or run any command; the [workspace guide](docs/STUDIO.md) covers the views, Ask and the model lab.
+A recording analysed as an NBA game ([NBA.md](docs/NBA.md)) also shows its possession analysis on the feed: the
+team with the ball and each shot decided from the video. **Watch** (`W`) plays it at full speed with seeking.
 
 The starter model detects generic people and sports balls. It does not identify NBA players, distinguish every
 replay, or produce official statistics. The NBA broadcast pipeline ([docs/NBA.md](docs/NBA.md)) adds a

@@ -240,9 +240,18 @@ class Timeline:
         cuts = [0, *(np.flatnonzero(np.diff(self.state)) + 1).tolist(), len(self.t)]
         return [(float(self.t[a]), float(self.t[b - 1]), TEAMS[int(self.state[a])]) for a, b in itertools.pairwise(cuts)]
 
+    def back_court(self) -> list[tuple[float, float]]:
+        """The stretches in which the team with the ball is still in its own back court (bringing it up)."""
+        if self.phase is None or not len(self.t):
+            return []
+        back = np.asarray(self.phase) == BACK
+        edges = np.flatnonzero(np.diff(np.concatenate([[0], back.astype(np.int8), [0]])))
+        return [(float(self.t[a]), float(self.t[b - 1])) for a, b in zip(edges[::2], edges[1::2], strict=True)]
+
     def to_dict(self) -> dict[str, Any]:
         return {"attack": self.attack.to_dict(), "dt_s": float(self.t[1] - self.t[0]) if len(self.t) > 1 else None,
-                "segments": [[round(a, 2), round(b, 2), team.value] for a, b, team in self.segments()]}
+                "segments": [[round(a, 2), round(b, 2), team.value] for a, b, team in self.segments()],
+                "back_court": [[round(a, 2), round(b, 2)] for a, b in self.back_court()]}
 
 
 def _back_steps(cfg: TimelineConfig) -> int:
@@ -420,6 +429,16 @@ def truth_marks(aligned: Iterable[Any]) -> list[tuple[float, Team | None]]:
         elif a.kind is K.TURNOVER:
             marks.append((t, OTHER[a.team]))
     return marks
+
+
+def reference(aligned: Iterable[Any]) -> dict[str, list[list[Any]]]:
+    """The play-by-play to show beside a timeline (JSON-ready; ``timeline.json``'s ``reference``): ``marks``, the team
+    with the ball from each time on (``truth_marks``; None while loose), and ``plays``, each action's time and text
+    (once: a shot and its assist share one)."""
+    aligned = list(aligned)
+    return {"marks": [[round(t, 3), team.value if team is not None else None] for t, team in truth_marks(aligned)],
+            "plays": [list(p) for p in sorted({(round(float(al.t), 3), al.action.description) for al in aligned
+                                               if al.t is not None and al.action.description and not al.action.synthetic})]}
 
 
 def truth_teams(marks: Sequence[tuple[float, Team | None]], ts: np.ndarray) -> list[Team | None]:

@@ -88,6 +88,18 @@ VIDEO=runs/studio/<video id>/source.video
 .venv/bin/python tools/nba_diagnose.py $G --tag baseline
 ```
 
+To watch the result, open the recording in the Studio ([STUDIO.md](STUDIO.md)): it finds the game folder whose
+`game.json` names the video and draws the newest timeline run on the feed, and **Watch** plays it at full speed. To
+render a clip instead, with the broadcast's sound, to `$G/videos/<tag>_<start>-<end>.mp4`:
+
+```bash
+.venv/bin/python tools/nba_overlay.py $G --tag baseline --auto 180              # the 3 minutes with the most going on
+.venv/bin/python tools/nba_overlay.py $G --tag baseline --start 600 --end 780
+```
+
+Both show the team with the ball by the timeline and by the play-by-play, and each decided shot. The play-by-play
+the timeline was scored against is kept in `timeline.json` (`reference`) for them.
+
 `$G/game.json` names the video and the ESPN event id, plus optional team colours (BGR) for the team classifier.
 `espn_summary.json` comes from `courtvision.nba.espn.fetch_summary(event_id, out=...)`. The court tracker can run
 in parallel chunks (`--start` / `--duration`), one output file per chunk.

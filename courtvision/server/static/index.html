@@ -10,13 +10,14 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308090a'/%3E%3Cpath d='M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5' fill='none' stroke='%23edeef0' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3.8' fill='%23ff7a2f'/%3E%3C/svg%3E">
   <link rel="preload" href="static/archivo.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="static/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="static/styles.css?v=20261029-lens6">
-  <script src="static/lens.js?v=20261029-lens6" defer></script>
-  <script src="static/app.js?v=20261029-lens6" defer></script>
-  <script src="static/studio.js?v=20261029-lens6" defer></script>
-  <script src="static/genui.js?v=20261029-lens6" defer></script>
-  <script src="static/lab.js?v=20261029-lens6" defer></script>
-  <script src="static/shell.js?v=20261029-lens6" defer></script>
+  <link rel="stylesheet" href="static/styles.css?v=20261029-poss4">
+  <script src="static/lens.js?v=20261029-poss4" defer></script>
+  <script src="static/app.js?v=20261029-poss4" defer></script>
+  <script src="static/studio.js?v=20261029-poss4" defer></script>
+  <script src="static/possession.js?v=20261029-poss4" defer></script>
+  <script src="static/genui.js?v=20261029-poss4" defer></script>
+  <script src="static/lab.js?v=20261029-poss4" defer></script>
+  <script src="static/shell.js?v=20261029-poss4" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -141,6 +142,8 @@
             <article class="stage device" aria-label="Game feed">
               <div class="monitor-screen" id="monitor-screen">
                 <img id="studio-frame" alt="Current processed game frame with player and ball tracking" hidden>
+                <video id="watch-video" playsinline preload="metadata" controls controlslist="nofullscreen noremoteplayback" disablepictureinpicture hidden></video>
+                <button type="button" class="tool-pill glass watch-exit" id="watch-exit">Back to live analysis</button>
                 <div class="monitor-empty" id="studio-empty">
                   <canvas class="hero-lens" id="hero-lens" aria-hidden="true"></canvas>
                   <div class="hero-copy">
@@ -162,13 +165,26 @@
                 </div>
                 <div class="monitor-loading" id="studio-loading" hidden><span class="orbit" aria-hidden="true"></span><p id="studio-loading-label">Opening game feed</p></div>
                 <div class="monitor-badge glass" id="monitor-badge" hidden>COMPUTER VISION · ESTIMATED</div>
+                <div class="poss-hud glass" id="poss-hud" hidden>
+                  <p class="poss-now"><span class="poss-chip" id="poss-team" data-team="">No team</span><span class="poss-phase" id="poss-phase"></span></p>
+                  <p class="poss-line"><span class="poss-key">From the video</span><span id="poss-score"></span></p>
+                  <p class="poss-line" id="poss-ref-line" hidden><span class="poss-key">Play-by-play</span><span id="poss-ref"></span></p>
+                  <p class="poss-play" id="poss-play" hidden></p>
+                  <p class="poss-measure" id="poss-measure"></p>
+                </div>
+                <div class="poss-feed" id="poss-feed" aria-live="polite" hidden></div>
                 <div class="monitor-tools">
                   <button type="button" class="tool-pill glass" id="studio-clear-focus" hidden>Show all tracks</button>
+                  <label class="tool-pill glass overlay-switch" id="poss-switch" hidden title="Possession analysis (B)"><input type="checkbox" id="poss-toggle" checked><span class="track" aria-hidden="true"></span><span>Possession</span></label>
                   <label class="tool-pill glass overlay-switch"><input type="checkbox" id="studio-overlay" checked><span class="track" aria-hidden="true"></span><span>Tracking overlay</span></label>
                   <button type="button" class="tool-pill glass icon" id="studio-fullscreen" aria-label="Expand game feed" title="Expand game feed (F)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg></button>
                 </div>
               </div>
               <div class="transport">
+                <div class="poss-ribbon" id="poss-ribbon" hidden title="Who had the ball, from the video (upper band) and the play-by-play (lower band). Ticks are the decided shots: tall for made, short for missed. While watching, click to jump there.">
+                  <svg id="poss-ribbon-svg" viewBox="0 0 1000 13" preserveAspectRatio="none" aria-hidden="true"></svg>
+                  <span class="poss-head" id="poss-head" hidden></span>
+                </div>
                 <div class="scrub" id="monitor-progress">
                   <svg class="momentum" id="momentum" viewBox="0 0 1000 24" preserveAspectRatio="none" aria-hidden="true"></svg>
                   <div class="scrub-track"><span class="scrub-fill"></span></div>
@@ -201,6 +217,11 @@
                 <span class="vision-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="1"/><path d="M8 3.5v9"/><circle cx="8" cy="8" r="1.7"/></svg></span>
                 <span class="vision-text"><span class="vision-label">Court mapping</span><strong id="vision-court" data-tone="warn">Needs setup</strong></span>
                 <button type="button" id="studio-calibrate" class="link-btn">Map court</button>
+              </div>
+              <div class="vision-cell" id="poss-cell">
+                <span class="vision-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 12.5h13"/><path d="M3 12.5V9.5h3v3M6.5 12.5V6h3v6.5M10 12.5V3.5h3v9"/></svg></span>
+                <span class="vision-text"><span class="vision-label">Possession</span><strong id="vision-poss" data-tone="idle">—</strong></span>
+                <button type="button" id="poss-watch" class="link-btn" hidden>Watch</button>
               </div>
             </div>
 

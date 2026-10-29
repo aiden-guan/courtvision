@@ -307,6 +307,7 @@
       const videoTime = Number(response.headers.get("x-video-time"));
       if (Number.isFinite(videoTime)) {
         processedT = videoTime;
+        window.dispatchEvent(new CustomEvent("cv-frame", { detail: { t: videoTime } }));
         text("studio-time", clock(processedT));
         if (workspace?.active?.duration_s) progress(lastStatus?.finished ? 100 : Math.min(100, processedT / workspace.active.duration_s * 100));
       }

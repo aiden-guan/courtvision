@@ -166,6 +166,14 @@ def test_truth_marks_from_play_by_play() -> None:
     marks = tlm.truth_marks(aligned)
     teams = tlm.truth_teams(marks, np.array([5.0, 20.0, 30.5, 40.0, 60.0, 70.5, 75.0, 85.0]))
     assert teams == [None, AWAY, None, HOME, AWAY, AWAY, HOME, HOME]  # nothing known before the first action
+    # the same, shown beside a timeline (timeline.json's "reference"): the marks and each described play
+    aligned[0].action.description, aligned[3].action.description = "Home makes a jumper", "Home bad pass"
+    aligned.append(AlignedAction(PBPAction(next(_ids), 1, 600.0, K.ASSIST, team=HOME, description="Home makes a jumper"),
+                                 10.0, 10.0, "clock"))  # the assist row repeats the shot's text
+    ref = tlm.reference(aligned)
+    assert ref["marks"] == [[round(t, 3), team.value if team else None] for t, team in marks]
+    assert ref["plays"] == [[10.0, "Home makes a jumper"], [50.0, "Home bad pass"]]
+    json.dumps(ref)
 
 
 def test_score_counts_settled_steps_and_matches_changes_of_the_same_team() -> None:

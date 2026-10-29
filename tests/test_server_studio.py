@@ -11,8 +11,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from courtvision.config import load_config
+from courtvision.server import studio
 from courtvision.server.studio import create_studio_app
-from courtvision.types import BBox, Detection, FrameDetections, ObjClass
+from courtvision.types import BBox, Detection, Event, EventKind, FrameDetections, ObjClass, Team
 
 
 class PeopleDetector:
@@ -41,7 +42,8 @@ def app(tmp_path, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     cfg = load_config(None, ["narration.llm_enabled=false", "narration.tts=none", "jev.mode=off"])
-    return create_studio_app(cfg, root=tmp_path / "workspace", auth_token="local-test", detector=PeopleDetector())
+    return create_studio_app(cfg, root=tmp_path / "workspace", auth_token="local-test", detector=PeopleDetector(),
+                             lab_runs=tmp_path / "runs")
 
 
 AUTH = {"Authorization": "Bearer local-test"}
@@ -195,3 +197,45 @@ def test_studio_reads_saved_key_for_next_session_without_exposing_it(app, tmp_pa
         assert "test-only-saved-key" not in state.text
         assert client.post("/api/studio/start", json={"demo":True}, headers=AUTH).status_code == 200
         assert app.state.workspace.game.env["TYPESAFE_API_KEY"] == "test-only-saved-key"
+
+
+def test_an_analysed_video_serves_its_possession_timeline_and_shots(app, video_bytes, monkeypatch):
+    monkeypatch.setattr(studio, "ANALYSIS_RECHECK_S", 0.0)
+    with TestClient(app) as client:
+        video = client.post("/api/studio/upload", content=video_bytes, headers=AUTH).json()
+        assert client.post("/api/studio/start", json={"video_id": video["id"], "home_name": "Warriors",
+                                                      "broadcast": False}, headers=AUTH).status_code == 200
+        assert wait_for(client, lambda s: s["status"] is not None)["analysis"] is None
+        assert client.get("/api/studio/analysis", headers=AUTH).status_code == 404
+        # tools/nba_analyze.py <game> timeline, on this video
+        ws = app.state.workspace
+        run = ws.nba_root / "2025-01-01-AAA-BBB" / "runs" / "full"
+        run.mkdir(parents=True)
+        (run.parents[1] / "game.json").write_text(json.dumps({"video": str(ws.root / video["id"] / "source.video")}))
+        (run / "timeline.json").write_text(json.dumps({"dt_s": .25, "segments": [[0, 1, "home"], [1.25, 2, "away"]],
+                                                       "back_court": [[1.25, 1.5]]}))
+        made = Event("e1", EventKind.SHOT_MADE, 1.0, 30, team=Team.HOME, value=2, attrs={"makes": {"p_made": .9}})
+        (run / "timeline.jsonl").write_text(json.dumps(made.to_dict()) + "\n")
+        state = client.get("/api/studio", headers=AUTH).json()
+        assert state["analysis"]["game"] == "2025-01-01-AAA-BBB" and state["analysis"]["tag"] == "full"
+        doc = client.get("/api/studio/analysis", headers=AUTH).json()
+        assert doc["segments"] == [[0, 1, "home"], [1.25, 2, "away"]] and doc["back_court"] == [[1.25, 1.5]]
+        assert [(e["kind"], e["team"], e["value"], e["p_made"]) for e in doc["events"]] == [("shot_made", "home", 2, .9)]
+        assert doc["teams"]["home"]["name"] == "Warriors"  # no ESPN summary: the names given when opening it
+        assert client.get("/api/studio/analysis").status_code == 401
+        demo = client.post("/api/studio/start", json={"demo": True}, headers=AUTH)
+        assert demo.status_code == 200 and demo.json()["analysis"] is None
+
+
+def test_the_recording_streams_in_ranges_for_watching_with_the_token_in_the_query(app, video_bytes):
+    with TestClient(app) as client:
+        video = client.post("/api/studio/upload?name=Game.avi", content=video_bytes, headers=AUTH).json()
+        url = f"/api/studio/video/{video['id']}"
+        assert client.get(url).status_code == 401 and client.get(url + "?token=wrong").status_code == 401
+        part = client.get(url + "?token=local-test", headers={"Range": "bytes=0-99"})  # a <video> sends no header
+        assert part.status_code == 206 and part.content == video_bytes[:100]
+        assert part.headers["content-type"] == "video/x-msvideo"
+        full = client.get(url, headers=AUTH)
+        assert full.status_code == 200 and full.content == video_bytes
+        for missing in ("0" * 32, "g" * 32, "workspace"):
+            assert client.get(f"/api/studio/video/{missing}", headers=AUTH).status_code == 404

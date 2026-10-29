@@ -211,7 +211,10 @@ def cmd_timeline(root: Path, args: argparse.Namespace) -> None:
     with (out / "timeline.jsonl").open("w") as fh:
         for e in derived:
             fh.write(json.dumps(e.to_dict()) + "\n")
-    (out / "timeline.json").write_text(json.dumps({**report, **timeline.to_dict()}, indent=1))
+    doc = {**report, **timeline.to_dict()}
+    if aligned is not None:  # the play-by-play beside the timeline, to watch it by (tools/nba_overlay.py, the Studio)
+        doc["reference"] = tlm.reference(aligned.aligned)
+    (out / "timeline.json").write_text(json.dumps(doc, indent=1))
     for key in ("engine", "timeline"):
         if key in report:
             print(f"{key:9} team in settled live play {report[key]['accuracy']:.3f} "
