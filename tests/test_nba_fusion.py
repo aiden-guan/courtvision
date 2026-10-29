@@ -363,6 +363,56 @@ def test_shot_clock_reset_while_the_game_clock_is_stopped_is_no_rim_touch() -> N
     assert of(fuse(ev, bug, only("rim_misses")), EventKind.SHOT_MISSED) == []
 
 
+# --------------------------------------------------------------------------- fusion: turnovers from the shot clock
+
+
+def steal(k: str, t: float) -> list[Event]:
+    """An engine steal of the away team and the home turnover that goes with it."""
+    return [Event(f"st{k}", EventKind.STEAL, t, 0, team=AWAY, player_id="a1"),
+            Event(f"to{k}", EventKind.TURNOVER, t, 0, team=HOME, player_id="h1", attrs={"type": "steal"})]
+
+
+def test_engine_steal_and_its_turnover_need_a_reset_to_24_that_no_shot_explains() -> None:
+    ev = steal("1", 40.0) + steal("2", 70.0) + steal("3", 101.0) + steal("4", 131.0)
+    ev += shot("s1", 98.5, 99.5, HOME)
+    bug = [BugEvent(41.0, "reset24", shot_clock_before=9.0),  # the steal's own fresh 24
+           # 70 s: no reset, the shot clock ran on (the same team kept the ball)
+           BugEvent(100.0, "reset24", shot_clock_before=12.0),  # the rim touch of the miss at 99.5 s
+           BugEvent(130.0, "reset24", shot_clock_before=6.0), BugEvent(132.0, "score", AWAY, 2)]  # a make
+    out = fuse(ev, bug, only("turnover_resets"))
+    assert sorted(e.event_id for e in out if e.kind in (EventKind.STEAL, EventKind.TURNOVER)) == ["st1", "to1"]
+    assert "s1r" in ids(out)
+
+
+def test_turnover_at_a_whistle_takes_the_reset_made_in_the_stoppage_and_with_the_shot_clock_off_stays() -> None:
+    ev = [Event("to1", EventKind.TURNOVER, 24.0, 0, team=HOME, attrs={"type": "out_of_bounds"}),
+          Event("to2", EventKind.TURNOVER, 80.0, 0, team=AWAY)]
+    bug = [BugEvent(25.0, "clock_stop", game_clock=300.0),
+           BugEvent(31.0, "reset24", shot_clock_before=9.0, game_clock=300.0),  # 7 s after it, in the stoppage
+           BugEvent(45.0, "clock_start", game_clock=299.0),
+           BugEvent(60.0, "run24", shot_clock_before=24.0, game_clock=22.0)]  # under 24 s left: the shot clock is off
+    out = fuse(ev, bug, only("turnover_resets"))
+    assert sorted(e.event_id for e in of(out, EventKind.TURNOVER)) == ["to1", "to2"]
+
+
+def test_reset_to_24_at_a_stoppage_with_no_shot_before_it_is_a_dead_ball_turnover_of_the_team_with_the_ball() -> None:
+    ev = [Event("d1", EventKind.DRIBBLE, 20.0, 0, team=AWAY), Event("p1", EventKind.PASS, 23.0, 0, team=AWAY,
+                                                                   player_id="a1")]
+    ev += shot("s1", 66.0, 67.0, HOME)  # the ball goes out after it: a team rebound, no turnover
+    bug = [BugEvent(25.0, "clock_stop", game_clock=300.0),
+           BugEvent(26.0, "reset24", shot_clock_before=9.0, game_clock=300.0),
+           BugEvent(45.0, "clock_start", game_clock=299.0),
+           BugEvent(71.0, "clock_stop", game_clock=274.0),
+           BugEvent(72.0, "reset24", shot_clock_before=10.0, game_clock=274.0),
+           BugEvent(90.0, "clock_start", game_clock=273.0),
+           BugEvent(120.0, "clock_stop", game_clock=245.0),  # a foul: free throws, the last one in, the other team's 24
+           BugEvent(140.0, "score", HOME, 1), BugEvent(141.0, "reset24", shot_clock_before=12.0, game_clock=245.0),
+           BugEvent(160.0, "clock_start", game_clock=244.0)]
+    to = of(fuse(ev, bug, only("deadball_turnovers")), EventKind.TURNOVER)
+    assert [(e.t, e.team, e.attrs["fused"]) for e in to] == [(25.0, AWAY, "shot clock reset at a stoppage")]
+    assert to[0].attrs["inferred"] and to[0].source == "scoreboard"
+
+
 # --------------------------------------------------------------------------- fusion: assists
 
 

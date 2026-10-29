@@ -28,6 +28,11 @@ so its effect on the box score can be measured on its own:
 6. ``handler_values`` (off by default: to be measured): an inferred miss (no shot seen, no 3-D flight) takes 2 or 3
    points from where the shooting team last had the ball just before the release (the engine's possession /
    dribble / pass positions), at the basket that team attacks.
+7. ``turnover_resets``: a steal or a turnover hands the ball to the other team, which gets a fresh 24 (NBA rule 7),
+   so the shot clock resets to 24 with it, and no shot or score explains that reset (a possession that ends in a shot
+   is no turnover). An engine steal or turnover with no such reset near it is dropped. ``deadball_turnovers``: a
+   reset to 24 at a stoppage with no shot or free throw before it is a dead-ball turnover (out of bounds, a
+   violation, an offensive foul) of the team that had the ball.
 
 Times: the ESPN bug shows a basket ``score_lag_s`` after it; a shot result is a little after its release.
 """
@@ -155,6 +160,8 @@ class FusionConfig:
     rebounds: bool = True
     bug_rebounds: bool = True
     oreb_misses: bool = True
+    turnover_resets: bool = True  # engine steals / turnovers need a reset to 24 that no shot explains (pass 7)
+    deadball_turnovers: bool = True  # a reset to 24 at a stoppage with no shot before it: a turnover (pass 7)
     rebound_window_s: float = 6.0  # the rebound of a miss happens within this
     bug_rebound_window_s: float = 8.0  # the shot clock shows who got the ball within this after the miss
     oreb_hold_s: float = 2.0  # the camera must stay in the other half this long to call a defensive rebound
@@ -343,6 +350,8 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
         out = _fix_rebounds(out, cfg, direction, attacker, settled)  # type: ignore[arg-type]
     if cfg.handler_values and court is not None:
         out = _handler_values(out, cfg, court, attacker)
+    if cfg.turnover_resets or cfg.deadball_turnovers:
+        out = _bug_turnovers(out, bug, cfg, running)
     if cfg.assists:
         made_ids = {e.shot_id for e in out if e.kind is EventKind.SHOT_MADE and not _is_ft(e)}
         final = []
@@ -413,6 +422,63 @@ def _bug_rebounds(events: list[Event], bug: list[BugEvent], cfg: FusionConfig,
         settled.add(m.event_id)
     out.sort(key=lambda e: e.t)
     return out, settled
+
+
+def _bug_turnovers(events: list[Event], bug: list[BugEvent], cfg: FusionConfig, running: Any) -> list[Event]:
+    """Steals and turnovers from the shot clock (pass 7). The team that gains the ball gets a fresh 24, so a turnover
+    shows as a reset to 24 that no shot explains: no shot result within ``reset_window_s`` of it (the rim touch), no
+    score change within ``reset_make_after_s`` after it and, at a stoppage, none since the whistle (the free throws).
+    ``turnover_resets``: an engine steal or turnover with no such reset within ``reset_turnover_s`` (of the whistle,
+    at a stoppage) is dropped; a steal is also the other team's turnover at the same time, so the pair goes together.
+    With under 24 s on the game clock the shot clock is off and shows nothing: those are kept. ``deadball_turnovers``:
+    such a reset at a stoppage, with no shot result in the ``rebound_window_s`` before the whistle (a team rebound,
+    a foul on the shot) and no engine turnover near, is a dead-ball turnover of the team that had the ball."""
+    out = list(events)
+    resets = [b for b in bug if b.kind == "reset24"]
+    if not resets:
+        return out  # no shot clock read: nothing to check against
+    scores = [b for b in bug if b.kind == "score"]
+    stops = sorted(b.t for b in bug if b.kind == "clock_stop")
+    clocks = sorted((b.t, b.game_clock) for b in bug if b.game_clock is not None)
+    shots = [e for e in out if e.kind in (EventKind.SHOT_MADE, EventKind.SHOT_MISSED) and not _is_ft(e)]
+    lo, hi = cfg.reset_window_s
+
+    def whistle(r: BugEvent) -> float:
+        """When the possession changed: the clock stop before a reset made at a stoppage, else the reset."""
+        return r.t if running(r.t) else next((t for t in reversed(stops) if t <= r.t), r.t)
+
+    def explained(r: BugEvent) -> bool:
+        w = whistle(r)
+        return (any(lo <= e.t - r.t <= hi for e in shots)
+                or any(0.0 <= s.t - r.t <= cfg.reset_make_after_s or w - cfg.score_lag_s <= s.t <= r.t for s in scores))
+
+    def clock_off(t: float) -> bool:
+        before = [g for tb, g in clocks if tb <= t]
+        return bool(before) and before[-1] < 24.0
+
+    changes = [(whistle(r), r) for r in resets if not explained(r)]
+    if cfg.turnover_resets:
+        out = [e for e in out if e.kind not in (EventKind.STEAL, EventKind.TURNOVER) or clock_off(e.t)
+               or any(w - cfg.reset_turnover_s <= e.t <= r.t + cfg.reset_turnover_s for w, r in changes)]
+    if cfg.deadball_turnovers:
+        n_new = 0
+        for w, r in changes:
+            if w == r.t:
+                continue  # a reset in play: a steal or a rim touch, which the engine has to tell
+            if any(w - cfg.rebound_window_s <= e.t <= r.t for e in shots):
+                continue  # the ball went out after that shot (a team rebound) or the shooter was fouled
+            if any(e.kind is EventKind.TURNOVER and w - cfg.reset_turnover_s <= e.t <= r.t + cfg.reset_turnover_s
+                   for e in out):
+                continue  # the engine has it
+            team = possession_at(out, w)
+            if team is None:
+                continue
+            n_new += 1
+            out.append(Event(f"fuse-to{n_new}", EventKind.TURNOVER, w, 0, team=team, player_id=f"{team.value}-unknown",
+                             confidence=0.5, source="scoreboard",
+                             attrs={"fused": "shot clock reset at a stoppage", "inferred": True}))
+    out.sort(key=lambda e: e.t)
+    return out
 
 
 def _fix_rebounds(events: list[Event], cfg: FusionConfig, direction: PlayDirection,
