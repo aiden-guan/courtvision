@@ -564,9 +564,10 @@ def _bug_turnovers(events: list[Event], bug: list[BugEvent], cfg: FusionConfig, 
         return r.t if running(r.t) else next((t for t in reversed(stops) if t <= r.t), r.t)
 
     def explained(r: BugEvent) -> bool:
+        if any(lo <= e.t - r.t <= hi for e in shots) or any(0.0 <= s.t - r.t <= cfg.reset_make_after_s for s in scores):
+            return True
         w = whistle(r)
-        return (any(lo <= e.t - r.t <= hi for e in shots)
-                or any(0.0 <= s.t - r.t <= cfg.reset_make_after_s or w - cfg.score_lag_s <= s.t <= r.t for s in scores))
+        return not running(r.t) and any(w - cfg.score_lag_s <= s.t <= r.t for s in scores)  # the free throws
 
     def clock_off(t: float) -> bool:
         before = [g for tb, g in clocks if tb <= t]
@@ -579,8 +580,8 @@ def _bug_turnovers(events: list[Event], bug: list[BugEvent], cfg: FusionConfig, 
     if cfg.deadball_turnovers:
         n_new = 0
         for w, r in changes:
-            if w == r.t:
-                continue  # a reset in play: a steal or a rim touch, which the engine has to tell
+            if running(r.t):
+                continue  # a reset in play: a steal (``reset_steals``) or a rim touch
             if any(w - cfg.rebound_window_s <= e.t <= r.t for e in shots):
                 continue  # the ball went out after that shot (a team rebound) or the shooter was fouled
             if any(e.kind is EventKind.TURNOVER and w - cfg.reset_turnover_s <= e.t <= r.t + cfg.reset_turnover_s
