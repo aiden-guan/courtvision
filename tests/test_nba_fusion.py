@@ -458,6 +458,17 @@ def test_make_takes_the_last_teammate_pass_within_the_window_as_its_assist() -> 
     assert ast[0].attrs["fused"] == "last pass before a make"
 
 
+def test_assist_is_the_last_pass_in_the_scorers_possession_whatever_team_the_engine_gave_it() -> None:
+    ev = shot("s1", 9.0, 10.0, HOME, made=True, player="h1") + shot("s2", 49.0, 50.0, HOME, made=True, player="h1")
+    ev += [Event("p1", EventKind.PASS, 7.0, 0, team=AWAY, player_id="h2"),  # home's pass, the team misread
+           Event("p2", EventKind.PASS, 47.0, 0, team=HOME, player_id="h3")]  # before a reset: another possession
+    bug = [BugEvent(2.0, "run24", shot_clock_before=24.0), BugEvent(48.0, "reset24", shot_clock_before=11.0)]
+    ast = of(fuse(ev, bug, only("assists", "assist_possession")), EventKind.ASSIST)
+    assert [(a.t, a.team, a.player_id, a.shot_id) for a in ast] == [(7.0, HOME, "h2", "s1")]
+    old = of(fuse(ev, bug, only("assists")), EventKind.ASSIST)  # the engine's team labels and no possession
+    assert [(a.player_id, a.shot_id) for a in old] == [("h3", "s2")]
+
+
 # --------------------------------------------------------------------------- fusion: 3-D flight values
 
 

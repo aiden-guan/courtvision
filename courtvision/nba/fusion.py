@@ -15,6 +15,9 @@ so its effect on the box score can be measured on its own:
    missed attempt is inferred for the team in possession (``possession_at``).
 3. ``assists``: assists of shots that ended up missed are retracted; a make without one takes the last completed
    pass of a teammate within ``assist_window_s`` (NBA scorers credit a pass leading directly to the basket).
+   ``assist_possession``: the pass only has to fall in the scorer's possession, with no shot-clock reset (a rim
+   touch, a change of possession, a whistle) between it and the release: the scorebug names the team that scored,
+   which then had the ball all along, whatever team the engine gave the pass.
 4. ``shot_teams`` (needs the camera, ``PlayDirection``): the broadcast camera follows the ball, so the floor point
    it aims at shows which half the play is in. Each team attacks one basket per half of the game; the made
    baskets (scorebug team + the half the camera was on) tell which. A shot takes the team attacking the half the
@@ -187,6 +190,7 @@ class FusionConfig:
     reset_make_after_s: float = 4.0  # a score change this soon after a reset: the reset was the make
     inferred_release_s: float = 1.0  # an inferred attempt is released this long before its rim touch / make
     assist_window_s: float = 3.5
+    assist_possession: bool = True  # pass 3: the assist is the last pass in the scorer's possession, any team label
 
 
 def _results(events: list[Event]) -> list[Event]:
@@ -385,10 +389,18 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
             final.append(e)
         out = final
         assisted = {e.shot_id for e in out if e.kind is EventKind.ASSIST}
+        resets = [b.t for b in bug if b.kind in ("reset24", "reset14", "run24")]
         for e in [e for e in out if e.kind is EventKind.SHOT_MADE and not _is_ft(e) and e.shot_id not in assisted]:
             att = attempts.get(e.shot_id or "")
             t_rel = att.t if att is not None else e.t - cfg.inferred_release_s
-            passes = [p for p in out if p.kind is EventKind.PASS and p.team is e.team and p.team is not None
+
+            def teammate(p: Event) -> bool:
+                if not cfg.assist_possession or not resets:
+                    return p.team is e.team and p.team is not None
+                # no shot-clock reset since the pass: the scoring team (the bug's) had the ball all along
+                return p.team is not None and not any(p.t < t <= t_rel for t in resets)
+
+            passes = [p for p in out if p.kind is EventKind.PASS and teammate(p)
                       and 0.0 <= t_rel - p.t <= cfg.assist_window_s
                       and (e.player_id is None or p.player_id != e.player_id)]
             if passes:
