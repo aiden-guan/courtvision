@@ -125,11 +125,16 @@ def triggers(bug: list[BugEvent], acts: list, running, lo: float, hi: float,  # 
     orebs = [(t, a) for t, _, a in acts if is_oreb(a)]
     out = {}
     a, z = WINDOWS["reset24"]
-    rim = [b.t for b in inside if b.kind == "reset24" and running(b.t)
-           and not any(0.0 <= s - b.t <= cfg.reset_make_after_s for s in scores)]
-    out["rim_miss"] = _pr(len(rim), sum(any(a <= t - r <= z for t, _ in misses) for r in rim),
-                          sum(lo <= t < hi for t, _ in misses),
-                          sum(any(a <= t - r <= z for r in rim) for t, _ in misses if lo <= t < hi))
+    rim24 = [b for b in inside if b.kind == "reset24" and running(b.t)
+             and not any(0.0 <= s - b.t <= cfg.reset_make_after_s for s in scores)]
+    # held_resets: a reset whose count starts at once (a run24 from the value before it) is no rim touch
+    held = [r for r in rim24 if not any(b.kind == "run24" and b.shot_clock_before == r.shot_clock_before
+                                        and 0.0 < b.t - r.t <= 2.0 for b in bug)]
+    for key, rs in (("rim_miss", rim24), ("rim_miss_held", held)):
+        rim = [r.t for r in rs]
+        out[key] = _pr(len(rim), sum(any(a <= t - r <= z for t, _ in misses) for r in rim),
+                       sum(lo <= t < hi for t, _ in misses),
+                       sum(any(a <= t - r <= z for r in rim) for t, _ in misses if lo <= t < hi))
     a, z = WINDOWS["reset14"]
     r14 = [b.t for b in inside if b.kind == "reset14" and running(b.t) and running(b.t + 1.5)
            and not any(b.t - 0.5 <= s <= b.t + 1.5 for s in stops)]
@@ -141,6 +146,8 @@ def triggers(bug: list[BugEvent], acts: list, running, lo: float, hi: float,  # 
     marks = sorted((b for b in bug if b.kind in ("reset14", "run24", "score", "clock_stop")), key=lambda b: b.t)
     rows = [x for _, _, x in acts]
     tally = {"bug_oreb": [0, 0, 0, 0], "bug_dreb": [0, 0, 0, 0]}  # fired, hits, true, found
+    team = [0, 0, 0, 0]  # team_rebounds: a clock stop first = a team rebound (no player's)
+    team_rows: Counter = Counter()  # what the play-by-play has after the misses whose first sign is a clock stop
     for k, (t, m) in enumerate(misses):
         if not lo <= t < hi:
             continue
@@ -164,8 +171,65 @@ def triggers(bug: list[BugEvent], acts: list, running, lo: float, hi: float,  # 
         if true is not None:
             tally[true][2] += 1
             tally[true][3] += said == true
+        is_team = true is not None and reb.player_id is None
+        stop_first = mark is not None and mark.kind == "clock_stop"
+        team[0] += stop_first
+        team[1] += stop_first and is_team
+        team[2] += is_team
+        team[3] += stop_first and is_team
+        if stop_first:
+            team_rows["none" if reb is None or true is None else category(reb)] += 1
     for key, v in tally.items():
         out[key] = _pr(*v)
+    out["team_reb"] = {**_pr(*team), "rows": dict(team_rows.most_common())}
+    out.update(turnover_triggers(bug, acts, running, lo, hi, cfg))
+    return out
+
+
+def turnover_triggers(bug: list[BugEvent], acts: list, running, lo: float, hi: float,  # noqa: ANN001
+                      cfg: FusionConfig) -> dict:
+    """``turnover_resets`` / ``deadball_turnovers`` (fusion-integration, pass 7) with the play-by-play's field-goal
+    results for the engine's shots: a reset to 24 that no shot result (``reset_window_s``) or score change explains
+    is a change of possession; ``kept``: the true turnovers / steals the filter keeps (such a reset within
+    ``reset_turnover_s`` of them or of the whistle, or the shot clock off); ``deadball``: such resets at a stoppage
+    with no shot result in the ``rebound_window_s`` before the whistle, by the true action around the whistle."""
+    a, z = cfg.reset_window_s
+    fg = [t for t, _, x in acts if x.kind in (EventKind.SHOT_MADE, EventKind.SHOT_MISSED) and not x.is_free_throw]
+    scores = [b.t for b in bug if b.kind == "score"]
+    stops = sorted(b.t for b in bug if b.kind == "clock_stop")
+    clocks = sorted((b.t, b.game_clock) for b in bug if b.game_clock is not None)
+
+    def whistle(r: BugEvent) -> float:
+        return r.t if running(r.t) else next((t for t in reversed(stops) if t <= r.t), r.t)
+
+    def explained(r: BugEvent) -> bool:
+        w = whistle(r)
+        return (any(a <= t - r.t <= z for t in fg)
+                or any(0.0 <= s - r.t <= cfg.reset_make_after_s or w - cfg.score_lag_s <= s <= r.t for s in scores))
+
+    def clock_off(t: float) -> bool:
+        before = [g for tb, g in clocks if tb <= t]
+        return bool(before) and before[-1] < 24.0
+
+    changes = [(whistle(r), r) for r in bug if r.kind == "reset24" and not explained(r)]
+    out = {}
+    for kind, key in ((EventKind.TURNOVER, "turnover_kept"), (EventKind.STEAL, "steal_kept")):
+        ts = [t for t, _, x in acts if x.kind is kind and lo <= t < hi]
+        near = [any(w - cfg.reset_turnover_s <= t <= r.t + cfg.reset_turnover_s for w, r in changes) for t in ts]
+        off = [clock_off(t) for t in ts]
+        out[key] = {"true": len(ts), "kept": sum(n or o for n, o in zip(near, off, strict=True)),
+                    "by_reset": sum(near), "clock_off": sum(o and not n for n, o in zip(near, off, strict=True)),
+                    "share": round(sum(n or o for n, o in zip(near, off, strict=True)) / len(ts), 3) if ts else None}
+    rows: Counter = Counter()
+    for w, r in changes:
+        if w == r.t or not lo <= r.t < hi or any(w - cfg.rebound_window_s <= t <= r.t for t in fg):
+            continue
+        near = {c for t, c, _ in acts if w - cfg.reset_turnover_s <= t <= r.t + cfg.reset_turnover_s}
+        rows["turnover" if "turnover" in near else "foul" if "foul" in near else
+             (sorted(near)[0] if near else "none")] += 1
+    n = sum(rows.values())
+    out["deadball_to"] = {"n": n, "hits": rows["turnover"], "precision": round(rows["turnover"] / n, 3) if n else None,
+                          "rows": dict(rows.most_common())}
     return out
 
 
@@ -202,9 +266,17 @@ def main() -> int:
             print(f"  {k}: n={v['n']} median {v['median']:.2f} (p10 {v['p10']:.2f}, p90 {v['p90']:.2f})")
         print("triggers: precision (hits / fired), recall (found / true)")
         for k, v in doc["triggers"].items():
+            if "kept" in v:
+                share = "-" if v["share"] is None else f"{v['share']:.0%}"
+                print(f"  {k}: {share} ({v['kept']}/{v['true']}: {v['by_reset']} by a reset, {v['clock_off']} "
+                      f"with the shot clock off)")
+                continue
             prec = "-" if v["precision"] is None else f"{v['precision']:.0%}"
-            rec = "-" if v["recall"] is None else f"{v['recall']:.0%}"
-            print(f"  {k}: precision {prec} ({v['hits']}/{v['n']}), recall {rec} ({v['found']}/{v['true']})")
+            line = f"  {k}: precision {prec} ({v['hits']}/{v['n']})"
+            if "recall" in v:
+                rec = "-" if v["recall"] is None else f"{v['recall']:.0%}"
+                line += f", recall {rec} ({v['found']}/{v['true']})"
+            print(line + (f"; play-by-play: {v['rows']}" if "rows" in v else ""))
     print(f"\n-> {root / 'bug_study.json'}")
     return 0
 
