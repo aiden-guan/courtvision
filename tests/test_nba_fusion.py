@@ -377,6 +377,13 @@ def test_shot_clock_reset_next_to_a_turnover_or_an_engine_shot_adds_no_miss() ->
     assert sorted(e.event_id for e in out) == sorted(e.event_id for e in ev)
 
 
+def test_shot_clock_reset_with_an_engine_shot_in_the_air_adds_no_miss() -> None:
+    # released 0.4 s before the reset; the engine calls the miss 1.1 s after it (the ball seen below the rim late)
+    ev = [Event("p1", EventKind.POSSESSION, 150.0, 0, team=HOME)] + shot("s1", 163.3, 164.8, HOME)
+    out = fuse(ev, [BugEvent(163.7, "reset24", shot_clock_before=19.0)], only("rim_misses"))
+    assert sorted(e.event_id for e in out) == sorted(e.event_id for e in ev)
+
+
 def test_shot_clock_reset_while_the_game_clock_is_stopped_is_no_rim_touch() -> None:
     # out of bounds at 25 s: the clock stops, the shot clock is reset for the other team at 30 s, play resumes at 45 s
     ev = [Event("p2", EventKind.PASS, 20.0, 0, team=AWAY, player_id="a1")]

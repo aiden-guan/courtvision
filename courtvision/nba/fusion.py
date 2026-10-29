@@ -11,8 +11,9 @@ so its effect on the box score can be measured on its own:
    (``inferred: scoreboard``) comes after the shots the camera saw, and is dropped when its score change went to
    another shot (it was that shot, seen late, not a miss of its own).
 2. ``rim_misses``: a shot-clock reset to 24 while the game clock runs, with no score change right after it and no
-   engine turnover / steal near it, is a rim touch: the engine's missed shot just before it is kept; without one a
-   missed attempt is inferred for the team in possession (``possession_at``).
+   engine turnover / steal near it, is a rim touch: the engine's missed shot just before it (or released in the
+   ``reset_window_s`` before it, its result seen late) is kept; without one a missed attempt is inferred for the
+   team in possession (``possession_at``).
 3. ``assists``: assists of shots that ended up missed are retracted; a make without one takes the last completed
    pass of a teammate within ``assist_window_s`` (NBA scorers credit a pass leading directly to the basket).
    ``assist_possession``: the pass only has to fall in the scorer's possession, with no shot-clock reset (a rim
@@ -316,6 +317,8 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
                 continue
             if any(e.kind is EventKind.SHOT_MADE and abs(e.t - r.t) <= 2.0 for e in cur):
                 continue
+            if any(e.kind is EventKind.SHOT_ATTEMPT and not _is_ft(e) and lo <= e.t - r.t <= 0.0 for e in cur):
+                continue  # a shot in the air at the reset (its result, seen late, can come well after the rim)
             add_shot(r.t, possession_at(cur, r.t - cfg.inferred_release_s), 2, False, "shot clock reset (rim touch)")
     if cfg.oreb_misses:
         cur = sorted(by_id.values(), key=lambda e: e.t)
