@@ -1,7 +1,7 @@
 """A/B on a game folder: analyze.py / pseudo_labels.py / ball_labels.py of commit --rev (default 063e638, before the
 frame-rate work) against the working tree, in one process with the same dependencies, on the stored camera track,
 detections, ball track and teacher folders.
-    .venv/bin/python ab_rate_check.py runs/nba/<game> [--det-dir detections] [--perceive START_S DURATION_S]
+    .venv/bin/python tools/nba_rate_identity_check.py runs/nba/<game> [--det-dir detections] [--perceive START_S DURATION_S]
         [--detect START_S DURATION_S --weights runs/models/student/best.pt] [--rev 063e638]"""
 import argparse
 import gc
