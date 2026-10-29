@@ -23,6 +23,13 @@ at once).
   ``reset14`` or a put-back basket (offensive), a ``run24`` (defensive) or a clock stop (open) within
   ``bug_rebound_window_s`` after the miss and before the next one. Precision: the true rebound of the miss is of that
   kind; recall: the share of the true misses with that rebound that it decides.
+* ``rim_miss_held`` (``held_resets``): ``rim_miss`` without the resets whose count starts at once.
+* ``team_reb`` (``team_rebounds``): a clock stop is the first sign after the true miss. Precision: the play-by-play
+  has a team rebound for it (``rows``: what it has); recall: the share of the team rebounds of misses it finds.
+* ``turnover_kept`` / ``steal_kept`` (``turnover_resets``): the share of the true turnovers / steals with a reset to
+  24 that no field-goal result or score change explains near them (or the shot clock off), i.e. kept by the filter.
+* ``deadball_to`` (``deadball_turnovers``): such resets at a stoppage with no field-goal result before the whistle,
+  by the true action around them (``rows``) and whether a free throw comes before the clock restarts (``ft_after``).
 
 ``--split S`` reports [start, S) and [S, end] apart (e.g. the stretch the rules were tuned on and the rest of the
 game). Writes ``bug_study.json`` in the game folder.
@@ -221,15 +228,21 @@ def turnover_triggers(bug: list[BugEvent], acts: list, running, lo: float, hi: f
                     "by_reset": sum(near), "clock_off": sum(o and not n for n, o in zip(near, off, strict=True)),
                     "share": round(sum(n or o for n, o in zip(near, off, strict=True)) / len(ts), 3) if ts else None}
     rows: Counter = Counter()
+    ft_after: Counter = Counter()  # of those, a free throw (a 1-point score change) before the game clock restarts
+    starts = sorted(b.t for b in bug if b.kind == "clock_start")
+    ones = [b.t for b in bug if b.kind == "score" and b.points == 1]
     for w, r in changes:
         if w == r.t or not lo <= r.t < hi or any(w - cfg.rebound_window_s <= t <= r.t for t in fg):
             continue
         near = {c for t, c, _ in acts if w - cfg.reset_turnover_s <= t <= r.t + cfg.reset_turnover_s}
-        rows["turnover" if "turnover" in near else "foul" if "foul" in near else
-             (sorted(near)[0] if near else "none")] += 1
+        label = "turnover" if "turnover" in near else "foul" if "foul" in near else \
+            (sorted(near)[0] if near else "none")
+        rows[label] += 1
+        restart = next((t for t in starts if t > r.t), float("inf"))
+        ft_after[label] += any(r.t <= t <= restart for t in ones)
     n = sum(rows.values())
     out["deadball_to"] = {"n": n, "hits": rows["turnover"], "precision": round(rows["turnover"] / n, 3) if n else None,
-                          "rows": dict(rows.most_common())}
+                          "rows": dict(rows.most_common()), "ft_after": dict(ft_after.most_common())}
     return out
 
 
@@ -276,7 +289,8 @@ def main() -> int:
             if "recall" in v:
                 rec = "-" if v["recall"] is None else f"{v['recall']:.0%}"
                 line += f", recall {rec} ({v['found']}/{v['true']})"
-            print(line + (f"; play-by-play: {v['rows']}" if "rows" in v else ""))
+            print(line + (f"; play-by-play: {v['rows']}" if "rows" in v else "")
+                  + (f"; a free throw before the restart: {v['ft_after']}" if "ft_after" in v else ""))
     print(f"\n-> {root / 'bug_study.json'}")
     return 0
 
