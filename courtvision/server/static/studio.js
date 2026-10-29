@@ -13,6 +13,13 @@
     return { ...extra, ...(token ? { Authorization: `Bearer ${token}` } : {}) };
   };
   const text = (id, value) => { if ($(id).textContent !== String(value)) $(id).textContent = value; };
+  const setVision = (id, value, tone) => { text(id, value); $(id).dataset.tone = tone; };
+  const progress = value => { $("studio-progress").value = value; $("monitor-progress").style.setProperty("--p", value); };
+  const pad = n => String(n).padStart(2, "0");
+  // Key plays drawn on the feed timeline, keyed by event id so revisions replace earlier marks.
+  const MARK_KINDS = new Set(["shot_made", "shot_missed", "steal", "block", "turnover", "foul", "period_start", "period_end"]);
+  const marks = new Map();
+  let marksQueued = false;
   const clock = value => {
     if (!Number.isFinite(value)) return "--:--";
     const sec = Math.max(0, Math.floor(value));
@@ -36,7 +43,7 @@
     notice.replaceChildren(document.createTextNode(message));
     if (calibration) {
       const button = document.createElement("button");
-      button.type = "button"; button.textContent = "Set up court →";
+      button.type = "button"; button.textContent = "Map court";
       button.addEventListener("click", setupCourt); notice.append(button);
     }
     notice.hidden = !message;
@@ -64,17 +71,18 @@
     const hasActive = !!workspace?.active || !isStudio;
     $("studio-play").disabled = !hasActive;
     $("studio-speed").disabled = !hasActive || !!status.finished;
-    $("studio-play").textContent = status.finished ? "↺" : status.paused ? "▶" : "Ⅱ";
+    $("studio-play").dataset.state = status.finished ? "restart" : status.paused ? "play" : "pause";
     $("studio-play").setAttribute("aria-label", status.finished ? "Restart analysis" : status.paused ? "Resume analysis" : "Pause analysis");
     if (Number.isFinite(status.speed)) $("studio-speed").value = String(status.speed);
     document.body.classList.toggle("has-session", hasActive);
+    document.body.dataset.analysis = !hasActive ? "" : status.finished ? "complete" : status.paused ? "paused" : "live";
     const label = status.finished ? "Analysis complete" : status.paused ? "Analysis paused" : "Analysis in progress";
     text("studio-session-label", label);
     if (Number.isFinite(status.t)) processedT = status.t;
     text("studio-time", clock(processedT));
     const duration = workspace?.active?.duration_s;
-    if (duration) $("studio-progress").value = Math.min(100, processedT / duration * 100);
-    if (status.finished) { $("studio-progress").value = 100; text("studio-throughput", "Analysis complete"); }
+    if (duration) progress(Math.min(100, processedT / duration * 100));
+    if (status.finished) { progress(100); text("studio-throughput", "Analysis complete"); }
     if (status.error || workspace?.error) notify(status.error || workspace.error);
     else if (status.finished && status.needs_calibration) notify("Tracking complete. Reopen this video and map the court to produce spatial events and statistics.");
     else if (status.needs_calibration && !workspace?.active?.demo) {
@@ -89,8 +97,10 @@
     if (!vision || !Number.isFinite(vision.people)) return;
     lastVision = vision;
     text("vision-people", Number.isFinite(vision.people) ? vision.people : "—");
-    text("vision-ball", vision.ball_visible ? "Visible" : "Out of view");
-    text("vision-court", vision.calibrated ? (vision.gate && vision.gate !== "live" ? "Out of view" : "Mapped") : "Needs setup");
+    setVision("vision-ball", vision.ball_visible ? "Visible" : "Out of view", vision.ball_visible ? "good" : "idle");
+    if (!vision.calibrated) setVision("vision-court", "Needs setup", "warn");
+    else if (vision.gate && vision.gate !== "live") setVision("vision-court", "Out of view", "warn");
+    else setVision("vision-court", "Mapped", "good");
     text("studio-throughput", Number.isFinite(vision.fps) ? `${vision.fps.toFixed(1)} frames/s · ${Math.round(vision.inference_ms)} ms` : "Analyzing");
     renderTracks(vision.tracks || []);
   }
@@ -131,7 +141,9 @@
     }
     for (let index = 0; index < tracks.length; index++) {
       const confidence = tracks[index].confidence;
-      $("track-list").children[index].lastChild.textContent = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : synthetic ? "SIM" : "—";
+      const row = $("track-list").children[index];
+      row.lastChild.textContent = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : synthetic ? "SIM" : "—";
+      row.style.setProperty("--conf", Number.isFinite(confidence) ? confidence : 0);
     }
   }
   function renderWorkspace(data) {
@@ -139,14 +151,15 @@
     const active = data.active;
     if (!active && activeId) {
       activeId = null; lastStatus = null; lastVision = null; processedT = 0;
-      text("studio-title", "Read the game."); text("studio-subtitle", "Follow every movement. Find the plays that matter.");
-      text("studio-session-label", "Ready for footage"); text("monitor-source", "Video input / standby");
+      text("studio-title", "Game studio"); text("studio-subtitle", "Open game footage to start.");
+      text("studio-session-label", "Ready for footage"); text("monitor-source", "No footage open");
+      document.body.dataset.analysis = "";
       text("studio-time", "00:00"); text("studio-duration", "--:--"); text("studio-throughput", "Awaiting footage");
-      text("vision-people", "—"); text("vision-ball", "Awaiting footage"); text("vision-court", "Needs setup");
+      text("vision-people", "—"); setVision("vision-ball", "Awaiting footage", "idle"); setVision("vision-court", "Needs setup", "warn");
       renderTracks([]);
       $("studio-empty").hidden = false; $("studio-frame").hidden = true; $("studio-loading").hidden = true;
       $("monitor-badge").hidden = true; $("studio-play").disabled = true; $("studio-speed").disabled = true;
-      $("studio-progress").value = 0; notify("");
+      progress(0); notify(""); marks.clear();
       if (frameUrl) { URL.revokeObjectURL(frameUrl); frameUrl = null; }
     }
     $("studio-export").disabled = !active;
@@ -154,7 +167,7 @@
     document.body.classList.toggle("has-session", !!active);
     if (active) {
       text("studio-title", active.name.replace(/\.[^.]+$/, ""));
-      text("studio-subtitle", active.demo ? "A simulated game. The complete studio experience." : "Follow the footage. Review the plays. Understand the game.");
+      text("studio-subtitle", active.demo ? "Simulated game · synthetic tracking and events" : "Your footage · analyzed on this Mac");
       text("monitor-source", active.demo ? "SIMULATOR DEMO" : `${active.width} × ${active.height} · ${Number(active.fps).toFixed(0)} fps source`);
       text("studio-duration", clock(active.duration_s));
       $("monitor-badge").hidden = false;
@@ -168,11 +181,11 @@
         $("studio-empty").hidden = true;
       }
     }
-    receiveVision(data.vision); receiveStatus(data.status);
+    receiveVision(data.vision); receiveStatus(data.status); queueMarks();
     if (active?.demo && data.frame) {
       text("vision-people", (data.frame.players || []).length);
-      text("vision-ball", data.frame.ball?.visible ? "Visible" : "Out of view");
-      text("vision-court", "Simulator map");
+      setVision("vision-ball", data.frame.ball?.visible ? "Visible" : "Out of view", data.frame.ball?.visible ? "good" : "idle");
+      setVision("vision-court", "Simulator map", "good");
       renderTracks(data.frame.players || [], true);
     }
     const model = data.model;
@@ -195,6 +208,24 @@
       }
       $("studio-recent").hidden = !(data.videos || []).length;
     }
+  }
+  function renderMarks() {
+    marksQueued = false;
+    const duration = workspace?.active?.duration_s, nodes = [];
+    if (duration > 0) for (const mark of marks.values()) {
+      const node = document.createElement("i");
+      node.style.left = `${Math.min(100, Math.max(0, mark.t / duration * 100))}%`;
+      node.dataset.kind = mark.kind;
+      if (mark.team) node.dataset.team = mark.team;
+      nodes.push(node);
+    }
+    $("timeline-marks").replaceChildren(...nodes);
+  }
+  function queueMarks() { if (!marksQueued) { marksQueued = true; requestAnimationFrame(renderMarks); } }
+  function tick() {
+    const now = new Date(), time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    text("sys-clock", time);
+    text("feed-clock", `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${time}`);
   }
   async function poll() {
     try {
@@ -240,7 +271,7 @@
       if (Number.isFinite(videoTime)) {
         processedT = videoTime;
         text("studio-time", clock(processedT));
-        if (workspace?.active?.duration_s) $("studio-progress").value = lastStatus?.finished ? 100 : Math.min(100, processedT / workspace.active.duration_s * 100);
+        if (workspace?.active?.duration_s) progress(lastStatus?.finished ? 100 : Math.min(100, processedT / workspace.active.duration_s * 100));
       }
       lastMonitorKey = monitorKey;
     } catch { /* Keep the last frame during reconnect. */ }
@@ -356,20 +387,26 @@
     const msg = event.detail;
     if (msg.type === "vision") receiveVision(msg);
     if (msg.type === "status") receiveStatus(msg);
+    if (msg.type === "event" && msg.event?.event_id) {
+      const e = msg.event;
+      if (MARK_KINDS.has(e.kind) && e.status !== "retracted" && Number.isFinite(e.t)) marks.set(e.event_id, { t: e.t, kind: e.kind, team: e.team });
+      else marks.delete(e.event_id);
+      queueMarks();
+    }
     if (msg.type === "reset") {
       focusedTrack = ""; $("studio-clear-focus").hidden = true; renderTracks([]);
-      lastVision = null; processedT = 0; $("studio-progress").value = 0;
-      for (const [id, value] of [["vision-people","—"],["vision-ball","Awaiting video"],["vision-court","Not configured"]]) text(id,value);
+      lastVision = null; processedT = 0; progress(0); marks.clear(); queueMarks();
+      text("vision-people", "—"); setVision("vision-ball", "Awaiting video", "idle"); setVision("vision-court", "Not configured", "warn");
       $("studio-frame").hidden = true; $("studio-loading").hidden = false;
     }
     if (msg.type === "frame" && (workspace?.active?.demo || !isStudio)) {
       text("vision-people", (msg.players || []).length);
-      text("vision-ball", msg.ball?.visible ? "Visible" : "Out of view");
-      text("vision-court", workspace?.active?.demo ? "Simulator map" : "Mapped");
+      setVision("vision-ball", msg.ball?.visible ? "Visible" : "Out of view", msg.ball?.visible ? "good" : "idle");
+      setVision("vision-court", workspace?.active?.demo ? "Simulator map" : "Mapped", "good");
       renderTracks(msg.players || [], !!workspace?.active?.demo || !isStudio);
       processedT = msg.t;
     }
   });
   window.addEventListener("pagehide", () => { stopped = true; if (frameUrl) URL.revokeObjectURL(frameUrl); });
-  poll(); monitor();
+  poll(); monitor(); tick(); setInterval(tick, 1000);
 })();

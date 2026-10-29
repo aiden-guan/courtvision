@@ -3,56 +3,74 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0c0d0f">
   <meta name="description" content="A local basketball video workspace. Follow the footage, player tracks, live events and box score in one view.">
-  <title>CourtVision — Game studio</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23eb6834'/%3E%3Cpath d='M3 16h26M16 3v26M7 7c5 4 5 14 0 18M25 7c-5 4-5 14 0 18' stroke='%230b0b0b' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="static/styles.css?v=20261028">
-  <link rel="stylesheet" href="static/studio.css?v=20261028">
-  <script src="static/app.js?v=20261028" defer></script>
-  <script src="static/studio.js?v=20261028" defer></script>
+  <title>CourtVision Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='3' fill='%230c0d0f'/%3E%3Cpath d='M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5' fill='none' stroke='%23e6e6e3' stroke-width='2.4'/%3E%3Ccircle cx='16' cy='16' r='3.6' fill='%23ff8a2a'/%3E%3C/svg%3E">
+  <link rel="preload" href="static/archivo.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="static/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="static/styles.css?v=20261028-console">
+  <link rel="stylesheet" href="static/studio.css?v=20261028-console">
+  <script src="static/app.js?v=20261028-console" defer></script>
+  <script src="static/studio.js?v=20261028-console" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
 
-<header class="workspace-header">
-  <a class="studio-brand" href="/" aria-label="CourtVision home"><svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><path d="M11 3H3v8M21 3h8v8M29 21v8h-8M11 29H3v-8" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 16h16M16 8v16M10 10c5 3 5 9 0 12M22 10c-5 3-5 9 0 12" fill="none" stroke="currentColor" stroke-width="1"/></svg><span>CourtVision<span class="brand-divider">/</span><span class="studio-word">Analysis studio</span></span></a>
-  <div class="workspace-actions"><span class="local-indicator"><span></span>On-device vision</span><button type="button" class="btn" id="studio-export" disabled>Export <span aria-hidden="true">↗</span></button><button type="button" class="btn btn-primary" id="studio-open"><span aria-hidden="true">＋</span> Open footage</button><button type="button" class="icon-btn workspace-settings" id="studio-settings" aria-label="Workspace settings" title="Workspace settings"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--surface)"/><circle cx="15" cy="17" r="3" fill="var(--surface)"/></svg></button></div>
+<header class="topbar">
+  <a class="studio-brand" href="/" aria-label="CourtVision home">
+    <svg class="brand-mark" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><path class="brand-frame" d="M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5"/><circle class="brand-ball" cx="16" cy="16" r="3.6"/></svg>
+    <span class="brand-word">CourtVision</span><span class="brand-tag">Studio</span>
+  </a>
+
+  <nav class="tabs" role="tablist" aria-label="Dashboard views">
+    <button type="button" role="tab" id="tab-live" aria-controls="view-live" aria-selected="true">Live</button>
+    <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false" tabindex="-1">Stats</button>
+    <button type="button" role="tab" id="tab-operator" aria-controls="view-operator" aria-selected="false" tabindex="-1">Game controls</button>
+    <button type="button" role="tab" id="tab-calibration" aria-controls="view-calibration" aria-selected="false" tabindex="-1">Court setup</button>
+    <button type="button" role="tab" id="tab-roi" aria-controls="view-roi" aria-selected="false" tabindex="-1">Scoreboard setup</button>
+  </nav>
+
+  <div class="workspace-actions">
+    <span class="sys-clock" id="sys-clock" aria-hidden="true">--:--:--</span>
+    <span class="local-indicator">On-device</span>
+    <button type="button" class="btn" id="studio-export" disabled><svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M10 3v9M6 8.5 10 12.5l4-4M4 14.5V17h12v-2.5"/></svg><span class="btn-label">Export</span></button>
+    <button type="button" class="btn btn-primary" id="studio-open"><svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>Load footage</button>
+    <button type="button" class="icon-btn" id="studio-settings" aria-label="Workspace settings" title="Workspace settings"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 7h16M4 17h16"/><rect x="7" y="4.5" width="5" height="5" class="knob"/><rect x="12" y="14.5" width="5" height="5" class="knob"/></svg></button>
+  </div>
 </header>
 
-<div class="workspace-heading"><div><p class="eyebrow"><span class="eyebrow-square" aria-hidden="true"></span> THE COURTSIDE PERSPECTIVE</p><h1 id="studio-title">Read the game<span class="title-period">.</span></h1><p id="studio-subtitle">Follow every movement. Find the plays that matter.</p></div><div class="session-label"><span class="status-orbit" aria-hidden="true"></span><span id="studio-session-label">Ready for footage</span></div></div>
-
-<header class="scorebar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true"></span>
-    <span class="brand-name">CourtVision</span>
+<section class="scorebar device" aria-label="Game status">
+  <div class="workspace-heading">
+    <h1 id="studio-title">Game studio</h1>
+    <p id="studio-subtitle">Open game footage to start.</p>
+    <div class="session-label"><span class="status-tag" aria-hidden="true"></span><span id="studio-session-label">Ready for footage</span></div>
   </div>
 
   <div class="scoreline" role="group" aria-label="Score and clock">
     <div class="team team-away">
       <span class="team-bar" aria-hidden="true"></span>
-      <span class="team-name" id="away-name">Away</span>
-      <span class="team-abbr" id="away-abbr" aria-hidden="true">AWY</span>
+      <span class="team-id"><span class="team-side" aria-hidden="true">Away</span><span class="team-name" id="away-name">Away</span><span class="team-abbr" id="away-abbr" aria-hidden="true">AWY</span></span>
       <span class="poss" id="away-poss" aria-hidden="true"></span>
       <span class="score" id="away-score">0</span>
     </div>
     <div class="clockbox">
       <span class="period" id="period">&ndash;</span>
       <span class="game-clock" id="game-clock">--:--</span>
-      <span class="shot-clock" id="shot-clock" title="Shot clock">--</span>
+      <span class="shot"><span class="shot-label" aria-hidden="true">Shot</span><span class="shot-clock" id="shot-clock" title="Shot clock">--</span></span>
     </div>
     <div class="team team-home">
       <span class="score" id="home-score">0</span>
       <span class="poss" id="home-poss" aria-hidden="true"></span>
-      <span class="team-name" id="home-name">Home</span>
-      <span class="team-abbr" id="home-abbr" aria-hidden="true">HOM</span>
+      <span class="team-id"><span class="team-side" aria-hidden="true">Home</span><span class="team-name" id="home-name">Home</span><span class="team-abbr" id="home-abbr" aria-hidden="true">HOM</span></span>
       <span class="team-bar" aria-hidden="true"></span>
     </div>
     <span class="sr-only" id="poss-sr"></span>
   </div>
 
   <div class="bar-right">
-    <span id="score-source-label" class="score-source-label">Score unavailable</span>
+    <span class="meta-pair"><span class="meta-key" aria-hidden="true">Source</span><span id="score-source-label" class="score-source-label">Score unavailable</span></span>
     <span class="flag" id="paused-flag" hidden>Paused</span>
     <span class="flag flag-muted" id="muted-flag" hidden>Muted</span>
     <div class="conn" id="conn-status" role="status" data-state="connecting">
@@ -62,15 +80,7 @@
       <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
     </button>
   </div>
-</header>
-
-<nav class="tabs" role="tablist" aria-label="Dashboard views">
-  <button type="button" role="tab" id="tab-live" aria-controls="view-live" aria-selected="true"><span aria-hidden="true" class="tab-number">01</span> Live analysis</button>
-  <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false" tabindex="-1">Box score &amp; shots</button>
-  <button type="button" role="tab" id="tab-operator" aria-controls="view-operator" aria-selected="false" tabindex="-1">Game controls</button>
-  <button type="button" role="tab" id="tab-calibration" aria-controls="view-calibration" aria-selected="false" tabindex="-1">Court setup</button>
-  <button type="button" role="tab" id="tab-roi" aria-controls="view-roi" aria-selected="false" tabindex="-1">Scoreboard setup</button>
-</nav>
+</section>
 
 <main id="main" tabindex="-1">
 
@@ -79,28 +89,108 @@
   <!-- =========================================================== LIVE -->
   <section class="view view-live" id="view-live" role="tabpanel" aria-labelledby="tab-live">
     <div class="col col-main">
-      <article class="monitor-card">
-        <header class="monitor-head"><div><span class="monitor-dot" aria-hidden="true"></span><h2>Game feed</h2><span id="monitor-source">Video input / standby</span></div><div class="monitor-options"><button type="button" id="studio-clear-focus" class="focus-reset" hidden>All tracks ×</button><label class="overlay-switch"><input type="checkbox" id="studio-overlay" checked><span>Tracking</span></label><button type="button" class="monitor-expand" id="studio-fullscreen" aria-label="Expand game feed" title="Expand game feed"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M8 20H4v-4"/></svg></button></div></header>
+      <article class="monitor-card device">
+        <header class="monitor-head">
+          <div class="monitor-title"><span class="cam-id" aria-hidden="true">CAM 01</span><h2>Game feed</h2><span id="monitor-source">No footage open</span></div>
+          <div class="monitor-options">
+            <button type="button" id="studio-clear-focus" class="focus-reset" hidden>Show all tracks</button>
+            <label class="overlay-switch"><input type="checkbox" id="studio-overlay" checked><span>Overlay</span></label>
+            <button type="button" class="monitor-expand" id="studio-fullscreen" aria-label="Expand game feed" title="Expand game feed"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M8 20H4v-4"/></svg></button>
+          </div>
+        </header>
         <div class="monitor-screen" id="monitor-screen">
           <img id="studio-frame" alt="Current processed game frame with player and ball tracking" hidden>
           <div class="monitor-empty" id="studio-empty">
-            <svg class="empty-court" viewBox="0 0 700 390" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="1"><path d="M92 330 228 70h244l136 260H92ZM160 200h380M350 70v260"/><ellipse cx="350" cy="200" rx="56" ry="35"/><path d="m279 70-23 67h188l-23-67M199 330l49-98h204l49 98"/><path d="M227 74c-65 60-50 116 123 116S538 134 473 74M103 313c113-167 381-167 494 0"/><path d="M315 95h70M311 286h78"/></g><circle cx="350" cy="106" r="5" stroke="currentColor"/><circle cx="350" cy="276" r="8" stroke="currentColor"/></svg>
-            <div class="empty-coordinate" aria-hidden="true">CV / VISION WORKSPACE<span>INPUT_01 · NO SIGNAL</span></div>
-            <div class="empty-content"><span class="empty-kicker">YOUR NEXT GAME STARTS HERE</span><h2>Every play.<br><span>In focus.</span></h2><p>Turn game footage into a closer look at the action.</p><div class="empty-actions"><button type="button" class="btn btn-primary" id="studio-empty-open">Open game footage <span aria-hidden="true">↗</span></button><button type="button" class="btn btn-demo" id="studio-demo">Try the simulator <span aria-hidden="true">→</span></button></div><span class="empty-formats">MP4, MOV, MKV, AVI / up to 8 GB</span></div>
-            <div class="empty-reticle" aria-hidden="true"><span>COURT MAPPING</span><svg viewBox="0 0 260 260" fill="none"><circle cx="130" cy="130" r="100" stroke="currentColor" stroke-dasharray="2 10"/><circle cx="130" cy="130" r="74" stroke="currentColor" opacity=".25"/><path d="M130 15v30M130 215v30M15 130h30M215 130h30M110 130h40M130 110v40" stroke="currentColor"/><path d="M85 55H55v30M175 55h30v30M205 175v30h-30M85 205H55v-30" stroke="currentColor" stroke-width="2"/></svg><span>AWAITING SOURCE</span></div>
-            <div class="empty-workflow"><span><b>01</b> Open footage</span><span><b>02</b> Follow tracks</span><span><b>03</b> Map &amp; review</span></div>
+            <div class="hero-copy">
+              <p class="hero-kicker">No source connected</p>
+              <h2 class="hero-title">Nothing on the floor goes unseen.</h2>
+              <p class="hero-lede">Load game footage. CourtVision detects every player and the ball, maps them onto the court and logs each play. Processing stays on this Mac.</p>
+              <div class="empty-actions">
+                <button type="button" class="btn btn-primary btn-large" id="studio-empty-open"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>Load footage</button>
+                <button type="button" class="btn btn-large" id="studio-demo">Run simulation</button>
+              </div>
+              <p class="empty-formats">MP4 · MOV · MKV · AVI — up to 8 GB</p>
+              <ol class="empty-workflow" aria-label="How it works"><li><b>1</b>Load footage</li><li><b>2</b>Track people</li><li><b>3</b>Map the court</li></ol>
+            </div>
+            <figure class="hero-map" aria-hidden="true">
+              <figcaption><span>Overhead map</span><span>Demo · 10 tracked</span></figcaption>
+              <svg class="hc" viewBox="-24 -24 988 548" fill="none" focusable="false">
+                <defs>
+                  <pattern id="hc-grid" width="47" height="50" patternUnits="userSpaceOnUse"><path class="hc-grid-line" d="M47 0V50M0 50H47"/></pattern>
+                </defs>
+                <rect class="hc-floor" x="0" y="0" width="940" height="500"/>
+                <rect x="0" y="0" width="940" height="500" fill="url(#hc-grid)"/>
+                <g class="hc-paint"><rect x="0" y="170" width="190" height="160"/><rect x="750" y="170" width="190" height="160"/></g>
+                <g class="hc-lines">
+                  <rect x="0" y="0" width="940" height="500"/>
+                  <path d="M470 0v500"/>
+                  <circle cx="470" cy="250" r="60"/>
+                  <rect x="0" y="170" width="190" height="160"/>
+                  <circle cx="190" cy="250" r="60"/>
+                  <path d="M0 30h140a237.5 237.5 0 0 1 0 440H0"/>
+                  <path d="M40 220v60M52.5 210a40 40 0 0 1 0 80"/>
+                  <rect x="750" y="170" width="190" height="160"/>
+                  <circle cx="750" cy="250" r="60"/>
+                  <path d="M940 30H800a237.5 237.5 0 0 0 0 440h140"/>
+                  <path d="M900 220v60M887.5 210a40 40 0 0 0 0 80"/>
+                </g>
+                <g class="hc-rims"><circle cx="52.5" cy="250" r="7.5"/><circle cx="887.5" cy="250" r="7.5"/></g>
+                <g class="hc-coords"><text x="4" y="-8">0,0</text><text class="hc-end" x="936" y="522">94,50 ft</text></g>
+                <g class="hc-play">
+                  <path class="hc-trail hc-trail-screen" d="M760 180C725 190 692 205 668 214"/>
+                  <path class="hc-trail hc-trail-drive" d="M650 250C690 268 722 296 742 318"/>
+                  <path class="hc-trail hc-trail-roll" d="M668 214C735 218 800 230 842 240"/>
+                  <path class="hc-trail hc-trail-lift" d="M720 410C770 428 825 446 870 455"/>
+                  <path class="hc-pass" pathLength="1" d="M750 312L878 449"/>
+                  <path class="hc-shot" pathLength="1" d="M878 449L887.5 250"/>
+                  <g class="hc-def hc-d1"><circle cx="676" cy="262" r="11"/><text x="676" y="292">14</text></g>
+                  <g class="hc-def hc-d2"><circle cx="792" cy="200" r="11"/><text x="792" y="230">21</text></g>
+                  <g class="hc-def hc-d3"><circle cx="748" cy="106" r="11"/><text x="748" y="136">05</text></g>
+                  <g class="hc-def hc-d4"><circle cx="744" cy="388" r="11"/><text x="744" y="418">33</text></g>
+                  <g class="hc-def hc-d5"><circle cx="872" cy="76" r="11"/><text x="872" y="106">10</text></g>
+                  <g class="hc-off hc-o2"><circle cx="760" cy="180" r="11"/><text x="760" y="210">32</text></g>
+                  <g class="hc-off hc-o3"><circle cx="722" cy="88" r="11"/><text x="722" y="118">11</text></g>
+                  <g class="hc-off hc-o4"><circle cx="720" cy="410" r="11"/><text x="720" y="440">24</text></g>
+                  <g class="hc-off hc-o5"><circle cx="902" cy="44" r="11"/><text x="902" y="74">08</text></g>
+                  <g class="hc-off hc-o1"><circle cx="650" cy="250" r="11"/><path class="hc-lock" d="M626 238v-12h12M662 226h12v12M674 262v12h-12M638 274h-12v-12"/><text class="hc-id" x="650" y="294">07 · 0.94</text></g>
+                  <circle class="hc-height" cx="658" cy="244" r="6"/>
+                  <circle class="hc-ball" cx="658" cy="244" r="6"/>
+                  <circle class="hc-make" cx="887.5" cy="250" r="12"/>
+                </g>
+              </svg>
+            </figure>
           </div>
-          <div class="monitor-loading" id="studio-loading" hidden><span class="loading-bars" aria-hidden="true">▂ ▅ ▃ ▇</span><p id="studio-loading-label">Opening game feed…</p></div>
+          <div class="feed-hud" aria-hidden="true">
+            <i class="vf vf-tl"></i><i class="vf vf-tr"></i><i class="vf vf-bl"></i><i class="vf vf-br"></i>
+            <span class="feed-rec"></span>
+            <span class="feed-clock" id="feed-clock"></span>
+          </div>
+          <div class="monitor-loading" id="studio-loading" hidden><span class="loading-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span><p id="studio-loading-label">Opening game feed…</p></div>
           <div class="monitor-badge" id="monitor-badge" hidden>COMPUTER VISION · ESTIMATED</div>
         </div>
-        <div class="monitor-progress"><progress id="studio-progress" max="100" value="0" aria-label="Video analysis progress"></progress></div>
-        <footer class="monitor-controls"><div><button type="button" id="studio-play" class="play-control" aria-label="Pause analysis" disabled>Ⅱ</button><span id="studio-time">00:00</span><span class="time-divider">/</span><span id="studio-duration">--:--</span></div><div><span id="studio-throughput">Awaiting footage</span><label class="sr-only" for="studio-speed">Playback speed</label><select id="studio-speed" disabled><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></div></footer>
+        <div class="monitor-progress" id="monitor-progress"><progress id="studio-progress" max="100" value="0" aria-label="Video analysis progress"></progress><div class="timeline-marks" id="timeline-marks" aria-hidden="true"></div></div>
+        <footer class="monitor-controls">
+          <div class="transport">
+            <button type="button" id="studio-play" class="play-control" data-state="pause" aria-label="Pause analysis" disabled><svg class="i-pause" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="3.5" y="2.5" width="3" height="11"/><rect x="9.5" y="2.5" width="3" height="11"/></svg><svg class="i-play" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M4.5 2.5v11l9-5.5Z"/></svg><svg class="i-restart" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v2.8h2.8"/></svg></button>
+            <span class="timecode"><span id="studio-time">00:00</span><span class="time-divider">/</span><span id="studio-duration">--:--</span></span>
+          </div>
+          <div class="rate">
+            <span id="studio-throughput">Awaiting footage</span>
+            <label class="sr-only" for="studio-speed">Playback speed</label>
+            <select id="studio-speed" disabled><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
+          </div>
+        </footer>
       </article>
 
-      <div class="vision-strip" aria-label="Tracking status"><div><span class="metric-symbol" aria-hidden="true">⌖</span><span>People tracked<strong id="vision-people">—</strong></span></div><div><span class="metric-symbol" aria-hidden="true">◉</span><span>Ball tracking<strong id="vision-ball">Awaiting footage</strong></span></div><div><span class="metric-symbol" aria-hidden="true">▱</span><span>Court map<strong id="vision-court">Needs setup</strong></span><button type="button" id="studio-calibrate" class="text-button">Map court ↗</button></div></div>
+      <div class="vision-strip" role="group" aria-label="Tracking status">
+        <div class="vision-cell"><span class="vision-label">People tracked</span><strong id="vision-people">—</strong></div>
+        <div class="vision-cell"><span class="vision-label">Ball</span><strong id="vision-ball" data-tone="idle">Awaiting footage</strong></div>
+        <div class="vision-cell"><span class="vision-label">Court mapping</span><strong id="vision-court" data-tone="warn">Needs setup</strong><button type="button" id="studio-calibrate" class="text-button">Map court</button></div>
+      </div>
+
       <article class="card card-court">
         <header class="card-head">
-          <h2>Court view</h2>
+          <h2>Court map</h2>
           <div class="legend" aria-label="Legend">
             <span class="chip chip-away"><span class="dot" aria-hidden="true"></span><span id="legend-away">Away</span></span>
             <span class="chip chip-home"><span class="dot" aria-hidden="true"></span><span id="legend-home">Home</span></span>
@@ -118,7 +208,7 @@
         <footer class="card-foot"><span id="court-meta">&nbsp;</span></footer>
       </article>
 
-      <article class="card">
+      <article class="card card-compare">
         <header class="card-head"><h2>Team comparison</h2><span class="muted" id="compare-meta">&nbsp;</span></header>
         <table class="compare" aria-describedby="compare-meta">
           <thead><tr><th scope="col">Metric</th><th scope="col" id="compare-away-name">Away</th><th scope="col" id="compare-home-name">Home</th></tr></thead>
@@ -129,25 +219,16 @@
 
     <div class="col col-side">
       <article class="card card-tracks">
-        <header class="card-head"><h2><span class="tracking-icon" aria-hidden="true">⌖</span> Tracked people</h2><span id="track-count" class="track-count">00</span></header>
+        <header class="card-head"><h2>Tracked people</h2><span id="track-count" class="track-count">00</span></header>
         <p class="track-instruction" id="track-instruction">Select a track to highlight it in the feed.</p>
         <div class="track-list" id="track-list" role="group" aria-label="Detected person tracks"></div>
-        <div class="track-empty" id="track-empty"><svg viewBox="0 0 52 60" width="40" height="46" fill="none" stroke="currentColor" aria-hidden="true"><path d="M13 2H2v12M39 2h11v12M50 46v12H39M13 58H2V46"/><circle cx="26" cy="19" r="6"/><path d="M14 42v-7a12 12 0 0 1 24 0v7"/></svg><p>A closer look at every movement.</p><span>Person tracks appear when analysis starts.</span></div>
-        <footer class="track-foot"><span class="track-key-dot" aria-hidden="true"></span><span id="track-foot-note">Image-space tracking · IDs are provisional</span></footer>
-      </article>
-      <article class="card card-insights">
-        <header class="card-head"><h2>Coach insights</h2><span class="muted" id="insight-more">&nbsp;</span></header>
-        <ol class="insight-list" id="insight-list"></ol>
-      </article>
-
-      <article class="card card-transcript">
-        <header class="card-head"><h2>Narration</h2><span class="muted" id="transcript-count">0 lines</span></header>
-        <ol class="transcript" id="transcript-list" aria-live="polite" aria-relevant="additions" aria-label="Narration transcript, newest first"></ol>
+        <div class="track-empty" id="track-empty"><p>No one tracked yet</p><span>People appear here as soon as analysis starts.</span></div>
+        <footer class="track-foot"><span id="track-foot-note">Image-space tracking · IDs are provisional</span></footer>
       </article>
 
       <article class="card card-feed">
         <header class="card-head">
-          <h2>Play-by-play</h2>
+          <h2>Event log</h2>
           <div class="head-tools">
             <label class="sr-only" for="feed-filter">Event filter</label>
             <select id="feed-filter">
@@ -159,6 +240,16 @@
           </div>
         </header>
         <ol class="feed" id="feed-list" aria-label="Events, newest first"></ol>
+      </article>
+
+      <article class="card card-insights">
+        <header class="card-head"><h2>Coach insights</h2><span class="muted" id="insight-more">&nbsp;</span></header>
+        <ol class="insight-list" id="insight-list"></ol>
+      </article>
+
+      <article class="card card-transcript">
+        <header class="card-head"><h2>Narration</h2><span class="muted" id="transcript-count">0 lines</span></header>
+        <ol class="transcript" id="transcript-list" aria-live="polite" aria-relevant="additions" aria-label="Narration transcript, newest first"></ol>
       </article>
     </div>
   </section>
@@ -173,7 +264,7 @@
       <header class="card-head"><h2 id="box-home-title">Home</h2><span class="muted" id="box-home-summary">&nbsp;</span></header>
       <div class="table-scroll"><table class="box" id="box-home-table"></table></div>
     </article>
-    <p class="footnote"><span class="prov-mark" aria-hidden="true">P</span> provisional: the line includes events not yet confirmed by the scoreboard or an operator. Minutes and +/- come only from operator lineup entries.</p>
+    <p class="footnote"><span class="prov-mark" aria-hidden="true">P</span> Provisional: the line includes events not yet confirmed by the scoreboard or an operator. Minutes and +/- come only from operator lineup entries.</p>
 
     <div class="stats-grid">
       <article class="card card-shots">
@@ -365,20 +456,20 @@
 
 <dialog id="studio-dialog" class="studio-dialog" aria-labelledby="upload-title">
   <form id="studio-form">
-    <header class="upload-header"><div><p class="eyebrow">YOUR NEXT GAME</p><h2 id="upload-title">Bring the game into focus.</h2></div><button type="button" class="icon-btn" id="studio-close" aria-label="Close video setup">×</button></header>
-    <label class="upload-zone" id="studio-dropzone" for="studio-file"><span class="upload-icon" aria-hidden="true">↥</span><strong id="studio-filename">Drop a game video here</strong><span id="studio-file-detail">or choose a file from your computer</span><span class="file-types">MP4, MOV, MKV, AVI · Up to 8 GB</span><input id="studio-file" type="file" accept="video/*,.mkv,.avi,.mov,.mp4"></label>
+    <header class="upload-header"><div><h2 id="upload-title">Load game footage</h2><p class="upload-lede">The video is copied to a folder on this Mac and analyzed here.</p></div><button type="button" class="icon-btn" id="studio-close" aria-label="Close video setup"><svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button></header>
+    <label class="upload-zone" id="studio-dropzone" for="studio-file"><span class="upload-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M4 15v5h16v-5"/></svg></span><strong id="studio-filename">Drop a game video here</strong><span id="studio-file-detail">or choose a file from your computer</span><span class="file-types">MP4 · MOV · MKV · AVI — up to 8 GB</span><input id="studio-file" type="file" accept="video/*,.mkv,.avi,.mov,.mp4"></label>
     <div class="upload-teams"><label>Away team<input id="studio-away" type="text" maxlength="48" value="Away" required autocomplete="off"></label><label>Home team<input id="studio-home" type="text" maxlength="48" value="Home" required autocomplete="off"></label></div>
     <label class="broadcast-option"><input id="studio-broadcast" type="checkbox" checked><span>Broadcast footage<small>Track camera movement and pause spatial analysis on cutaways.</small></span></label>
-    <div class="setup-explainer"><span aria-hidden="true">⌖</span><p>Tracking starts with your video. Add court landmarks for spatial events and stats. Player names and official scores need a roster and scoreboard setup.</p></div>
+    <div class="setup-explainer"><p>Tracking starts with your video. Add court landmarks for spatial events and stats. Player names and official scores need a roster and scoreboard setup.</p></div>
     <p class="detector-note" id="studio-model-note">First use prepares a local detector (about 350 MB). Generic player and ball detections need review.</p>
     <progress id="studio-upload-progress" max="100" value="0" aria-label="Video upload progress" hidden></progress>
     <p class="upload-status" id="studio-upload-status" role="status" aria-live="polite"></p>
-    <button type="submit" class="btn btn-primary upload-submit" id="studio-start" disabled>Start analysis <span aria-hidden="true">→</span></button>
+    <button type="submit" class="btn btn-primary btn-large upload-submit" id="studio-start" disabled>Start analysis <span aria-hidden="true">→</span></button>
     <div class="recent-videos" id="studio-recent" hidden><h3>Recent footage</h3><div id="studio-video-list"></div></div>
   </form>
 </dialog>
 
-<footer class="workspace-footer"><span>CourtVision <span class="footer-slash">/</span> Game studio</span><span>Vision estimates · Review before using as official statistics</span><span id="studio-cloud">Local processing</span></footer>
+<footer class="workspace-footer"><span>CourtVision Studio</span><span>Vision estimates · Review before using as official statistics</span><span id="studio-cloud">Local processing</span></footer>
 
 <!-- =========================================================== DIALOGS -->
 <dialog class="dialog" id="event-dialog" aria-labelledby="ev-title">
