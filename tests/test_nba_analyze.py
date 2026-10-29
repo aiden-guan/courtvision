@@ -52,13 +52,23 @@ def test_smooth_runs_fill_gaps_of_up_to_max_fill_frames_and_keep_longer_gaps_emp
     assert sorted(_smooth_runs(raw, k=1, max_fill=2)) == frames
 
 
-def test_smooth_runs_average_jitter_within_a_run_but_not_across_a_long_gap() -> None:
-    raw = {f: (5.0 if f == 5 else 0.0, 15.0, 0.0, 3000.0) for f in range(11)}  # one jittery fit
+def test_smooth_runs_drop_a_bad_fit_within_a_run_but_do_not_smooth_across_a_long_gap() -> None:
+    raw = {f: (5.0 if f == 5 else 0.0, 15.0, 0.0, 3000.0) for f in range(11)}  # one bad fit
     raw.update({f: (10.0, 15.0, 0.0, 3000.0) for f in range(20, 31)})  # the next run, after a cut
     out = _smooth_runs(raw, k=5, max_fill=3)
-    assert [round(out[f][0], 6) for f in range(2, 9)] == [0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+    assert all(out[f][0] == pytest.approx(0.0) for f in range(11))  # the median drops it; a mean would smear it
     assert all(out[f][0] == pytest.approx(10.0) for f in range(20, 31))
     assert out[0][3] == pytest.approx(3000.0)
+
+
+def test_smooth_runs_keep_a_steady_pan_and_average_its_jitter() -> None:
+    rng = np.random.default_rng(0)
+    raw = {f: (0.4 * f + rng.normal(0.0, 0.05), 15.0, 0.0, 3000.0) for f in range(40)}
+    out = _smooth_runs(raw, k=5, max_fill=3)
+    err = [out[f][0] - 0.4 * f for f in range(4, 36)]  # away from the ends (held flat by the padding)
+    raw_err = [raw[f][0] - 0.4 * f for f in range(4, 36)]
+    assert abs(float(np.mean(err))) < 0.02  # no lag or bias on a steady turn
+    assert float(np.std(err)) < 0.7 * float(np.std(raw_err))
 
 
 def test_frame_to_frame_maps_a_point_to_the_same_world_direction_in_the_other_frame() -> None:

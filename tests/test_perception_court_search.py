@@ -10,16 +10,21 @@ import pytest
 
 from courtvision.geometry.court import court_for
 from courtvision.perception.broadcast_court import BroadcastCourtTracker, BroadcastTrackerConfig
+from courtvision.perception import court_search
 from courtvision.perception.court_search import (
+    BroadcastPrior,
     CameraParams,
     CourtField,
     EvidenceConfig,
+    aim_range,
     calibrate_frame,
     court_evidence,
     explained,
+    plausible,
     refine,
     rotation,
 )
+from courtvision.perception.court_tracker import court_samples
 
 COURT = court_for("nba")
 CENTER = np.array([47.0, -94.0, 36.0])
@@ -121,3 +126,91 @@ def test_tracker_follows_a_pan_and_drops_a_cut_to_a_closeup() -> None:
     rng = np.random.default_rng(1)
     closeup = rng.integers(0, 255, (SIZE[1], SIZE[0], 3), dtype=np.uint8)  # no floor at all
     assert tracker.update(closeup, cut=True).status == "lost"
+
+
+def test_tracker_keeps_the_camera_through_a_false_cut() -> None:
+    tracker = BroadcastCourtTracker(COURT, SIZE, CENTER, BroadcastTrackerConfig(work_width=960))
+    pans = [6.0 - 0.6 * k for k in range(5)]
+    for k, pan in enumerate(pans):
+        fix = tracker.update(render(CameraParams(CENTER, pan, 15.0, 0.0, 2300.0), seed=k), cut=k in (0, 3))
+        if k == 3:  # the shot-boundary detector fired, but it is the same camera still turning
+            assert fix.status == "tracking"
+            assert fix.params is not None and abs(fix.params.pan - pan) < 0.4
+
+
+def test_plausible_rejects_an_upside_down_fit_and_keeps_a_game_camera() -> None:
+    assert plausible(CameraParams(CENTER, -13.0, 15.5, 0.2, 2200.0), (1920, 1080))
+    assert not plausible(CameraParams(CENTER, 5.0, -21.0, 33.0, 48.0), (1920, 1080))  # seen on a real frame
+    assert not plausible(CameraParams(CENTER, 5.0, 15.0, 4.0, 2200.0), (1920, 1080))  # rolled
+    assert not plausible(CameraParams(CENTER, 5.0, -2.0, 0.0, 2200.0), (1920, 1080))  # looking up
+    assert not plausible(CameraParams(CENTER, 5.0, 15.0, 0.0, 400.0), (1920, 1080))  # wider than the prior
+    assert not plausible(CameraParams(CENTER, 5.0, 15.0, 0.0, 30000.0), (1920, 1080))  # tighter than the prior
+
+
+def test_aim_range_tilt_peaks_at_the_nearest_edge_point_not_a_corner() -> None:
+    pr = BroadcastPrior()
+    C = np.array([47.0, -62.0, 26.0])
+    pan_lo, pan_hi, tilt_lo, tilt_hi = aim_range(C, pr)
+    assert pan_lo < 0.0 < pan_hi
+    nearest = math.degrees(math.atan2(26.0, -4.0 + 62.0))  # (47, -4): the middle of the near edge of the box
+    assert tilt_hi == pytest.approx(nearest)
+    corners = [math.degrees(math.atan2(26.0, math.hypot(x - 47.0, y + 62.0))) for x in pr.aim_x for y in pr.aim_y]
+    assert tilt_hi > max(corners) + 1.0 and tilt_lo == pytest.approx(min(corners))
+
+
+def test_people_boxes_partly_off_the_frame_do_not_wrap_round() -> None:
+    img = render(CameraParams(CENTER, 14.0, 15.5, 0.0, 2300.0))
+    base = court_evidence(img)
+    ev = court_evidence(img, people=[(-50.0, -80.0, 30.0, -10.0), (900.0, 500.0, 1200.0, 700.0)])
+    assert np.array_equal(ev.floor[:, :890], base.floor[:, :890])  # the box above the frame cleared nothing
+    assert not ev.floor[500:, 900:].any()
+    cfg = EvidenceConfig(exclude=[(-100, -100, 50, 50)])  # an exclusion box wholly off the frame
+    assert np.array_equal(court_evidence(img, cfg).floor, base.floor)
+
+
+def test_line_distance_is_clipped_at_a_resolution_free_distance() -> None:
+    cam = CameraParams(CENTER, 14.0, 15.5, 0.0, 2300.0)
+    small = court_evidence(render(cam))  # 540 lines
+    big = court_evidence(render(cam, size=(1920, 1080)))
+    assert small.dist.max() == pytest.approx(EvidenceConfig().dist_clip_px / 2.0)
+    assert big.dist.max() == pytest.approx(EvidenceConfig().dist_clip_px)
+
+
+def test_chamfer_pass_with_the_centre_free_pulls_in_a_pan_tilt_and_zoom_error() -> None:
+    """scipy's diff_step is relative to |x|: with it the centre (y = -94 ft) stepped by 9 ft and a zero pan or roll
+    by about 1e-8, and this start ended about 12 px off (fixed absolute steps: under 2 px)."""
+    truth = CameraParams(CENTER, 0.0, 15.5, 0.0, 2300.0)  # pan and roll exactly 0
+    ev = court_evidence(render(truth))
+    pts, _ = court_samples(COURT, 1.0)
+    start = CameraParams(CENTER + np.array([0.0, 1.0, 0.0]), 0.8, 15.9, 0.0, 2300.0 * 1.03)
+    out = CameraParams.from_vector(court_search._chamfer_pass(ev, pts, start.vector(), np.array([True] * 7), SIZE))
+
+    def err(p: CameraParams) -> float:
+        a, _ = court_search._project(p.G(SIZE), pts)
+        b, wb = court_search._project(truth.G(SIZE), pts)
+        ok = (wb > 0) & (b[:, 0] >= 0) & (b[:, 0] < SIZE[0]) & (b[:, 1] >= 0) & (b[:, 1] < SIZE[1])
+        return float(np.median(np.linalg.norm(a[ok] - b[ok], axis=1)))
+
+    assert err(start) > 30.0 and err(out) < 4.0
+
+
+def test_calibrate_frame_passes_the_reacquisition_window_to_the_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    got: dict[str, float] = {}
+
+    def fake_search(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        got["around_deg"] = kwargs["around_deg"]
+        return []
+
+    monkeypatch.setattr(court_search, "search", fake_search)
+    ev = court_evidence(render(CameraParams(CENTER, 0.0, 15.5, 0.0, 2300.0)))
+    assert calibrate_frame(ev, COURT, around=CameraParams(CENTER, 0.0, 15.5, 0.0, 2300.0), around_deg=25.0) is None
+    assert got["around_deg"] == 25.0
+
+
+def test_level_zero_suppression_keeps_distinct_peaks() -> None:
+    pans = np.array([0.0, 0.1, 0.2, 10.0, 10.1, 20.0])
+    tilts = np.full(6, 15.0)
+    focals = np.full(6, 2000.0)
+    order = np.arange(6)  # already best first
+    kept = court_search._nms(order, pans, tilts, focals, step0=40.0, focal_step=0.1, n=3)
+    assert kept == [0, 3, 5]

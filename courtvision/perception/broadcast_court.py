@@ -6,11 +6,14 @@
   forward with its velocity (pan / tilt / roll / focal only: the centre is fixed for the game). A fit is accepted
   when enough of the court's lines land on line pixels (``min_coverage``) and the change is one a camera
   operator makes in one frame; otherwise the last camera is held for ``hold_frames`` and then the court is lost.
-* **Cuts.** ``cut`` (from a shot-boundary detector) drops the held camera at once.
+* **Cuts.** On a ``cut`` (from a shot-boundary detector) the last camera is refined first and kept when it still
+  fits as well as a re-acquisition must (most flagged cuts in a game are fast pans or flashes, not cuts); only
+  then is it dropped.
 * **Re-acquisition** while lost: every ``reacquire_every`` frames a pan / tilt / zoom search near the last good
-  camera, then over the whole prior; accepted with ``reacquire_quality`` (coverage x explained lines). Replays,
-  close-ups and other cameras (a different centre) fail it and stay "lost", which the broadcast gate treats as
-  not live.
+  camera (``reacquire_around_deg``), then over the whole prior; accepted with ``reacquire_quality`` (coverage x
+  explained lines) and only for a camera the game camera can be (``court_search.plausible``: focal length in the
+  prior's field of view, looking down into the aim box, nearly level, a tight fit). Replays, close-ups and other
+  cameras (a different centre) fail it and stay "lost", which the broadcast gate treats as not live.
 
 ``estimate_center`` finds the game camera's centre from sample frames (``court_search.calibrate_frame`` with
 the centre free, then ``fit_center`` on the good ones). Thresholds are design choices checked on ESPN frames of
@@ -39,6 +42,7 @@ from .court_search import (
     court_evidence,
     explained,
     fit_center,
+    plausible,
     refine,
 )
 
@@ -72,6 +76,7 @@ class BroadcastTrackerConfig:
     memory_min_sep_deg: float = 4.0
     reacquire_quality: float = 0.10
     reacquire_coverage: float = 0.5
+    max_roll_deg: float = 3.0  # plausibility of a re-acquired camera (court_search.plausible)
 
 
 @dataclass(frozen=True)
@@ -144,7 +149,11 @@ class BroadcastCourtTracker:
         cfg = self.config
         ev = self.evidence(frame_bgr, people)
         self._since_cut = 0 if cut else self._since_cut + 1
-        if cut and self.status != "lost":
+        if cut and self.status != "lost" and self._last is not None:
+            pred = self._predict()
+            r = refine(ev, self.court, pred, config=cfg.track_refine)
+            if r is not None and self._acceptable(r, pred) and self._sound(ev, r):
+                return self._accept(r, "tracking")  # not a cut: the same camera, still turning
             self.status = "lost"
             self._lost_frames = 0
         if self.status != "lost" and self._last is not None:
@@ -187,6 +196,18 @@ class BroadcastCourtTracker:
                 and abs(p.roll - last.roll) <= cfg.max_roll_step * k
                 and abs(math.log(p.f / last.f)) <= cfg.max_zoom_step * k)
 
+    def _sound(self, ev: Evidence, r) -> bool:  # noqa: ANN001 (RefineResult)
+        """A fit good enough to stand without the previous frame: a re-acquisition's coverage, quality and inliers,
+        a tight fit and a camera the game camera can be (sets ``r.quality``)."""
+        cfg = self.config
+        if r.coverage < cfg.reacquire_coverage or r.inliers < cfg.min_inliers or r.rmse_px > cfg.max_rmse_px:
+            return False
+        p = CameraParams(self.center * 1.0, r.params.pan, r.params.tilt, r.params.roll, r.params.f)
+        if not plausible(p, ev.size, self.prior, max_roll_deg=cfg.max_roll_deg):
+            return False
+        r.quality = r.coverage * explained(ev, self.court, r.params)
+        return r.quality >= cfg.reacquire_quality
+
     def _accept(self, r, status: str) -> CourtFix:  # noqa: ANN001 (RefineResult)
         p = r.params
         if self._last is not None and status == "tracking":
@@ -215,19 +236,17 @@ class BroadcastCourtTracker:
             if r is not None and r.coverage >= cfg.reacquire_coverage and r.inliers >= cfg.min_inliers \
                     and (best is None or r.coverage * r.inliers > best.coverage * best.inliers):
                 best = r
-        if best is not None:
-            best.quality = best.coverage * explained(ev, self.court, best.params)
-            if best.quality >= cfg.reacquire_quality:
-                best.params = CameraParams(self.center * 1.0, best.params.pan, best.params.tilt, best.params.roll,
-                                           best.params.f)
-                return best
+        if best is not None and self._sound(ev, best):
+            best.params = CameraParams(self.center * 1.0, best.params.pan, best.params.tilt, best.params.roll,
+                                       best.params.f)
+            return best
         self._attempts += 1
         around = None
         if self._last_good is not None and self._attempts % cfg.full_search_every != 0:
             around = self._last_good
         r = calibrate_frame(ev, self.court, self.prior, centers=[self.center], free_center=False, around=around,
-                            top=4)
-        if r is None or r.quality < cfg.reacquire_quality or r.coverage < cfg.reacquire_coverage:
+                            around_deg=cfg.reacquire_around_deg, top=4)
+        if r is None or not self._sound(ev, r):
             return None
         r.params = CameraParams(self.center * 1.0, r.params.pan, r.params.tilt, r.params.roll, r.params.f)
         return r
@@ -247,7 +266,7 @@ def estimate_center(frames: list[np.ndarray], court: CourtSpec, work_width: int 
         small = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else img
         ev = court_evidence(small, evidence)
         r = calibrate_frame(ev, court, prior, free_center=True)
-        if r is None or r.quality < min_quality:
+        if r is None or r.quality < min_quality or not plausible(r.params, ev.size, prior):
             continue
         evs.append(ev)
         starts.append(r.params)

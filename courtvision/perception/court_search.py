@@ -49,6 +49,7 @@ __all__ = [
     "coverage",
     "explained",
     "fit_center",
+    "plausible",
     "refine",
     "rotation",
     "search",
@@ -141,7 +142,7 @@ class EvidenceConfig:
     max_density: float = 0.16  # floor: below this share of strong responses around (lines are sparse)
     min_floor_frac: float = 0.002  # a floor component smaller than this share of the image is dropped
     min_line_len_px: float = 28.0  # line pixel components shorter than this (wood grain, text bits) drop
-    dist_clip_px: float = 30.0
+    dist_clip_px: float = 60.0  # 30 px at the trackers' 960-px work width, where the thresholds were tuned
     exclude: list[tuple[int, int, int, int]] = field(default_factory=list)  # boxes (x, y, w, h) of a 1920x1080
     #   frame that never show the floor (the scorebug)
 
@@ -208,11 +209,18 @@ def court_evidence(img_bgr: np.ndarray, config: EvidenceConfig | None = None,
     density = cv2.boxFilter(strong, -1, (k, k))
     floor = density < cfg.max_density
     sx = w / 1920.0
+
+    def clear(x0: float, y0: float, x1: float, y1: float) -> None:
+        # clipped to the frame first: a negative end would wrap round to the far edge in a slice
+        i0, i1 = int(np.clip(y0, 0, h)), int(np.clip(y1, 0, h))
+        j0, j1 = int(np.clip(x0, 0, w)), int(np.clip(x1, 0, w))
+        floor[i0:i1, j0:j1] = False
+
     for x, y, bw, bh in cfg.exclude:  # boxes in pixels of a 1920x1080 frame
-        x0, y0 = int(round(x * sx)), int(round(y * s))
-        floor[max(0, y0):y0 + int(round(bh * s)), max(0, x0):x0 + int(round(bw * sx))] = False
+        x0, y0 = round(x * sx), round(y * s)
+        clear(x0, y0, x0 + round(bw * sx), y0 + round(bh * s))
     for x1, y1, x2, y2 in people or ():
-        floor[max(0, int(y1)):int(y2) + 1, max(0, int(x1)):int(x2) + 1] = False
+        clear(math.floor(x1), math.floor(y1), math.floor(x2) + 1, math.floor(y2) + 1)
     n, lab, stats, _ = cv2.connectedComponentsWithStats(floor.astype(np.uint8), connectivity=8)
     keep = np.zeros(n, bool)
     keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= cfg.min_floor_frac * h * w
@@ -224,7 +232,7 @@ def court_evidence(img_bgr: np.ndarray, config: EvidenceConfig | None = None,
     keep[0] = False
     lines = keep[lab]
     dist = cv2.distanceTransform((~lines).astype(np.uint8), cv2.DIST_L2, 3)
-    np.minimum(dist, cfg.dist_clip_px, out=dist)
+    np.minimum(dist, cfg.dist_clip_px * s, out=dist)
     return Evidence(np.where(floor, resp, 0.0).astype(np.float32), floor, lines, dist, 2.0 * s)
 
 
@@ -393,6 +401,55 @@ def _angles_to(C: np.ndarray, x: float, y: float) -> tuple[float, float]:
             math.degrees(math.atan2(C[2], math.hypot(x - C[0], y - C[1]))))
 
 
+def aim_range(C: np.ndarray, prior: BroadcastPrior) -> tuple[float, float, float, float]:
+    """(pan_lo, pan_hi, tilt_lo, tilt_hi) of the optical axis from centre ``C`` through the prior's aim box. Pan
+    is extreme at a corner (the box lies in front of the camera); tilt is lowest at the farthest corner and highest
+    at the box point nearest the camera, which is on an edge when the camera is level with the box (half court)."""
+    corners = [_angles_to(C, x, y) for x in prior.aim_x for y in prior.aim_y]
+    nx = min(max(float(C[0]), min(prior.aim_x)), max(prior.aim_x))
+    ny = min(max(float(C[1]), min(prior.aim_y)), max(prior.aim_y))
+    near = 90.0 if math.hypot(nx - C[0], ny - C[1]) < 1e-9 else _angles_to(C, nx, ny)[1]
+    return (min(c[0] for c in corners), max(c[0] for c in corners), min(c[1] for c in corners), near)
+
+
+def focal_range(width: int, prior: BroadcastPrior) -> tuple[float, float]:
+    """Focal lengths (px) of the prior's widest and narrowest horizontal field of view for an image ``width``."""
+    return ((width / 2.0) / math.tan(math.radians(prior.hfov_deg[1]) / 2.0),
+            (width / 2.0) / math.tan(math.radians(prior.hfov_deg[0]) / 2.0))
+
+
+def plausible(params: CameraParams, size: tuple[int, int], prior: BroadcastPrior | None = None,
+              max_roll_deg: float = 3.0, margin_deg: float = 3.0, focal_margin: float = 0.15) -> bool:
+    """Whether a fitted camera is one a broadcast game camera can be: a focal length in the prior's field of view
+    (``focal_margin`` relative slack), looking down (tilt > 0) within the prior's aim box (``margin_deg``), and
+    nearly level (``|roll| <= max_roll_deg``). A fit on crowd texture or a graphic can land lines elsewhere
+    (one such fit came back with tilt -21, roll 33 and f = 48 px)."""
+    pr = prior or BroadcastPrior()
+    f_lo, f_hi = focal_range(size[0], pr)
+    if not (f_lo * (1.0 - focal_margin) <= params.f <= f_hi * (1.0 + focal_margin)):
+        return False
+    _, _, tilt_lo, tilt_hi = aim_range(np.asarray(params.center, float), pr)
+    return (params.tilt > 0.0 and tilt_lo - margin_deg <= params.tilt <= tilt_hi + margin_deg
+            and abs(params.roll) <= max_roll_deg)
+
+
+def _nms(order: np.ndarray, pans: np.ndarray, tilts: np.ndarray, focals: np.ndarray, step0: float,
+         focal_step: float, n: int) -> list[int]:
+    """Up to ``n`` indices of ``order`` (best first), skipping a candidate within 1.5 grid steps in pan, tilt and
+    log focal of one already kept: the next level searches about one step around each, so such neighbours would
+    only repeat the same peak and crowd out the others."""
+    kept: list[int] = []
+    for i in order[: 50 * n]:
+        f = float(focals[i])
+        win = 1.5 * math.degrees(step0 / f)
+        if all(abs(float(pans[i]) - float(pans[j])) > win or abs(float(tilts[i]) - float(tilts[j])) > win
+               or abs(math.log(f / float(focals[j]))) > 1.5 * focal_step for j in kept):
+            kept.append(int(i))
+            if len(kept) >= n:
+                break
+    return kept
+
+
 def search(ev: Evidence, court: CourtSpec, prior: BroadcastPrior | None = None, top: int = 6,
            centers: list[np.ndarray] | None = None, around: CameraParams | None = None,
            around_deg: float = 12.0) -> list[tuple[float, CameraParams]]:
@@ -414,8 +471,7 @@ def search(ev: Evidence, court: CourtSpec, prior: BroadcastPrior | None = None, 
     field = _court_field(court)
     rng = np.random.default_rng(0)
     ev_pts = [_line_points(ev, max(k, 2), pr.inverse_points, rng) for k, _, _ in levels]
-    f_lo = (size[0] / 2.0) / math.tan(math.radians(pr.hfov_deg[1]) / 2.0)
-    f_hi = (size[0] / 2.0) / math.tan(math.radians(pr.hfov_deg[0]) / 2.0)
+    f_lo, f_hi = focal_range(size[0], pr)
     # level 0: the full grid
     k0, floor0, od0, step0, tau0 = pyramid[0]
     cand: list[tuple[float, np.ndarray, float, float, float]] = []
@@ -424,9 +480,7 @@ def search(ev: Evidence, court: CourtSpec, prior: BroadcastPrior | None = None, 
             pan_lo, pan_hi = around.pan - around_deg, around.pan + around_deg
             tilt_lo, tilt_hi = around.tilt - around_deg / 2.0, around.tilt + around_deg / 2.0
         else:
-            corners = [_angles_to(C, x, y) for x in pr.aim_x for y in pr.aim_y]
-            pan_lo, pan_hi = min(c[0] for c in corners), max(c[0] for c in corners)
-            tilt_lo, tilt_hi = min(c[1] for c in corners), max(c[1] for c in corners)
+            pan_lo, pan_hi, tilt_lo, tilt_hi = aim_range(C, pr)
         pp, tt, ff = [], [], []
         for f in np.exp(np.arange(math.log(f_lo), math.log(f_hi) + 1e-9, pr.focal_step)):
             step = math.degrees(step0 / f)
@@ -439,7 +493,7 @@ def search(ev: Evidence, court: CourtSpec, prior: BroadcastPrior | None = None, 
         pans_a, tilts_a, focals_a = np.concatenate(pp), np.concatenate(tt), np.concatenate(ff)
         sc = _scores(floor0, od0, k0, size, P, D, C, pans_a, tilts_a, focals_a, tau0, pr.miss_weight,
                      ev_pts[0], field, pr.inverse_weight)
-        for i in np.argsort(-sc)[: pr.keep[0]]:
+        for i in _nms(np.argsort(-sc), pans_a, tilts_a, focals_a, step0, pr.focal_step, pr.keep[0]):
             cand.append((float(sc[i]), C, float(pans_a[i]), float(tilts_a[i]), float(focals_a[i])))
     cand.sort(key=lambda r: -r[0])
     cand = cand[: pr.keep[0]]
@@ -590,8 +644,18 @@ def _chamfer_pass(ev: Evidence, pts: np.ndarray, x: np.ndarray, free: np.ndarray
         return np.where((w > 0) & np.isfinite(d), d, clip)
 
     scale = np.array([5.0, 5.0, 5.0, 0.5, 0.5, 0.5, 0.02])[free]
-    sol = least_squares(res, x[free], loss="soft_l1", f_scale=0.25 * clip, max_nfev=40, x_scale=scale,
-                        diff_step=scale * 0.02)
+    h = scale * 0.02  # absolute steps: scipy's diff_step is relative to |x|, so a centre at y = -62 ft would step
+    #   6 ft and a pan or roll near 0 by next to nothing
+
+    def jac(p: np.ndarray) -> np.ndarray:  # central differences over the bilinear distance map
+        J = np.empty((len(P), len(p)))
+        for i, hi in enumerate(h):
+            e = np.zeros_like(p)
+            e[i] = hi
+            J[:, i] = (res(p + e) - res(p - e)) / (2.0 * hi)
+        return J
+
+    sol = least_squares(res, x[free], jac=jac, loss="soft_l1", f_scale=0.25 * clip, max_nfev=40, x_scale=scale)
     out = x.copy()
     out[free] = sol.x
     return out
@@ -657,17 +721,22 @@ def coverage(ev: Evidence, court: CourtSpec, params: CameraParams, config: Refin
 
 def calibrate_frame(ev: Evidence, court: CourtSpec, prior: BroadcastPrior | None = None,
                     centers: list[np.ndarray] | None = None, top: int = 5, free_center: bool = True,
-                    around: CameraParams | None = None) -> RefineResult | None:
+                    around: CameraParams | None = None, around_deg: float = 12.0) -> RefineResult | None:
     """Search + refinement of the best candidates; the result whose court lines land on the most lines and explain
-    the most line pixels (``coverage x explained``)."""
+    the most line pixels (``coverage x explained``). The free-centre refinement is kept only when it scores
+    better than the fixed-centre one (a centre that slides along a line can raise coverage and explain less)."""
     best: tuple[float, RefineResult] | None = None
-    for _, cand in search(ev, court, prior, top=top, centers=centers, around=around):
+    for _, cand in search(ev, court, prior, top=top, centers=centers, around=around, around_deg=around_deg):
         r = refine(ev, court, cand)
         if r is None:
             continue
-        if free_center and around is None and r.coverage > 0.3:
-            r = refine(ev, court, r.params, free_center=True) or r
         q = r.coverage * explained(ev, court, r.params)
+        if free_center and around is None and r.coverage > 0.3:
+            rc = refine(ev, court, r.params, free_center=True)
+            if rc is not None:
+                qc = rc.coverage * explained(ev, court, rc.params)
+                if qc > q:
+                    r, q = rc, qc
         r.quality = q
         if best is None or q > best[0]:
             best = (q, r)

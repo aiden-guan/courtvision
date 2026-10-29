@@ -105,8 +105,9 @@ class CameraTrack:
 
 def _smooth_runs(raw: dict[int, tuple[float, float, float, float]], k: int,
                  max_fill: int) -> dict[int, tuple[float, float, float, float]]:
-    """Fill gaps of at most ``max_fill`` frames by interpolation, then a centred moving average of width ``k``
-    within each run of consecutive frames (the per-frame fits jitter by about a pixel)."""
+    """Fill gaps of at most ``max_fill`` frames by interpolation, then within each run of consecutive frames a
+    centred moving median of width ``k`` (a single bad fit is dropped, not smeared over its neighbours) followed
+    by a moving average of width ``k`` (the per-frame fits jitter by about a pixel)."""
     frames = sorted(raw)
     out: dict[int, tuple[float, float, float, float]] = {}
     runs: list[list[int]] = []
@@ -122,6 +123,8 @@ def _smooth_runs(raw: dict[int, tuple[float, float, float, float]], k: int,
         vals = np.column_stack([np.interp(full, run, arr[:, j]) for j in range(4)])
         if k > 1 and len(full) >= k:
             pad = k // 2
+            padded = np.vstack([vals[:1].repeat(pad, 0), vals, vals[-1:].repeat(pad, 0)])
+            vals = np.median(np.lib.stride_tricks.sliding_window_view(padded, k, axis=0), axis=2)
             padded = np.vstack([vals[:1].repeat(pad, 0), vals, vals[-1:].repeat(pad, 0)])
             kernel = np.ones(k) / k
             vals = np.column_stack([np.convolve(padded[:, j], kernel, mode="valid") for j in range(4)])
