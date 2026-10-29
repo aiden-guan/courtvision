@@ -110,6 +110,8 @@
     review: { label: () => "Need review", value: () => String(reviewQueue().length) },
   };
 
+  const reviewAsk = (n) => (n === 1 ? "The engine wasn't sure about this one. Open it, watch that moment in the video, and say whether it's right." :
+    "The engine wasn't sure about these. Open each one, watch that moment in the video, and say whether it's right.");
   const reviewQueue = () => [...S().events.values()].filter((e) => cv().feedFilter(e, "review") && e.status !== "retracted").sort((a, b) => (b.t || 0) - (a.t || 0));
   const playerTeam = (id) => { const r = S().roster.get(id); return (r && r.team) || (playerLines().find((p) => p.id === id) || {}).team || cv().teamOfPlayer(id); };
 
@@ -284,10 +286,15 @@
     evs.sort((x, y) => (y.t || 0) - (x.t || 0));
     evs = evs.slice(0, b.limit);
     if (!evs.length) return el("p", { class: "blk-text", text: b.filter === "review" ? "Nothing needs review right now." : "No matching plays yet." });
-    return el("div", { class: "blk-list" }, evs.map((e) => el("div", { class: "blk-item" },
-      el("span", { class: "mark", "data-team": e.team, "data-tone": e.attrs && e.attrs.needs_review ? "warn" : null }),
-      el("span", { class: "what" }, cv().describe(e), el("small", { text: `${cv().timeLabel(e.t)} · ${e.status || "provisional"}${isNum(e.confidence) && e.confidence < 1 ? ` · ${Math.round(e.confidence * 100)}%` : ""}` })),
-      el("button", { type: "button", class: "link-btn", text: "Correct", onclick: () => cv().openEventDialog(S().events.get(e.event_id) || e) }))));
+    return el("div", { class: "blk-list" }, evs.map((e) => {
+      const flagged = cv().feedFilter(e, "review");
+      const sure = isNum(e.confidence) && e.confidence < 1 ? `${Math.round(e.confidence * 100)}% sure` : e.status === "confirmed" ? "confirmed" : "";
+      return el("div", { class: "blk-item" },
+        el("span", { class: "mark", "data-team": e.team, "data-tone": flagged ? "warn" : null }),
+        el("span", { class: "what" }, cv().describe(e), el("small", { text: [cv().timeLabel(e.t), sure].filter(Boolean).join(" · ") }),
+          flagged ? el("small", { class: "why", text: cv().reviewWhy(e) }) : null),
+        el("button", { type: "button", class: "link-btn", text: flagged ? "Check" : "Edit", onclick: () => cv().openEventDialog(S().events.get(e.event_id) || e) }));
+    }));
   }
 
   function playerCard(b) {
@@ -498,7 +505,7 @@
     }
     if (has(q, /\b(review|wrong|mistakes?|errors?|verify|check|uncertain|low confidence|correct(ion)?s?)\b/)) {
       const n = reviewQueue().length;
-      return { confident: true, spec: spec(n ? `${n} play${n === 1 ? "" : "s"} need review` : "Nothing needs review", n ? "Plays the engine flagged, newest first. Correct or confirm each one." : "Every logged play is confident or confirmed. Score corrections also appear here.",
+      return { confident: true, spec: spec(n ? `${n} play${n === 1 ? " needs" : "s need"} review` : "Nothing needs review", n ? reviewAsk(n) : "Every logged play is confident or has been checked. Score corrections also appear here.",
         [{ type: "plays", filter: "review", limit: 8 }, { type: "actions", items: [{ label: "Open the review list", command: "plays:review", primary: true }, { label: "Add a play", command: "plays:add" }] }], { icon: "review", tone: n ? "warn" : "good" }) };
     }
     if (has(q, /\b(track(ing|er)?|detector|fps|frame ?rate|latency|throughput|vision|lag|behind)\b/)) {
@@ -633,12 +640,12 @@
       out.push(["cut", spec("Camera cut away", "Spatial plays pause until the game camera returns.", [], { icon: "film", tone: "warn" })]);
     }
     if (status.finished && active) {
-      out.push(["done", spec("Analysis complete", "Review the flagged plays, then export the result.", [
+      out.push(["done", spec("Analysis complete", "Check the flagged plays, then export the result.", [
         { type: "metrics", items: [{ game: "score_away" }, { game: "score_home" }, { game: "review" }] },
         { type: "actions", items: [{ label: "Export JSON", command: "footage:export", primary: true }, { label: "Open box score", command: "nav:stats" }] }], { icon: "check", tone: "good" })]);
     }
     const review = reviewQueue();
-    if (review.length) out.push([`review`, spec(`${review.length} play${review.length === 1 ? "" : "s"} need review`, "Flagged by the engine; newest first.", [{ type: "plays", filter: "review", limit: 3 }, { type: "actions", items: [{ label: "Show all", command: "plays:review" }] }], { icon: "review", tone: "warn" })]);
+    if (review.length) out.push([`review`, spec(`${review.length} play${review.length === 1 ? " needs" : "s need"} review`, reviewAsk(review.length), [{ type: "plays", filter: "review", limit: 3 }, { type: "actions", items: [{ label: review.length > 3 ? `See all ${review.length}` : "Open the list", command: "plays:review" }] }], { icon: "review", tone: "warn" })]);
     const run = (stats() || {}).run;
     if (run && run.team && run.points >= 6) out.push(["run", spec(`${teamName(run.team)} on a ${run.points}-${run.opp_points || 0} run`, "Score margin over the analysed video.", [{ type: "spark", series: "margin" }], { icon: "flame", tone: "ember" })]);
     const top = playerLines().filter((p) => isNum(p.line.pts) && p.line.pts >= 6).sort((a, b) => b.line.pts - a.line.pts)[0];
@@ -648,7 +655,10 @@
         { type: "actions", items: [{ label: "Open player", command: `player:${top.id}` }] }], { icon: "trophy" })]);
     }
     if (active && !active.demo && vision.calibrated && (!vision.gate || vision.gate === "live")) {
-      out.push(["estimates", spec("Estimated plays", "Generic detector: verify teams, player identities and the scoreboard. Replays need review.", [], { icon: "info" })]);
+      const generic = String((((window.CVStudio && window.CVStudio.workspace) || {}).model || {}).name || "").includes("COCO");
+      out.push(["estimates", spec("These plays are estimates", generic ?
+        "They come from a general-purpose detector that wasn't trained on basketball. Check teams, players and the score before you use them." :
+        "They are read from the video: a team can be swapped, players are track numbers rather than names, and a broadcast replay can be logged as a play. Check the flagged ones before you use the stats.", [], { icon: "info" })]);
     }
     const fps = vision.fps, src = active && Number(active.fps);
     if (active && !active.demo && isNum(fps) && src && fps < src * 0.5 && !status.paused && !status.finished) {

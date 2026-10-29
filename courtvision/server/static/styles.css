@@ -841,6 +841,9 @@ body.watching .poss-feed { bottom: 72px; }  /* above the video's own controls */
 .ev-desc { min-width: 0; }
 .ev-label { display: block; color: var(--ink); font-size: 12.5px; line-height: 18px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ev-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.ev-meta .badge { text-transform: none; }
+.ev-why { display: block; margin-top: 2px; color: var(--ink-2); font-size: 11.5px; line-height: 1.4; }
+.ev.flagged .ev-actions { opacity: 1; }
 .ev-actions { opacity: 0; transition: opacity var(--t-fast); padding-top: 1px; }
 .ev:hover .ev-actions, .ev:focus-within .ev-actions { opacity: 1; }
 .ev.retracted .ev-label { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-4); }
@@ -979,6 +982,7 @@ body.watching .poss-feed { bottom: 72px; }  /* above the video's own controls */
 .blk-item .when { color: var(--ink-3); font: 500 11px var(--mono); white-space: nowrap; }
 .blk-item .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .blk-item .what small { display: block; color: var(--ink-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+.blk-item .what small.why { margin-top: 2px; color: var(--ink-2); white-space: normal; line-height: 1.4; }
 .blk-item .mark { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-4); }
 .blk-item .mark[data-team="home"] { background: var(--home); }
 .blk-item .mark[data-team="away"] { background: var(--away); }
@@ -1250,6 +1254,8 @@ dialog[open] { animation: dialog-in 220ms var(--ease); }
 .sheet-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 18px 0 20px; }
 .sheet-head h2 { font-size: 16px; font-weight: 650; }
 .sheet-head p { margin-top: 4px; color: var(--ink-2); font-size: 12.5px; }
+.sheet-head .ev-ask { margin-top: 10px; padding: 9px 11px; border-radius: 8px; background: color-mix(in srgb, var(--warn) 9%, transparent); color: var(--ink); line-height: 1.45; }
+#btn-ev-retract { margin-right: auto; }
 .sheet-body { display: grid; gap: 14px; padding: 16px 20px 20px; }
 .sheet .form-actions { padding-top: 4px; }
 .form-error { color: var(--bad); font-size: 12.5px; min-height: 1px; }

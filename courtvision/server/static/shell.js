@@ -38,7 +38,7 @@
       { id: "playback:mute", group: "Playback", label: S.muted ? "Unmute narration" : "Mute narration", icon: "review", keys: ["M"], when: () => active },
       { id: "playback:deadball", group: "Playback", label: "Mark dead ball", icon: "bolt", keys: ["D"], when: () => active },
       { id: "plays:add", group: "Plays", label: "Add a play", icon: "review", keys: ["A"] },
-      { id: "plays:review", group: "Plays", label: "Show plays that need review", icon: "alert" },
+      { id: "plays:review", group: "Plays", label: "Show the plays that need review", icon: "alert" },
       { id: "view:overlay", group: "View", label: "Toggle the tracking overlay", icon: "people", keys: ["O"], when: () => active },
       { id: "view:possession", group: "View", label: "Toggle the possession analysis", icon: "chart", keys: ["B"], when: () => !!(window.CVPossession && window.CVPossession.data) },
       { id: "view:watch", group: "View", label: window.CVPossession && window.CVPossession.watching ? "Back to the live analysis" : "Watch the analysed game at full speed", icon: "film", keys: ["W"], when: () => !!(window.CVPossession && window.CVPossession.data) },

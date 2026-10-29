@@ -17,6 +17,12 @@ insights in the side panel), **Box score** (player lines, shot chart, decision g
 **Model lab**. Press `⌘K` (or `/`) to ask a question or run any command; `G` then `L`, `S`, `B`, `C`, `M`, `R` or `T`
 opens a view; `?` lists every shortcut.
 
+**Plays that need review.** The engine flags the plays it was unsure of: a change of possession it didn't see happen,
+a rebound nobody caught, a shot whose result it lost, a basket only the scoreboard showed. Each flagged play says why
+in plain words and has a **Check** button. Watch that moment, then choose **It's right**, change what is wrong and
+**Save changes**, or choose **It didn't happen**. A play you have checked counts as confirmed by you and leaves the
+list. The badges say how sure the engine was ("70% sure") and whether a play is confirmed yet.
+
 The **court lens** draws the mapped floor in perspective. Players stand on their floor position with their number;
 the ball is drawn at its tracked height (feet) with a floor shadow, so 3-D ball flights read as arcs. Drag to orbit,
 double-click to reset, or pick the broadcast, overhead or baseline camera. Hover a player for their position and

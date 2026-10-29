@@ -5,6 +5,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Plays that need review say why, and what to do
+
+- Each flagged play in the Studio says why the engine flagged it, in plain words (for example "The ball changed
+  teams, but the engine didn't see how"), and has a **Check** button that is always visible. The check dialog asks
+  one question, with **It's right**, **Save changes** and **It didn't happen**. Badges read "Unconfirmed", "70%
+  sure" and "Needs review" instead of "provisional", "70%" and "Review". A change of possession says how the team
+  got the ball ("Home ball off a defensive rebound").
+- Fixed: a play confirmed or corrected in the Studio stayed in the review list and its count. Checking it now clears
+  its flag.
+
+---
+
 ## [Unreleased] — The possession analysis in the Studio, and watching it at full speed
 
 - The Studio draws an analysed game on its feed (`courtvision/nba/results.py`, `static/possession.js`). Opening a

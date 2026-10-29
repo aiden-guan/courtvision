@@ -10,14 +10,14 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308090a'/%3E%3Cpath d='M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5' fill='none' stroke='%23edeef0' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3.8' fill='%23ff7a2f'/%3E%3C/svg%3E">
   <link rel="preload" href="static/archivo.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="static/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="static/styles.css?v=20261029-poss4">
-  <script src="static/lens.js?v=20261029-poss4" defer></script>
-  <script src="static/app.js?v=20261029-poss4" defer></script>
-  <script src="static/studio.js?v=20261029-poss4" defer></script>
-  <script src="static/possession.js?v=20261029-poss4" defer></script>
-  <script src="static/genui.js?v=20261029-poss4" defer></script>
-  <script src="static/lab.js?v=20261029-poss4" defer></script>
-  <script src="static/shell.js?v=20261029-poss4" defer></script>
+  <link rel="stylesheet" href="static/styles.css?v=20261029-review2">
+  <script src="static/lens.js?v=20261029-review2" defer></script>
+  <script src="static/app.js?v=20261029-review2" defer></script>
+  <script src="static/studio.js?v=20261029-review2" defer></script>
+  <script src="static/possession.js?v=20261029-review2" defer></script>
+  <script src="static/genui.js?v=20261029-review2" defer></script>
+  <script src="static/lab.js?v=20261029-review2" defer></script>
+  <script src="static/shell.js?v=20261029-review2" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -580,7 +580,7 @@
 <!-- ============================================================ CORRECT / ADD PLAY -->
 <dialog class="dialog sheet" id="event-dialog" aria-labelledby="ev-title">
   <form method="dialog" id="event-form" novalidate>
-    <header class="sheet-head"><div><h2 id="ev-title">Correct play</h2><p id="ev-sub"></p></div></header>
+    <header class="sheet-head"><div><h2 id="ev-title">Edit play</h2><p id="ev-sub"></p><p class="ev-ask" id="ev-why" hidden></p></div></header>
     <div class="sheet-body">
       <div class="form-grid form-grid-2">
         <label>Kind<select id="ev-kind"></select></label>
@@ -588,13 +588,14 @@
         <label>Player<select id="ev-player"></select></label>
         <label>Other player<select id="ev-other"></select></label>
         <label>Points / value<input type="number" inputmode="numeric" step="1" min="-99" max="99" id="ev-value" aria-describedby="ev-value-hint"></label>
-        <label>Status<select id="ev-status"><option value="confirmed">Confirmed</option><option value="retracted">Retract (did not happen)</option></select></label>
+        <label hidden>Status<select id="ev-status"><option value="confirmed">Confirmed</option><option value="retracted">Did not happen</option></select></label>
         <label>Video time (s)<input type="number" step="0.1" min="0" id="ev-t"></label>
         <label class="span-2">Note<input type="text" maxlength="200" id="ev-reason" placeholder="Why (kept with the play)"></label>
       </div>
       <p class="hint" id="ev-value-hint">Shots: 1 = free throw, 2 or 3. Score correction: signed points (for example -2). Period start or end: the period number.</p>
       <p class="form-error" id="ev-error" role="alert"></p>
       <div class="form-actions">
+        <button type="button" class="btn btn-danger" id="btn-ev-retract" hidden>It didn't happen</button>
         <button type="button" class="btn" id="btn-ev-cancel">Cancel</button>
         <button type="submit" class="btn btn-primary" id="btn-ev-submit">Save</button>
       </div>

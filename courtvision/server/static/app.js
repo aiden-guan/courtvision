@@ -952,7 +952,8 @@
 
   function feedFilter(e, mode) {
     if (mode === "all") return true;
-    if (mode === "review") return !!(e.attrs && e.attrs.needs_review) || e.kind === "score_correction";
+    // flagged plays and score corrections, until someone checks them (a checked play's source is "manual")
+    if (mode === "review") return e.source !== "manual" && (!!(e.attrs && e.attrs.needs_review) || e.kind === "score_correction");
     return e.kind !== "dribble" && e.kind !== "pass";
   }
 
@@ -960,12 +961,20 @@
     return v === 1 ? "a free throw" : v === 2 ? "a 2" : v === 3 ? "a 3" : "a shot";
   }
 
+  // how a team got the ball (a possession's cause)
+  const GAINED = {
+    made_shot: "after a made basket", made_fg: "after a made basket", free_throw: "after a free throw",
+    defensive_rebound: "off a defensive rebound", offensive_rebound: "off an offensive rebound", steal: "on a steal",
+    turnover: "after a turnover", inbound: "on the inbound", jump_ball: "from the jump ball", restart: "at the restart",
+    other: "(how wasn't seen)",
+  };
+
   function describe(e) {
     const p = pname(e.player_id), o = pname(e.other_player_id);
     const tm = e.team ? S.teams[e.team] || e.team : "Team";
     const a = e.attrs || {};
     switch (e.kind) {
-      case "possession": return `${tm} ball${a.cause ? ` · ${humanize(a.cause).toLowerCase()}` : ""}`;
+      case "possession": return `${tm} ball${a.cause ? ` ${GAINED[a.cause] || `(${humanize(a.cause).toLowerCase()})`}` : ""}`;
       case "pass": return `${p} pass to ${o}${a.completed === false ? " (not completed)" : ""}`;
       case "dribble": return `${p} dribble`;
       case "shot_attempt": {
@@ -989,6 +998,28 @@
       default: return humanize(e.kind);
     }
   }
+
+  // Why the engine flagged a play for a person to check, in plain words (its attrs.reason as a fallback).
+  function reviewWhy(e) {
+    const a = e.attrs || {}, reason = String(a.reason || "");
+    if (e.kind === "score_correction") return "The scoreboard changed, but the engine saw no basket to match it.";
+    if (e.kind === "possession" && a.cause === "other") return "The ball changed teams, but the engine didn't see how: no shot, rebound or steal.";
+    if (e.kind === "rebound" && a.team_rebound) return "Nobody caught the ball before it went dead, so the rebound went to the team that inbounded it.";
+    if (e.kind === "turnover" && reason.startsWith("inferred")) return "The engine didn't see who lost the ball. It guessed from the other team inbounding next.";
+    if (a.inferred === "scoreboard") return e.kind === "rebound" ? "Not seen: implied by a put-back the scoreboard shows." :
+      "The scoreboard went up, but the engine didn't see this shot, so it added one.";
+    if (e.kind === "shot_missed" && reason.startsWith("no scoreboard change")) return "It looked like a make, but the scoreboard didn't change, so it became a miss.";
+    if (e.kind === "shot_missed" && reason.includes("unresolved")) return "The engine lost the ball after the shot and couldn't tell whether it went in, so it logged a miss.";
+    return reason ? `Engine note: ${reason}.` : "The engine wasn't sure about this play.";
+  }
+
+  // what a play's status, source and confidence mean, for its badges
+  const STATUS_WORDS = {
+    provisional: ["Unconfirmed", "Logged from the video. Not confirmed yet by the scoreboard or by you."],
+    confirmed: ["Confirmed", "Confirmed by the scoreboard or by you."],
+    retracted: ["Removed", "Marked as not having happened. It no longer counts."],
+  };
+  const SOURCE_WORDS = { scoreboard: "From the scoreboard", manual: "By you", feed: "From the feed", sim: "Simulated" };
 
   // A small glyph per kind of play (18 px grid). Shapes only; the team colour comes from CSS.
   const GLYPHS = {
@@ -1022,19 +1053,22 @@
   function fillEventRow(li, e) {
     const retracted = e.status === "retracted";
     const fresh = li.classList.contains("is-new");
-    li.className = `ev${e.team ? ` team-${e.team}` : ""}${retracted ? " retracted" : ""}${num(e.revision, 0) > 0 ? " revised" : ""}${SCORING.has(e.kind) ? " ev-score" : ""}${fresh ? " is-new" : ""}`;
-    const badges = [h("span", { class: `badge badge-${e.status}`, text: e.status || "provisional" })];
-    if (e.source && e.source !== "cv") badges.push(h("span", { class: "badge", text: e.source }));
-    if (num(e.revision, 0) > 0) badges.push(h("span", { class: "badge badge-rev", text: `rev ${e.revision}` }));
-    if (isNum(e.confidence) && e.confidence < 1 && !retracted) badges.push(h("span", { class: "badge", text: `${Math.round(e.confidence * 100)}%` }));
-    if (e.attrs && e.attrs.needs_review) badges.push(h("span", { class: "badge badge-review", text: "Review" }));
-    const label = describe(e);
+    const flagged = !retracted && feedFilter(e, "review");
+    li.className = `ev${e.team ? ` team-${e.team}` : ""}${retracted ? " retracted" : ""}${num(e.revision, 0) > 0 ? " revised" : ""}${SCORING.has(e.kind) ? " ev-score" : ""}${flagged ? " flagged" : ""}${fresh ? " is-new" : ""}`;
+    const [status, statusTip] = STATUS_WORDS[e.status] || STATUS_WORDS.provisional;
+    const badges = [h("span", { class: `badge badge-${e.status}`, text: status, title: e.status === "confirmed" && e.source === "manual" ? "Confirmed by you." : statusTip })];
+    if (e.source && e.source !== "cv") badges.push(h("span", { class: "badge", text: SOURCE_WORDS[e.source] || e.source }));
+    if (num(e.revision, 0) > 0) badges.push(h("span", { class: "badge badge-rev", text: "Revised", title: `Changed ${e.revision} time${e.revision === 1 ? "" : "s"} since it was first logged.` }));
+    if (isNum(e.confidence) && e.confidence < 1 && !retracted) badges.push(h("span", { class: "badge", text: `${Math.round(e.confidence * 100)}% sure`, title: "How sure the engine is that this happened as described." }));
+    if (flagged) badges.push(h("span", { class: "badge badge-review", text: "Needs review", title: "Flagged for you to check against the video." }));
+    const label = describe(e), verb = flagged ? "Check" : "Edit";
     li.replaceChildren(
       h("span", { class: "ev-time", text: timeLabel(e.t) }),
       h("span", { class: "ev-glyph" }, glyph(e.kind)),
-      h("div", { class: "ev-desc" }, h("span", { class: "ev-label", text: label, title: label }), h("div", { class: "ev-meta" }, badges)),
+      h("div", { class: "ev-desc" }, h("span", { class: "ev-label", text: label, title: label }),
+        flagged ? h("span", { class: "ev-why", text: reviewWhy(e) }) : null, h("div", { class: "ev-meta" }, badges)),
       h("div", { class: "ev-actions" }, h("button", {
-        type: "button", class: "link-btn", text: "Correct", "aria-label": `Correct play: ${label}`,
+        type: "button", class: "link-btn", text: verb, "aria-label": `${verb} play: ${label}`,
         onclick: () => openEventDialog(S.events.get(e.event_id) || e),
       })),
     );
@@ -1088,7 +1122,12 @@
 
   // =========================================================================== event correction dialog
 
-  let dialogEvent = null;
+  let dialogEvent = null, dialogStart = "";
+  const dialogState = () => ["ev-kind", "ev-team", "ev-player", "ev-other", "ev-value", "ev-t"].map((id) => byId(id).value).join("|");
+  // the primary button says what it will do: confirm the play as it is, save a change, or add a new one
+  function syncEventButtons() {
+    setText(byId("btn-ev-submit"), !dialogEvent ? "Add play" : dialogState() === dialogStart ? "It's right" : "Save changes");
+  }
 
   function fillPlayerSelect(sel, current) {
     const opts = [h("option", { value: "", text: "— none —" })];
@@ -1108,8 +1147,14 @@
     dialogEvent = e || null;
     const kindSel = byId("ev-kind");
     if (!kindSel.options.length) kindSel.replaceChildren(...KINDS.map((k) => h("option", { value: k, text: humanize(k) })));
-    setText(byId("ev-title"), e ? "Correct play" : "Add play");
-    setText(byId("ev-sub"), e ? `${e.event_id} · rev ${num(e.revision, 0)} · ${e.source || "cv"} · ${describe(e)}` : "Operator entry (source manual, confirmed)");
+    const flagged = !!e && feedFilter(e, "review");
+    setText(byId("ev-title"), !e ? "Add a play" : flagged ? "Check this play" : "Edit play");
+    setText(byId("ev-sub"), e ? `${describe(e)} · ${timeLabel(e.t)}` : "A play you add counts as confirmed.");
+    byId("ev-sub").title = e ? `${e.event_id} · revision ${num(e.revision, 0)} · source ${e.source || "cv"}` : "";
+    setText(byId("ev-why"), e ? `${flagged ? `${reviewWhy(e)} ` : ""}Watch that moment in the video. If it happened like this, choose “It's right”. ` +
+      "If a detail is wrong, change it below and save. If it didn't happen, choose “It didn't happen”." : "");
+    byId("ev-why").hidden = !e;
+    byId("btn-ev-retract").hidden = !e;
     kindSel.value = e ? e.kind : "shot_made";
     byId("ev-team").value = (e && e.team) || "";
     fillPlayerSelect(byId("ev-player"), e && e.player_id);
@@ -1121,6 +1166,8 @@
     byId("ev-t").value = isNum(t) ? String(Math.round(t * 10) / 10) : "";
     byId("ev-reason").value = "";
     setText(byId("ev-error"), "");
+    dialogStart = dialogState();
+    syncEventButtons();
     byId("event-dialog").showModal();
   }
 
@@ -1146,7 +1193,8 @@
         event_id: e.event_id, frame_idx: Math.max(0, num(e.frame_idx, 0)), x: isNum(e.x) ? e.x : null,
         y: isNum(e.y) ? e.y : null, shot_id: e.shot_id || null, revision: num(e.revision, 0) + 1,
       });
-      body.attrs = Object.assign({}, e.attrs || {}, { corrected_from_revision: num(e.revision, 0) });
+      // a person has checked it now: it leaves the review list (and the review counts)
+      body.attrs = Object.assign({}, e.attrs || {}, { corrected_from_revision: num(e.revision, 0), needs_review: false });
     }
     if (reason) body.attrs.reason = reason;
     return body;
@@ -1193,11 +1241,12 @@
       return;
     }
     const btn = byId("btn-ev-submit");
+    const changed = dialogState() !== dialogStart;
     btn.disabled = true;
     try {
       await api("api/events", body);
       byId("event-dialog").close();
-      toast(body.status === "retracted" ? "Play retracted" : dialogEvent ? "Correction saved" : "Play added");
+      toast(body.status === "retracted" ? "Removed: it no longer counts" : !dialogEvent ? "Play added" : changed ? "Changes saved and confirmed" : "Confirmed");
     } catch (err) {
       setText(byId("ev-error"), err.message || String(err));
     } finally {
@@ -1994,6 +2043,10 @@
     byId("btn-add-event").addEventListener("click", () => openEventDialog(null));
     byId("btn-op-add-event").addEventListener("click", () => openEventDialog(null));
     byId("event-form").addEventListener("submit", submitEvent);
+    byId("event-form").addEventListener("input", syncEventButtons);
+    byId("event-form").addEventListener("change", syncEventButtons);
+    byId("btn-ev-submit").addEventListener("click", () => { byId("ev-status").value = "confirmed"; });
+    byId("btn-ev-retract").addEventListener("click", () => { byId("ev-status").value = "retracted"; byId("event-form").requestSubmit(); });
     byId("ev-player").addEventListener("change", () => {
       const team = teamOfPlayer(byId("ev-player").value); // Event.team is the actor's team
       if (team) byId("ev-team").value = team;
@@ -2133,7 +2186,7 @@
   window.CV = {
     S, h, svg, fill, setText, byId, isNum, num, clamp, humanize, store,
     fmtClock, fmtShot, fmtVideo, fmtPct, fmtNum, fmtInt, fmtMade, fmtSigned, fmtMin,
-    pname, pjersey, teamOfPlayer, describe, timeLabel, periodLabel, teamAbbr, feedFilter, glyph,
+    pname, pjersey, teamOfPlayer, describe, reviewWhy, timeLabel, periodLabel, teamAbbr, feedFilter, glyph,
     efgOf, tsOf, pppOf, possOf, rebOf, courtGeometry, xfgColor,
     get colors() { return C; },
     get lens() { return lens; },
