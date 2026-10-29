@@ -195,6 +195,8 @@ def build_parser() -> argparse.ArgumentParser:
     studio.add_argument("--open", action="store_true", help="open the workspace in your browser")
     studio.add_argument("--data-dir", default="runs/studio", help="local footage and analysis directory")
     studio.add_argument("--auth-token", default=None)
+    studio.add_argument("--public-demo", action="store_true",
+                        help="anonymous watch-only demo: simulated game only, no uploads, no Claude or Jev calls")
     studio.set_defaults(func=cmd_studio)
 
     # simulate
@@ -867,9 +869,14 @@ def cmd_studio(args: argparse.Namespace) -> int:
     from courtvision.server.studio import create_studio_app
 
     cfg = load_cli_config(args)
-    if not _is_loopback(args.host) and not args.auth_token:
+    if args.public_demo:
+        from courtvision.server.studio import CREDENTIAL_ENV
+        for name in CREDENTIAL_ENV:
+            os.environ.pop(name, None)  # nothing in this process may spend credits
+    elif not _is_loopback(args.host) and not args.auth_token:
         raise CLIError("Studio needs --auth-token when listening outside localhost.")
-    app = create_studio_app(cfg, root=args.data_dir, auth_token=args.auth_token)
+    app = create_studio_app(cfg, root=args.data_dir, auth_token=args.auth_token or None,
+                            public_demo=args.public_demo)
     url = f"http://{_url_host(args.host)}:{args.port}/"
     print(f"CourtVision Studio: {url}\nFootage and analysis: {Path(args.data_dir).resolve()}")
     server = build_uvicorn_server(app, args.host, args.port)

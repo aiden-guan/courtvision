@@ -34,6 +34,9 @@ from courtvision.types import ObjClass
 
 log = logging.getLogger(__name__)
 UPLOAD_LIMIT = 8 * 1024**3
+# Public demo: anonymous viewers may read everything and start the simulated demo, nothing else.
+PUBLIC_DEMO_WRITES = {"/api/studio/start"}
+CREDENTIAL_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TYPESAFE_API_KEY")
 
 
 def probe_video(path: Path) -> dict[str, Any]:
@@ -166,8 +169,9 @@ class StartIn(BaseModel):
 
 
 class Workspace:
-    def __init__(self, cfg: AppConfig, root: Path, detector: Any = None):
+    def __init__(self, cfg: AppConfig, root: Path, detector: Any = None, public_demo: bool = False):
         self.cfg, self.root = cfg, root.resolve()
+        self.public_demo = public_demo
         self.root.mkdir(parents=True, exist_ok=True)
         self.hub = Hub(cfg.hub)
         self.game: LiveGame | None = None
@@ -200,8 +204,9 @@ class Workspace:
                 "frame": self.hub.latest("frame"),
                 "vision": getattr(game, "vision", None),
                 "error": getattr(game, "failure", None),
-                "capabilities": {"jev": bool(os.getenv("TYPESAFE_API_KEY")),
-                                 "claude": bool(os.getenv("ANTHROPIC_API_KEY"))}}
+                "public_demo": self.public_demo,
+                "capabilities": {"jev": not self.public_demo and bool(os.getenv("TYPESAFE_API_KEY")),
+                                 "claude": not self.public_demo and bool(os.getenv("ANTHROPIC_API_KEY"))}}
 
     async def prepare(self) -> None:
         self.model_state, self.model_error = "loading", None
@@ -234,7 +239,15 @@ class Workspace:
 
     async def start(self, body: StartIn) -> dict[str, Any]:
         async with self.lock:
+            if self.public_demo:
+                if not body.demo:
+                    raise HTTPException(403, "This public demo only runs the simulated game.")
+                if self.task is not None and not self.task.done():
+                    return self.state()  # viewers share one game: join the running demo, never restart it
             cfg = copy.deepcopy(self.cfg)
+            if self.public_demo:
+                # No billed calls from anonymous traffic, whatever the environment holds.
+                cfg.narration.llm_enabled, cfg.jev.mode = False, "off"
             cfg.narration.tts = "none"
             cfg.source.drop_late_s = None  # process every frame, report measured throughput honestly
             cfg.game.home_name, cfg.game.away_name = body.home_name.strip(), body.away_name.strip()
@@ -315,10 +328,17 @@ class Workspace:
 
 
 def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "runs/studio",
-                      auth_token: str | None = None, detector: Any = None) -> Any:
-    workspace = Workspace(config or load_config(), Path(root), detector)
-    app = create_app(workspace.hub, workspace, auth_token, workspace.cfg.server, upload_max_body=UPLOAD_LIMIT)
+                      auth_token: str | None = None, detector: Any = None, public_demo: bool = False) -> Any:
+    workspace = Workspace(config or load_config(), Path(root), detector, public_demo)
+    app = create_app(workspace.hub, workspace, auth_token, workspace.cfg.server,
+                     upload_max_body=None if public_demo else UPLOAD_LIMIT)
     app.state.workspace = workspace
+    if public_demo:
+        @app.middleware("http")
+        async def read_only(request: Request, call_next: Any) -> Any:
+            if request.method not in ("GET", "HEAD") and request.url.path not in PUBLIC_DEMO_WRITES:
+                return HubJSONResponse({"detail": "This public demo is watch-only."}, status_code=403)
+            return await call_next(request)
     inner = app.router.lifespan_context
 
     @contextlib.asynccontextmanager

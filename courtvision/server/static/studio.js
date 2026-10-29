@@ -133,6 +133,12 @@
       model.state === "loading" ? "Preparing the local detector. The first download is about 350 MB." :
       model.error || "First use prepares a local detector (about 350 MB). Generic player and ball detections need review.");
     text("studio-cloud", data.capabilities.jev ? "Jev connected · Local vision" : "Local vision · Template commentary");
+    if (data.public_demo) {
+      // Watch-only showcase: only the simulated demo can run, so hide footage and control entry points.
+      for (const id of ["studio-open", "studio-empty-open", "studio-export", "studio-play", "studio-speed", "studio-calibrate"]) $(id).hidden = true;
+      for (const id of ["tab-operator", "tab-calibration", "tab-roi", "btn-add-event"]) $(id).hidden = true;
+      text("studio-cloud", "Public demo · Simulated game · Template commentary");
+    }
     const key = JSON.stringify((data.videos || []).map(v => v.id));
     if (key !== lastVideoKey) {
       lastVideoKey = key;

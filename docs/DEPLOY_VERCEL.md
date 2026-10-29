@@ -1,33 +1,39 @@
-# Private deployment on Vercel
+# Public demo on Vercel
 
-The root `Dockerfile` runs CourtVision Studio on Vercel's Container Runtime.
+The root `Dockerfile` runs CourtVision Studio on Vercel's Container Runtime as a public,
+watch-only showcase (`courtvision studio --public-demo`).
 
-## Access control (two layers)
+## What visitors can do
 
-1. **Vercel Authentication** on all deployments, including the production domain: only
-   signed-in members of the owning Vercel account can load any page.
-2. **Bearer token**: every `/api/*` route and the WebSocket require `COURTVISION_TOKEN`.
-   Open `https://<deployment>/#token=<token>` once per browser session (the hash never
-   reaches the server or logs). If the variable is unset, the container refuses to start.
-3. The app's Host check accepts `*.vercel.app` (set in the Dockerfile `CMD`); add a custom
-   domain there with another `--set server.allowed_hosts=...` entry if you attach one.
+- Start and watch the 3-minute simulated game ("Explore the demo"). Everyone shares one
+  workspace: starting the demo while one is running joins it instead of restarting it.
+- Read everything the dashboard shows (box score, shot chart, play-by-play, narration).
 
-## Environment variables (Project Settings → Environment Variables, type Sensitive)
+Everything else is refused with 403: uploads, detector setup, game controls, manual events,
+calibration and scoreboard setup. Real footage analysis stays on your own machine.
 
-| Variable | Purpose |
-| --- | --- |
-| `COURTVISION_TOKEN` | Required. Dashboard/API bearer token. |
-| `ANTHROPIC_API_KEY` | Optional. Claude colour commentary. |
-| `TYPESAFE_API_KEY` | Optional. Jev decision layer; spoken Claude lines also need it (line guard). |
+## No API spend
 
-Keys are read server-side only; the browser receives booleans saying whether each is set.
+`--public-demo` removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `TYPESAFE_API_KEY`
+from the process at startup and forces `narration.llm_enabled=false` and `jev.mode=off` for
+every run, so narration is template-only and nothing is billed even if the keys are still set
+in the Vercel project. Deleting them from the project is still the tidiest option.
 
-## Platform limits that shape what works (Hobby plan)
+## Host check
 
-- Requests, including the WebSocket, end after 300 s. The 180 s Studio demo fits; the
-  dashboard reconnects after a cut.
-- Request bodies are capped at 4.5 MB, so footage uploads above that fail with 413.
-- No persistent disk: uploads and analyses live in `/tmp` and vanish when the instance
-  scales down (5 minutes without traffic in production).
-- The image installs the core package only. Video analysis needs `courtvision[cv]`
-  (PyTorch, RF-DETR), which is not in the image; run that locally.
+The app's Host check accepts `*.vercel.app` (set in the Dockerfile `CMD`). Add another
+`--set server.allowed_hosts=...` entry if you attach a custom domain.
+
+## Running it privately with Claude instead
+
+Drop `--public-demo` from the `CMD`, pass `--auth-token "$COURTVISION_TOKEN"`, set that
+variable plus the API keys as Sensitive env vars, and turn Vercel Authentication back on
+(Settings → Deployment Protection). Open `https://<deployment>/#token=<token>` once per tab.
+
+## Platform limits (Hobby plan)
+
+- Requests, including the WebSocket, end after 300 s; the 180 s demo fits and the dashboard
+  reconnects after a cut.
+- No persistent disk: state lives in `/tmp` and resets when the instance scales down
+  (5 minutes without traffic).
+- Demo runs count against the plan's Active CPU quota.

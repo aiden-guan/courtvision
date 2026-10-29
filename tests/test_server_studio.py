@@ -159,3 +159,25 @@ def test_hub_reset_removes_pending_and_replay_from_previous_game():
         assert all('99' not in text for _, text in client._queue)
         hub.close_clients()
     asyncio.run(check())
+
+
+def test_public_demo_is_watch_only_and_never_uses_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-be-used")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-should-not-be-used")
+    cfg = load_config(None, ["narration.tts=none"])
+    app = create_studio_app(cfg, root=tmp_path / "workspace", public_demo=True)
+    with TestClient(app) as client:
+        state = client.get("/api/studio").json()
+        assert state["public_demo"] and state["capabilities"] == {"jev": False, "claude": False}
+        assert client.post("/api/studio/upload", content=b"x" * 1024).status_code == 403
+        assert client.post("/api/studio/prepare").status_code == 403
+        assert client.post("/api/control", json={"action": "pause"}).status_code == 403
+        assert client.post("/api/scoreboard", json={"home_score": 1, "away_score": 0}).status_code == 403
+        assert client.post("/api/studio/start", json={"video_id": "0" * 32}).status_code == 403
+        first = client.post("/api/studio/start", json={"demo": True})
+        assert first.status_code == 200, first.text
+        status = first.json()["status"]
+        assert status["llm"] is False and status["jev"] in (None, "off")
+        run_id = first.json()["active"]["run_id"]
+        # A second viewer joins the running demo instead of restarting it for everyone.
+        assert client.post("/api/studio/start", json={"demo": True}).json()["active"]["run_id"] == run_id
