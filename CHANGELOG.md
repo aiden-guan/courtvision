@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased] — video studio and round 5
 
+- Made the Mac launcher self-installing: `Start CourtVision.command` now finds or installs Python, builds
+  `.venv`, stores optional API keys in the macOS Keychain and can add a CourtVision app to `~/Applications`
+  (`scripts/mac/courtvision.sh`).
 - Added `courtvision studio --open` and a Mac launcher: local video upload, actual processed-frame monitor,
   player/ball overlays, pause/speed/restart, saved court setup, recent footage and JSON export.
 - Reworked the dashboard around the footage, with local Manrope typography, a restrained neutral palette,
