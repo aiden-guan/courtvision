@@ -103,6 +103,18 @@ def test_detection_cache_save_and_load_round_trip(tmp_path: Path) -> None:
     assert back.balls[4].shape == (0, 3) and back.persons[9].shape == (0, 5)
 
 
+def test_detection_cache_load_keeps_one_copy_of_each_array(tmp_path: Path) -> None:
+    # frames are views of one loaded array; a copy per frame took 46 GB on the first quarter of a game
+    balls = {f: np.full((2, 3), f, np.float32) for f in range(20)}
+    persons = {f: np.full((3, 5), f, np.float32) for f in range(20)}
+    path = tmp_path / "detections.npz"
+    DetectionCache(balls, persons).save(path)
+    back = DetectionCache.load(path)
+    assert len({id(a.base) for a in back.balls.values()}) == 1
+    assert len({id(a.base) for a in back.persons.values()}) == 1
+    np.testing.assert_array_equal(back.balls[19], balls[19])
+
+
 def test_link_ball_follows_a_moving_ball_rather_than_a_static_distractor() -> None:
     cam = track({f: (0.0, 15.0, 0.0, 3000.0) for f in range(100, 115)})  # a still camera
     ball: dict[int, tuple[float, float, float]] = {}

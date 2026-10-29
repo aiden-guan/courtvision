@@ -169,13 +169,15 @@ class DetectionCache:
 
     @classmethod
     def load(cls, path: Path) -> DetectionCache:
-        z = np.load(path)
+        # each z[name] decompresses the whole array again, and a frame's slice keeps its copy alive: read once
+        with np.load(path) as z:
+            frames, ball, person = z["frames"], z["ball"], z["person"]
+            bi = np.concatenate([[0], np.cumsum(z["ball_n"])])
+            pi = np.concatenate([[0], np.cumsum(z["person_n"])])
         out = cls()
-        bi = np.concatenate([[0], np.cumsum(z["ball_n"])])
-        pi = np.concatenate([[0], np.cumsum(z["person_n"])])
-        for k, f in enumerate(z["frames"]):
-            out.balls[int(f)] = z["ball"][bi[k]:bi[k + 1]]
-            out.persons[int(f)] = z["person"][pi[k]:pi[k + 1]]
+        for k, f in enumerate(frames):
+            out.balls[int(f)] = ball[bi[k]:bi[k + 1]]
+            out.persons[int(f)] = person[pi[k]:pi[k + 1]]
         return out
 
     def merge(self, other: DetectionCache) -> None:
