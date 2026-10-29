@@ -7,7 +7,8 @@
 
 The game folder holds ``game.json`` (``video``, ``espn_event``, optional ``home_color_bgr`` / ``away_color_bgr``),
 ``scorebug.jsonl`` (tools/nba_scan_scorebug.py), ``camera_parts/*.jsonl`` (tools/nba_track_court.py) and
-``espn_summary.json``. ``detect`` writes ``detections/*.npz``, ``ball`` writes ``ball_track.json``, ``events`` writes
+``espn_summary.json``. ``detect`` writes ``detections/*.npz`` (``--det-dir``: another folder, e.g. for new
+weights; ``ball`` and ``events`` read the same one), ``ball`` writes ``ball_track.json``, ``events`` writes
 ``runs/<tag>/events.jsonl`` and ``eval`` writes ``runs/<tag>/report.json`` / ``report.md``.
 """
 
@@ -53,20 +54,20 @@ def cmd_detect(root: Path, args: argparse.Namespace) -> None:
     import multiprocessing as mp
 
     game, camera = load_game(root)
-    out = root / "detections"
+    out = root / args.det_dir
     out.mkdir(exist_ok=True)
     frames = sorted(camera.params)
     lo = max(frames[0], int(args.start * camera.fps)) if args.start else frames[0]
     hi = min(frames[-1] + 1, int(args.end * camera.fps)) if args.end else frames[-1] + 1
-    n = args.workers
+    n = max(args.workers, args.chunks)  # chunks already written are skipped, so an interrupted run resumes
     bounds = [lo + (hi - lo) * k // n for k in range(n + 1)]
     jobs = [(str(root), game["video"], args.weights, bounds[k], bounds[k + 1], str(out / f"{bounds[k]:07d}-{bounds[k + 1]:07d}.npz"))
             for k in range(n) if not (out / f"{bounds[k]:07d}-{bounds[k + 1]:07d}.npz").exists()]
-    if n == 1:
+    if args.workers == 1:
         for j in jobs:
             _detect_part(*j)
     else:
-        with mp.get_context("spawn").Pool(n) as pool:
+        with mp.get_context("spawn").Pool(args.workers) as pool:
             pool.starmap(_detect_part, jobs)
 
 
@@ -79,9 +80,9 @@ def _detect_part(root: str, video: str, weights: str, start: int, end: int, out:
     print(f"{out}: {len(cache.balls)} frames in {time.time() - t0:.0f}s", flush=True)
 
 
-def load_cache(root: Path) -> DetectionCache:
+def load_cache(root: Path, det_dir: str = "detections") -> DetectionCache:
     cache = DetectionCache()
-    for p in sorted((root / "detections").glob("*.npz")):
+    for p in sorted((root / det_dir).glob("*.npz")):
         cache.merge(DetectionCache.load(p))
     return cache
 
@@ -89,14 +90,14 @@ def load_cache(root: Path) -> DetectionCache:
 def cmd_ball(root: Path, args: argparse.Namespace) -> None:
     _, camera = load_game(root)
     t0 = time.time()
-    track = build_ball_track(load_cache(root), camera)
+    track = build_ball_track(load_cache(root, args.det_dir), camera)
     track.save(root / "ball_track.json")
     print(f"ball path {len(track.path)} frames, {len(track.flights)} flights ({time.time() - t0:.0f}s)")
 
 
 def cmd_events(root: Path, args: argparse.Namespace) -> None:
     game, camera = load_game(root)
-    cache = load_cache(root)
+    cache = load_cache(root, args.det_dir)
     ball = BallTrack.load(root / "ball_track.json")
     reads = load_scorebug(root / "scorebug.jsonl")
     cfg = PerceiveConfig(use_3d_flights=args.use_3d, home_color_bgr=tuple(game["home_color_bgr"]) if game.get("home_color_bgr") else None,
@@ -216,6 +217,8 @@ def main() -> int:
     ap.add_argument("root")
     ap.add_argument("cmd", choices=("detect", "ball", "events", "fuse", "eval"))
     ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--chunks", type=int, default=1, help="detect: split the range into this many files (resumable)")
+    ap.add_argument("--det-dir", default="detections", help="detect / ball / events: detection folder in the game folder")
     ap.add_argument("--weights", default="runs/models/student/best.pt")
     ap.add_argument("--tag", default="baseline")
     ap.add_argument("--3d", dest="use_3d", action="store_true")

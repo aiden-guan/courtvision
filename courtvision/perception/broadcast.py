@@ -8,7 +8,10 @@ wraps it for broadcast footage:
   ``Calibration`` every frame: that homography and the rims projected through the tracked camera.
 * **Cuts** (``ShotBoundaryDetector``): a large colour-histogram change between consecutive frames
   (Bhattacharyya distance > ``cut_threshold``) is a cut. Image-space tracking state is reset at every cut
-  (``PerceptionPipeline.reset_tracks``), so tracks never jump across one.
+  (``PerceptionPipeline.reset_tracks``), so tracks never jump across one. With automatic court tracking a flagged
+  cut through which the tracker keeps the game camera (a fast pan, a flash) is not one.
+* **Detector history.** A multi-frame detector (``student.StudentDetector``) is reset at a cut and on every
+  non-live frame, so the first live frame after a replay is not stacked with frames from before it.
 * **Camera-motion compensation.** Between live frames the image-space track and ball states are moved by
   the image -> image homography of the camera's turn / zoom about its fixed centre (``K R R'^T K'^-1``), so
   the image-space motion models see the players' own motion only (BoT-SORT style).
@@ -112,10 +115,15 @@ class BroadcastPerception:
 
     @calibration.setter
     def calibration(self, calib: Calibration) -> None:
-        """A new operator calibration of the game camera restarts the court tracker from it."""
+        """A new operator calibration of the game camera restarts the court tracker from it (the automatic tracker
+        from the camera fitted to it at the known centre, or from scratch when none fits)."""
         self.base = calib
         self.inner.calibration = calib
         self.tracker.reset(calib.homography)
+        if self.auto is not None:
+            self.auto.reset_to_homography(calib.homography, calib.image_size)
+        self._prev_ptz = None
+        self._prev_params = None
 
     def __getattr__(self, name: str) -> Any:  # identity, set_scoreboard_roi, ... of the wrapped pipeline
         if name == "inner":
@@ -145,6 +153,8 @@ class BroadcastPerception:
             fix = self.auto.update(frame_bgr, cut=cut)
             hom = fix.homography(self.base.image_size)
             track = TrackResult(hom, fix.status, fix.inliers, fix.inliers, fix.rmse_px)
+            if cut and fix.status == "tracking":
+                cut = False  # the tracker kept the same camera through it: a fast pan or a flash, not a cut
         else:
             track = self.tracker.update(frame_bgr)
         court = track.homography is not None and track.status != "lost"
@@ -166,6 +176,10 @@ class BroadcastPerception:
         st["cuts"] += int(g.cut)
         if g.cut or (g.live and not self._was_live):
             self.inner.reset_tracks()  # no image track survives a cut
+        if g.cut or not g.live:
+            reset = getattr(self.inner.detector, "reset", None)  # a multi-frame detector's frame history
+            if callable(reset):
+                reset()
         self._was_live = g.live
         if not g.live:
             self._prev_ptz = None

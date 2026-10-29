@@ -4,7 +4,7 @@
 
 Labels are the teacher's linked ball path (``training/ball_labels.py``) on the held-out clips (every 10th clip,
 never trained on). For each labelled frame (weight >= 0.5) a tracker either reports the ball within ``--tol`` px
-(1080p) of the label (hit), elsewhere (wrong) or not at all (miss). Trackers:
+(label px: the video frame's own pixels) of the label (hit), elsewhere (wrong) or not at all (miss). Trackers:
 
 * ``starter``: RF-DETR Nano COCO at 384 px (the studio default) + the Kalman ``BallTracker``;
 * ``student``: the NBA student detector + the dynamic-programme path linking of ``nba/analyze.link_ball``
@@ -41,6 +41,9 @@ def main() -> int:
     warnings.filterwarnings("ignore")
     root = Path(args.teacher)
     labels = {(r["clip"], r["frame"]): r for r in map(json.loads, (root / "ball_labels.jsonl").open())}
+    # the frame's own size: labels are in its pixels, the stored frames are smaller
+    sizes = {(r["clip"], r["frame"]): tuple(r.get("size") or (1920, 1080))
+             for r in map(json.loads, (root / "detections.jsonl").open())}
     clips: dict[int, list[int]] = defaultdict(list)
     for clip, frame in labels:
         if clip % 10 == 5:
@@ -48,13 +51,14 @@ def main() -> int:
 
     def load(clip: int, frame: int) -> np.ndarray:
         img = cv2.imread(str(root / "frames" / f"{clip:04d}" / f"{frame:06d}.jpg"))
-        return cv2.resize(img, (1920, 1080), interpolation=cv2.INTER_LINEAR)
+        w, h = sizes.get((clip, frame), (1920, 1080))
+        return cv2.resize(img, (int(w), int(h)), interpolation=cv2.INTER_LINEAR)
 
     results: dict[str, dict[tuple[int, int], tuple[float, float] | None]] = {"starter": {}, "student": {}}
     import torch
     import rfdetr
 
-    from courtvision.nba.analyze import BallLinkConfig, CameraTrack, DetectionCache, link_ball
+    from courtvision.nba.analyze import BallLinkConfig, DetectionCache
     from courtvision.perception.student import StudentConfig, StudentDetector
 
     dev = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -79,7 +83,6 @@ def main() -> int:
             b, _ = student.infer([hist])[0]
             cache.balls[f] = np.asarray(b, np.float32).reshape(-1, 3)
             cache.persons[f] = np.zeros((0, 5), np.float32)
-        cam = CameraTrack(np.zeros(3), (1920, 1080), 29.97)
         path = _link_no_camera(cache, BallLinkConfig())
         for f in frames:
             p = path.get(f)

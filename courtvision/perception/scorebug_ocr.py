@@ -38,7 +38,8 @@ __all__ = ["ESPN_2024", "OCRScorebugReader", "ScorebugProfile", "parse_lines"]
 
 log = logging.getLogger(__name__)
 
-_PERIOD = re.compile(r"^(?:Q?([1-4])(?:ST|ND|RD|TH)?|([2-9])?OT)$")
+# a period has its ordinal suffix or a Q: a bare "1"-"4" is far more often a shot clock or a score fragment
+_PERIOD = re.compile(r"^(?:Q([1-4])|([1-4])(?:ST|ND|RD|TH)|([2-9])?OT)$")
 _CLOCK = re.compile(r"^(\d{1,2}):(\d{2})$|^(\d{1,2})\.(\d)$")
 
 
@@ -83,9 +84,9 @@ def _period(text: str) -> int | None:
     m = _PERIOD.match(text.upper().replace(" ", "").replace("I", "1"))
     if m is None:
         return None
-    if m.group(1):
-        return int(m.group(1))
-    return 4 + (int(m.group(2)) if m.group(2) else 1)
+    if m.group(1) or m.group(2):
+        return int(m.group(1) or m.group(2))
+    return 4 + (int(m.group(3)) if m.group(3) else 1)
 
 
 def _clock(text: str) -> float | None:

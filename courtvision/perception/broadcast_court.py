@@ -15,7 +15,8 @@
   prior's field of view, looking down into the aim box, nearly level, a tight fit). Replays, close-ups and other
   cameras (a different centre) fail it and stay "lost", which the broadcast gate treats as not live.
 
-``estimate_center`` finds the game camera's centre from sample frames (``court_search.calibrate_frame`` with
+``params_from_homography`` fits the camera at the known centre to an operator's calibration (the tracker restarts
+from it). ``estimate_center`` finds the game camera's centre from sample frames (``court_search.calibrate_frame`` with
 the centre free, then ``fit_center`` on the good ones). Thresholds are design choices checked on ESPN frames of
 Lakers @ Warriors (2024-12-25).
 """
@@ -38,15 +39,18 @@ from .court_search import (
     Evidence,
     EvidenceConfig,
     RefineConfig,
+    _angles_to,
+    _project,
     calibrate_frame,
     court_evidence,
     explained,
     fit_center,
+    focal_range,
     plausible,
     refine,
 )
 
-__all__ = ["BroadcastCourtTracker", "BroadcastTrackerConfig", "CourtFix", "estimate_center"]
+__all__ = ["BroadcastCourtTracker", "BroadcastTrackerConfig", "CourtFix", "estimate_center", "params_from_homography"]
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +132,13 @@ class BroadcastCourtTracker:
         self._vel[:] = 0.0
         self._misses = self._lost_frames = self._attempts = 0
         self.status = "lost" if params is None else "tracking"
+
+    def reset_to_homography(self, hom: Homography, size: tuple[int, int] | None = None) -> CameraParams | None:
+        """Restart from an operator's calibration (image -> court homography): the camera at the known centre that
+        matches it (``params_from_homography``), or from scratch (lost) when none does. Returns that camera."""
+        p = params_from_homography(hom, self.center, size or self.image_size, self.court, self.prior)
+        self.reset(p)
+        return p
 
     @property
     def params(self) -> CameraParams | None:
@@ -250,6 +261,53 @@ class BroadcastCourtTracker:
             return None
         r.params = CameraParams(self.center * 1.0, r.params.pan, r.params.tilt, r.params.roll, r.params.f)
         return r
+
+
+def params_from_homography(hom: Homography, center: np.ndarray, size: tuple[int, int], court: CourtSpec,
+                           prior: BroadcastPrior | None = None, max_rmse_px: float = 3.0) -> CameraParams | None:
+    """The camera at ``center`` (pan / tilt / roll / focal) whose floor-to-image map best matches ``hom`` (image px
+    -> court ft) on the court points it shows, or None when none matches to ``max_rmse_px`` (1080-line px): an
+    operator calibration of another camera, or one that disagrees with the centre."""
+    from scipy.optimize import least_squares
+
+    pr = prior or BroadcastPrior()
+    w, h = size
+    xs, ys = np.meshgrid(np.linspace(0.0, court.length, 13), np.linspace(0.0, court.width, 7))
+    X = np.column_stack([xs.ravel(), ys.ravel()])
+    try:
+        G = np.linalg.inv(hom.H)  # court -> image
+    except np.linalg.LinAlgError:
+        return None
+    uv, wz = _project(G, X)
+    if np.median(wz) < 0:  # a homography is defined up to scale, sign included
+        wz = -wz
+    ok = (wz > 0) & np.all(np.isfinite(uv), axis=1)
+    ok &= (uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)
+    if ok.sum() < 6:
+        return None
+    X, uv = X[ok], uv[ok]
+    C = np.asarray(center, float)
+    aim = hom.H @ np.array([w / 2.0, h / 2.0, 1.0])
+    ax, ay = (aim[:2] / aim[2]) if abs(aim[2]) > 1e-12 else (court.length / 2.0, court.width / 2.0)
+    if not (np.isfinite(ax) and np.isfinite(ay)) or math.hypot(ax - C[0], ay - C[1]) > 400.0:
+        ax, ay = court.length / 2.0, court.width / 2.0
+    pan0, tilt0 = _angles_to(C, float(ax), float(ay))
+
+    def res(v: np.ndarray) -> np.ndarray:
+        q, wq = _project(CameraParams(C, v[0], v[1], v[2], math.exp(v[3])).G(size), X)
+        return np.where(wq[:, None] > 0, q - uv, 1e3).ravel()
+
+    best: tuple[float, CameraParams] | None = None
+    f_lo, f_hi = focal_range(w, pr)
+    for f0 in np.geomspace(f_lo, f_hi, 6):
+        sol = least_squares(res, np.array([pan0, tilt0, 0.0, math.log(f0)]), loss="soft_l1", f_scale=5.0,
+                            max_nfev=200)
+        rmse = float(np.sqrt(np.mean(sol.fun ** 2) * 2.0))  # per point, both coordinates
+        if best is None or rmse < best[0]:
+            best = (rmse, CameraParams(C.copy(), float(sol.x[0]), float(sol.x[1]), float(sol.x[2]),
+                                       float(math.exp(sol.x[3]))))
+    assert best is not None
+    return best[1] if best[0] * 1080.0 / h <= max_rmse_px else None
 
 
 def estimate_center(frames: list[np.ndarray], court: CourtSpec, work_width: int = 960,

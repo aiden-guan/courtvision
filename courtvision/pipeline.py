@@ -1125,6 +1125,8 @@ class LiveGame:
         self._auto_params: Any = None
         self._auto_frames: list[tuple[float, np.ndarray]] = []
         self._auto_tries = 0
+        self._auto_probes = 0  # failed probes at a saved camera centre
+        self._auto_probe_t: float | None = None
         self._pending_roi: dict[str, Any] | None = None
         self._needs_calibration = False
         self._calib_hold = False  # real-time file playback paused until a calibration arrives
@@ -1565,9 +1567,17 @@ class LiveGame:
         if self._auto_center is not None:
             from courtvision.perception.broadcast_court import BroadcastCourtTracker
 
+            # one probe (a full search at the known centre) per auto_court_every_s; every auto_court_frames failed
+            # probes count as one try, the time budget of a centre estimate
+            if self._auto_probe_t is not None and t - self._auto_probe_t < pc.auto_court_every_s:
+                return None
+            self._auto_probe_t = t
             probe = BroadcastCourtTracker(self.court, size, self._auto_center)
             fix = probe.update(image, cut=True)
             if fix.params is None:
+                self._auto_probes += 1
+                if self._auto_probes % max(1, pc.auto_court_frames) == 0:
+                    self._auto_tries += 1
                 return None
             self._auto_params = fix.params
             return Calibration(homography=fix.homography(size), image_size=size, league=self.court.league)

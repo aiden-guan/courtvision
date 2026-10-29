@@ -1,14 +1,16 @@
 """Train the basketball student detector (``perception/student.py``) on teacher-labelled broadcast clips.
 
     .venv/bin/python -m courtvision.training.train_student --data runs/nba/<game>/teacher \
-        [--data runs/nba/<other game>/teacher ...] --out runs/models/student [--epochs 14]
+        [--data runs/nba/<other game>/teacher ...] --out runs/models/student [--epochs 14] [--resume]
 
-Each ``--data`` folder holds ``frames/<clip>/<frame>.jpg`` (960 px wide), ``detections.jsonl`` (teacher persons,
-full-resolution px) and ``ball_labels.jsonl`` (``ball_labels.link_ball_path``). A sample is a clip frame and its two
+Each ``--data`` folder holds ``frames/<clip>/<frame>.jpg`` (stored smaller than the video, e.g. 960 px wide),
+``detections.jsonl`` (teacher persons in full-resolution px, with the frame's ``size``) and ``ball_labels.jsonl`` (``ball_labels.link_ball_path``). A sample is a clip frame and its two
 predecessors. Targets: Gaussian centre heatmaps at stride 4 (ball sigma ``ball_sigma`` cells; persons sized by
 CenterNet's radius rule), offsets and log box sizes. The ball loss is weighted by the label weight and skipped on
 frames without a ball label (the teacher's silence is not evidence of no ball). Every 10th clip is held out;
-``best.pt`` keeps the epoch with the best held-out ball F1 (within 12 full-resolution px).
+``best.pt`` keeps the epoch with the best held-out ball F1 (within 12 full-resolution px). ``--resume`` continues
+from ``last.pt`` in ``--out`` with the same ``--epochs`` and data: the learning-rate schedule is replayed to the
+step it reached and the optimiser state restored (a ``last.pt`` saved without it restarts the optimiser moments).
 
 Research use only: the labels derive from NBA broadcasts (docs/TRAINING.md §1).
 """
@@ -28,7 +30,7 @@ import numpy as np
 
 from courtvision.perception.student import INPUT_HW, MEAN, STD, STRIDE, build_net, decode
 
-TEACHER_SCALE = 0.5  # stored frames are 960 px wide; labels are 1920-px coordinates
+TEACHER_SCALE = 0.5  # stored px per label px for rows without a ``size`` (960-px frames of 1920-px video)
 OUT_HW = (INPUT_HW[0] // STRIDE, INPUT_HW[1] // STRIDE)
 
 
@@ -89,10 +91,10 @@ class ClipDataset:
         fi, clip, frames, det, lab = self.items[idx]
         imgs = [self._img(fi, clip, f) for f in frames]
         h_in, w_in = INPUT_HW
-        s = TEACHER_SCALE  # label px -> stored image px
+        h0, w0 = imgs[0].shape[:2]
+        s = w0 / float(det["size"][0]) if det.get("size") else TEACHER_SCALE  # label px -> stored image px
         flip = self.train and random.random() < 0.5
         zoom = random.uniform(0.8, 1.25) if self.train else 1.0
-        h0, w0 = imgs[0].shape[:2]
         ox = oy = 0.0
         if self.train:  # a crop x crop window of the zoomed frame, often around the ball
             h_in = w_in = self.crop
@@ -128,7 +130,8 @@ class ClipDataset:
         t = {"ball_hm": np.zeros((1, oh, ow), np.float32), "ball_off": np.zeros((2, oh, ow), np.float32),
              "ball_mask": np.zeros((1, oh, ow), np.float32), "ball_w": np.zeros(1, np.float32),
              "person_hm": np.zeros((1, oh, ow), np.float32), "person_wh": np.zeros((2, oh, ow), np.float32),
-             "person_off": np.zeros((2, oh, ow), np.float32), "person_mask": np.zeros((1, oh, ow), np.float32)}
+             "person_off": np.zeros((2, oh, ow), np.float32), "person_mask": np.zeros((1, oh, ow), np.float32),
+             "scale": np.array([s], np.float32)}
         if lab.get("w", 0) > 0 and lab.get("xy"):
             u, v = tf(*lab["xy"])
             cu, cv = u / STRIDE, v / STRIDE
@@ -198,7 +201,7 @@ def evaluate(net, ds: ClipDataset, device: str, tol_px: float = 12.0) -> dict[st
                 one = {k: v[j] for k, v in out.items()}
                 for k in ("ball_hm", "person_hm"):
                     one[k] = 1.0 / (1.0 + np.exp(-one[k]))
-                balls, persons = decode(one, TEACHER_SCALE, ball_thresh=0.02, person_thresh=0.3)
+                balls, persons = decode(one, float(tg["scale"][0]), ball_thresh=0.02, person_thresh=0.3)
                 _, item_clip, frames, det, lab = ds.items[i + j]
                 if lab.get("w", 0) >= 0.5 and lab.get("xy"):
                     n_lab += 1
@@ -241,6 +244,7 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=6e-4)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--init", default=None, help="start from these weights")
+    ap.add_argument("--resume", action="store_true", help="continue from last.pt in --out (same --epochs)")
     ap.add_argument("--max-steps", type=int, default=0, help="stop after this many steps (smoke test)")
     args = ap.parse_args()
 
@@ -270,7 +274,11 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     best = -1.0
     step = 0
-    for epoch in range(args.epochs):
+    start_epoch = 0
+    if args.resume:
+        start_epoch, step, best = _resume(out, net, opt, sched, len(loader))
+        print(f"resumed after epoch {start_epoch}/{args.epochs} (best ball F1 {best})", flush=True)
+    for epoch in range(start_epoch, args.epochs):
         t0, run = time.time(), defaultdict(float)
         for x, tg in loader:
             x = x.to(device)
@@ -297,7 +305,7 @@ def main() -> int:
         ev = evaluate(net, val_ds, device)
         print(f"epoch {epoch + 1}/{args.epochs} {time.time() - t0:.0f}s train {msg} val {ev}", flush=True)
         state = {"model": net.state_dict(), "epoch": epoch + 1, "val": ev}
-        torch.save(state, out / "last.pt")
+        torch.save({**state, "opt": opt.state_dict(), "step": step, "epochs": args.epochs}, out / "last.pt")
         if ev["ball_f1"] > best:
             best = ev["ball_f1"]
             torch.save(state, out / "best.pt")
@@ -306,6 +314,30 @@ def main() -> int:
     (out / "train_summary.json").write_text(json.dumps({"best_ball_f1": best, "epochs": args.epochs,
                                                         "data": args.data}, indent=1))
     return 0
+
+
+def _resume(out: Path, net, opt, sched, steps_per_epoch: int) -> tuple[int, int, float]:  # noqa: ANN001
+    """Load ``last.pt`` (weights, and the optimiser state when saved) and replay the schedule to its step ->
+    (epochs done, steps done, best F1). The schedule is replayed, not loaded: older torch versions pickle
+    OneCycleLR's state with a bound method, which ``weights_only`` loading refuses."""
+    import warnings
+
+    import torch
+
+    last = torch.load(out / "last.pt", map_location="cpu", weights_only=True)
+    net.load_state_dict(last["model"])
+    epoch = int(last["epoch"])
+    step = int(last.get("step", epoch * steps_per_epoch))
+    if "opt" in last:
+        opt.load_state_dict(last["opt"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # "lr_scheduler.step() before optimizer.step()"
+        for _ in range(min(step, sched.total_steps - 1)):
+            sched.step()
+    best = -1.0
+    if (out / "best.pt").is_file():
+        best = float(torch.load(out / "best.pt", map_location="cpu", weights_only=True)["val"]["ball_f1"])
+    return epoch, step, best
 
 
 def _collate(batch):  # noqa: ANN001, ANN202 (torch)

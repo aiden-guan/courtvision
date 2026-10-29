@@ -82,6 +82,16 @@ def test_scorebug_lines_parse_by_pattern_and_panel() -> None:
     merged = [OCRLine("2ND 5", 1.0, (552, 15, 290, 30)), OCRLine("11:28", 1.0, (634, 15, 150, 29))]
     g = parse_lines(merged, ESPN_2024, origin_x=x0)
     assert g["period"] == 2 and g["game_clock"] == 688.0 and g["shot_clock"] == 5
+    # a shot clock read before the game clock is no period: a bare digit needs its ordinal suffix or a Q
+    shot_first = [OCRLine("4", 1.0, (560, 16, 30, 28)), OCRLine("11:28", 1.0, (634, 15, 150, 29))]
+    assert parse_lines(shot_first, ESPN_2024, origin_x=x0)["period"] is None
+
+
+def test_period_tokens() -> None:
+    from courtvision.perception.scorebug_ocr import _period
+
+    assert [_period(t) for t in ("1ST", "2ND", "3RD", "4TH", "Q3", "OT", "2OT", "IST")] == [1, 2, 3, 4, 3, 5, 6, 1]
+    assert [_period(t) for t in ("1", "4", "I", "5TH", "24")] == [None] * 5
 
 
 def test_ball_path_ignores_a_static_distractor_and_fills_a_flight_gap() -> None:
@@ -146,3 +156,30 @@ def test_fusion_turns_a_score_change_into_a_make_and_infers_a_rim_miss() -> None
     assert len(made) == 1 and made[0].team is Team.AWAY and made[0].value == 3
     missed = [e for e in out if e.kind is EventKind.SHOT_MISSED]
     assert len(missed) == 1 and missed[0].team is Team.AWAY and missed[0].attrs.get("inferred")
+
+
+def test_student_targets_use_each_rows_stored_scale(tmp_path) -> None:
+    import json
+
+    import cv2
+    import numpy as np
+
+    from courtvision.perception.student import STRIDE
+    from courtvision.training.train_student import ClipDataset
+
+    rows, labels = [], []
+    for clip, (w, h) in enumerate([(1920, 1080), (1280, 720)]):  # two videos, both stored 640 px wide
+        d = tmp_path / "frames" / f"{clip:04d}"
+        d.mkdir(parents=True)
+        for f in (10, 11, 12):
+            cv2.imwrite(str(d / f"{f:06d}.jpg"), np.zeros((360, 640, 3), np.uint8))
+            rows.append({"clip": clip, "frame": f, "size": [w, h], "persons": [], "balls": []})
+            labels.append({"clip": clip, "frame": f, "xy": [w / 2.0, h / 4.0], "w": 1.0})
+    (tmp_path / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (tmp_path / "ball_labels.jsonl").write_text("".join(json.dumps(r) + "\n" for r in labels))
+    ds = ClipDataset([tmp_path], None, train=False)
+    for i, (_, clip, frames, _, _) in enumerate(ds.items):
+        _, t = ds[i]
+        assert t["scale"][0] == np.float32(640 / (1920, 1280)[clip])
+        r, c = np.unravel_index(np.argmax(t["ball_hm"][0]), t["ball_hm"][0].shape)
+        assert (c, r) == (320 // STRIDE, 90 // STRIDE)  # the label at the centre, a quarter down, in stored px

@@ -29,9 +29,12 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
    zoomed-out court squeezed onto the busy part of the image.
 3. **Refinement.** A wide-basin pass on the line distance map, then matches along each projected line's normal
    with a robust scale that shrinks with the search radius.
-4. **Tracking.** Each frame refines the previous camera, predicted with its velocity. A cut, or a frame that no
-   longer fits, drops it. Re-acquisition first tries recently seen views, then a pan/tilt/zoom search at the known
-   centre. Close-ups and replays fail it and stay "lost", which the broadcast gate treats as not live.
+4. **Tracking.** Each frame refines the previous camera, predicted with its velocity. On a flagged cut the last
+   camera is refined first and kept when it still fits as well as a re-acquisition must (most flagged cuts in a
+   game are fast pans or flashes); a real cut, or a frame that no longer fits, drops it. Re-acquisition first tries
+   recently seen views, then a pan/tilt/zoom search at the known centre, and accepts only a camera the game camera
+   can be (focal length in the prior's field of view, looking down into the aim box, nearly level, a tight fit).
+   Close-ups and replays fail it and stay "lost", which the broadcast gate treats as not live.
 
 ## Running it on a game
 
@@ -51,12 +54,18 @@ VIDEO=runs/studio/<video id>/source.video
 `espn_summary.json` comes from `courtvision.nba.espn.fetch_summary(event_id, out=...)`. The court tracker can run
 in parallel chunks (`--start` / `--duration`), one output file per chunk.
 
+On a Mac, `tools/nba_mac_jobs.sh` runs the heavy steps one at a time (`q1`, `retrack-q1`, `train`, `retrack-full`,
+`full`); it refuses to start while another CourtVision job runs or when little memory is free. Several heavy jobs
+at once ran an 18 GB Mac out of memory.
+
 To train the student detector on a game:
 
 ```bash
 .venv/bin/python tools/nba_teacher_labels.py $VIDEO --scorebug $G/scorebug.jsonl --out $G/teacher
 # ball labels: courtvision.training.ball_labels.link_ball_path over each clip
 .venv/bin/python -m courtvision.training.train_student --data $G/teacher --out runs/models/student
+# continue an interrupted run (same --epochs and data)
+.venv/bin/python -m courtvision.training.train_student --data $G/teacher --out runs/models/student --resume
 ```
 
 The teacher is RF-DETR Small (COCO) at 1312x736 on 150 clips of 36 frames. Its ball candidates become labels only
