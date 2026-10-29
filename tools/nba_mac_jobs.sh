@@ -26,7 +26,7 @@ DATA=${DATA:-$G/teacher}
 WEIGHTS=${WEIGHTS:-runs/models/student/best.pt}
 MIN_FREE=${MIN_FREE:-25}
 WATCH_FREE=${WATCH_FREE:-8}
-JOBS="tools/nba_(analyze|track_court|teacher_labels|scan_scorebug|ball_bench|diagnose|fusion_ab)\.py|courtvision\.training\.train_student"
+JOBS="tools/nba_(analyze|track_court|teacher_labels|scan_scorebug|ball_bench|diagnose|fusion_ab|calibrate_fusion|hard_examples|bug_study|loop)\.py|courtvision\.training\.(train_student|pseudo_labels|nba_cue_rows|fit_cue_models|ball_labels)"
 V2=$G-v2  # the same game with new camera tracks; everything else is linked, so the old tracks stay for comparison
 mkdir -p "$G/logs"
 
