@@ -15,6 +15,8 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
 | Players | `nba/analyze.py` (`rectify_box`, `is_referee`) | Boxes re-drawn as a standing player at the box centre through the camera (feet within a few px); referees (grey with black stripes) are kept out of the teams. |
 | Events | `events/engine.py` | The existing monocular event engine on these frame states. |
 | Scorebug fusion | `nba/scorebug_events.py`, `nba/fusion.py` | Score changes are made baskets of a known team and value (a shot the camera saw goes before the engine's own guess); shot-clock resets to 24 mark rim touches (a reset that starts counting at once is a change of possession), and an engine miss the shot clock shows no sign of is dropped; a shot takes the team attacking the half the camera aims at when the ball reaches the rim; after a miss, a reset to 14 (the offence kept the ball) or a count from a fresh 24 (the defence got it) decides the rebound, and an engine rebound with no miss just before it (after a make, or after no shot) is dropped; a steal or turnover needs a reset to 24 that no shot or score explains, and such a reset in play with no shot before it (the camera then leaving the half) is a steal; assists follow the corrected makes and take the last pass in the scorer's possession (no shot-clock reset since it), whatever team the engine gave the pass. Each pass has a switch in `FusionConfig`; `tools/nba_fusion_ab.py` measures each one on a game in seconds, and `tools/nba_bug_study.py --split` checks the shot-clock rules on the part of a game they were not tuned on. |
+| Possession timeline | `nba/timeline.py` | Which team has the ball, decided once over the whole game (Viterbi) from where the camera aims, the engine's shot results, rebounds and steals, 3-D flights at the rim and the 8-second back-court rule. Nothing is read from the scorebug: which basket each team attacks, and the swap at half time, come from the video. The engine's steals, turnovers, rebounds and team labels are rebuilt from it (`nba_analyze.py timeline`); its settings are fitted on aligned play-by-play (docs/research/possession_decision_model.md §6). |
+| Shots | `nba/makes.py`, `nba/rim_jev.py` | Every shot decided from the video alone: the engine's shot results and the linked ball's visits to a rim it reported nothing at, each a shot or not, a free throw or a field goal (the camera off the court before it, a stoppage, and no dribbling around it), made or missed, from the engine's rim cues, the ball's path at the rim, what the timeline shows happens next and, with `--jev`, TypeSafe Jev's answers on rim crops. Three logistic models fitted on the play-by-play (docs/research/possession_decision_model.md §7-8); the engine's own labels lean on the scorebug. |
 | Truth | `nba/espn.py`, `nba/evaluate.py` | ESPN play-by-play and box score, placed on video time through the scorebug clock. |
 
 ### Court registration in more detail
@@ -81,6 +83,8 @@ VIDEO=runs/studio/<video id>/source.video
 .venv/bin/python tools/nba_analyze.py $G ball
 .venv/bin/python tools/nba_analyze.py $G events --tag baseline
 .venv/bin/python tools/nba_analyze.py $G eval --tag baseline
+.venv/bin/python tools/nba_analyze.py $G timeline --tag baseline     # possession and makes, no scorebug [--jev]
+.venv/bin/python tools/nba_analyze.py $G eval --tag baseline --file timeline.jsonl
 .venv/bin/python tools/nba_diagnose.py $G --tag baseline
 ```
 
@@ -130,9 +134,10 @@ real from the second game: add a folder with a `game.json` (`video`, `espn_event
 .venv/bin/python tools/nba_loop.py promote <version>
 ```
 
-To check single pieces by hand: `tools/nba_fusion_ab.py` (each fusion switch flipped on a run, in seconds) and
+To check single pieces by hand: `tools/nba_fusion_ab.py` (each fusion switch flipped on a run, in seconds),
 `tools/nba_bug_study.py` (what the play-by-play says happened at each shot-clock reset, to check the fusion's
-shot-clock rules).
+shot-clock rules) and `tools/nba_jev_probe.py` (TypeSafe Jev's answers from frames on made shots, possession and
+the engine's turnovers, against the play-by-play; see docs/research/possession_decision_model.md).
 
 ## In the studio
 

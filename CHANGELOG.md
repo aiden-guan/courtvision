@@ -5,6 +5,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Possession timeline and shots from the video (no scorebug), and the Jev frame probe
+
+- Added the possession timeline (`courtvision/nba/timeline.py`, `tools/nba_analyze.py <game> timeline`): which team
+  has the ball is decided once over the whole game by Viterbi, from where the broadcast camera aims, the engine's
+  shot results, rebounds and steals, 3-D flights at the rim and the 8-second back-court rule, with nothing read from
+  the scorebug. Steals, turnovers, rebounds and team labels are rebuilt from it. On Lakers @ Warriors (fitted on one
+  half, scored on the other): the right team in 96.2% of settled live play (the engine alone 73.6%), turnovers F1
+  0.18 → 0.42, steals 0.06 → 0.29, rebounds 0.47 → 0.52, box-score error 0.314 → 0.292.
+- Added shots from the video (`courtvision/nba/makes.py`, part of `nba_analyze.py timeline`): the engine's shot
+  results and the linked ball's visits to a rim it reported nothing at are each a shot or not, a free throw or a
+  field goal (told apart by their setting: the camera off the court before, no dribbling), made or missed, from the
+  engine's rim cues, the ball's path at the rim and what the timeline shows happens next; `--jev` adds TypeSafe
+  Jev's answers on rim crops (`courtvision/nba/rim_jev.py`). The engine's own labels lean on the scorebug. A miss
+  followed by the same team's next attempt is a put-back after an offensive rebound. Made or missed right on 84.8%
+  of real shots (87.6% with Jev), free throw or field goal on 94.9%, points 119 / 95 for 115 / 113 (the engine alone
+  79 / 75), box-score error 0.314 → 0.203.
+- Added `tools/nba_jev_probe.py`: TypeSafe Jev's answers from frames (made shots, the team with the ball, the
+  engine's turnovers) scored against the play-by-play.
+- See [the design note](docs/research/possession_decision_model.md).
+
+---
+
 ## [Unreleased] — Studio redesign: court lens, Ask and the model lab
 
 - Rebuilt the Studio dashboard as a keyboard-first workspace: a sidebar with seven views (Live, Box score, Board,
