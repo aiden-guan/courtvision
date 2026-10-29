@@ -480,7 +480,6 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
         out = final
         assisted = {e.shot_id for e in out if e.kind is EventKind.ASSIST}
         resets = np.array(sorted(b.t for b in bug if b.kind in ("reset24", "reset14", "run24")))
-        changes = np.array(sorted(x.t for x in out if x.kind in (EventKind.STEAL, EventKind.TURNOVER)))
         game_clock = sorted((b.t, b.game_clock) for b in bug if b.game_clock is not None)
         all_passes = sorted((p for p in out if p.kind is EventKind.PASS and p.team is not None), key=lambda p: p.t)
         pass_t = np.array([p.t for p in all_passes])
@@ -491,16 +490,18 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
         for e in [e for e in out if e.kind is EventKind.SHOT_MADE and not _is_ft(e) and e.shot_id not in assisted]:
             att = attempts.get(e.shot_id or "")
             t_rel = att.t if att is not None else e.t - cfg.inferred_release_s
-            # the shot clock tells the possession only where it was read (in the 24 s before the release) and is on
+            # the shot clock tells the possession only where it is on and read: a shot-clock event in the 24 s before
+            # the release, or just after it (the make's own reset; a long possession counts down with no event)
             gc = [g for tb, g in game_clock if tb <= t_rel]
-            told = cfg.assist_possession and n_in(resets, t_rel - 24.0, t_rel) > 0 and not (gc and gc[-1] < 24.0)
+            told = cfg.assist_possession and not (gc and gc[-1] < 24.0) and (
+                n_in(resets, t_rel - 24.0, t_rel) > 0 or n_in(resets, t_rel, t_rel + 6.0) > 0)
 
             def teammate(p: Event) -> bool:
                 if not told:
                     return p.team is e.team
-                # no shot-clock reset and no engine steal / turnover since the pass: the scoring team (the bug's)
-                # had the ball all along, whatever team the engine gave the pass
-                return n_in(resets, p.t, t_rel) == 0 and n_in(changes, p.t, t_rel) == 0
+                # no shot-clock reset since the pass (a steal resets it too): the scoring team (the bug's) had the
+                # ball all along, whatever team the engine gave the pass; the engine's own steals are too often false
+                return n_in(resets, p.t, t_rel) == 0
 
             i0, i1 = np.searchsorted(pass_t, t_rel - cfg.assist_window_s), np.searchsorted(pass_t, t_rel, side="right")
             passes = [p for p in all_passes[i0:i1] if teammate(p) and (e.player_id is None or p.player_id != e.player_id)]

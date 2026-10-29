@@ -457,8 +457,8 @@ def test_assist_possession_falls_back_to_the_team_labels_where_the_shot_clock_sa
     assert of(fuse(ev, unread, only("assists", "assist_possession")), EventKind.ASSIST) == []
     off = [BugEvent(100.0, "run24", shot_clock_before=24.0, game_clock=15.0)]  # the shot clock off
     assert of(fuse(ev, off, only("assists", "assist_possession")), EventKind.ASSIST) == []
-    stolen = ev + [Event("st", EventKind.STEAL, 108.0, 0, team=HOME, player_id="h4")]  # the ball changed hands
-    assert of(fuse(stolen, read, only("assists", "assist_possession")), EventKind.ASSIST) == []
+    stolen = read + [BugEvent(108.0, "reset24", shot_clock_before=16.0)]  # the ball changed hands after the pass
+    assert of(fuse(ev, stolen, only("assists", "assist_possession")), EventKind.ASSIST) == []
 
 
 def test_shot_clock_reset_while_the_game_clock_is_stopped_is_no_rim_touch() -> None:
