@@ -27,9 +27,10 @@ so its effect on the box score can be measured on its own:
    it aims at shows which half the play is in. Each team attacks one basket per half of the game; the made
    baskets (scorebug team + the half the camera was on) tell which. A shot takes the team attacking the half the
    camera aims at on its release, or with ``teams_at_rim`` at its result (the ball at the rim: the basket it went
-   to, also when the engine's release time is off or the shot is a heave from the other half). ``rebounds``: after a missed field goal the play either leaves that half (the
-   defence rebounded: the camera crosses half court and stays) or the attack goes on there (an offensive rebound);
-   the engine's rebound after the miss is re-typed and re-teamed accordingly, and a miss without one gets one.
+   to, also when the engine's release time is off or the shot is a heave from the other half). ``rebounds``: after
+   a missed field goal the play either leaves that half (the defence rebounded: the camera crosses half court and
+   stays) or the attack goes on there (an offensive rebound); the engine's rebound after the miss is re-typed and
+   re-teamed accordingly, and a miss without one gets one.
 5. ``bug_rebounds``: the shot clock says the same more directly (NBA rule 7): after a missed field goal the first of
    a reset to 14 (the offence kept the ball), a count down from a fresh 24 (``run24``: the defence got it) or a
    put-back basket of the shooting team decides an offensive or a defensive rebound; such misses are settled before
@@ -289,8 +290,8 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
                      and lo <= e.t - tm <= hi]
             if cands:
                 # a shot the camera saw goes before the engine's own guess at this score change
-                c = min(cands, key=lambda e: (_engine_guess(e), e.kind is not EventKind.SHOT_MADE or e.team is not s.team,
-                                              abs(e.t - tm)))
+                c = min(cands, key=lambda e: (_engine_guess(e),
+                                              e.kind is not EventKind.SHOT_MADE or e.team is not s.team, abs(e.t - tm)))
                 used.add(c.event_id)
                 set_shot(c, True, s.team, s.points, "score change")
             else:
@@ -704,10 +705,12 @@ def _rimless_misses(by_id: dict[str, Event], attempts: dict[str, Event], bug: li
             continue  # a dead ball, or the shot clock not read here
         if any(-hi <= t - e.t <= -lo for t in signs):
             continue
-        for x in [x for x in by_id.values() if x.shot_id == e.shot_id and x.kind in
-                  (EventKind.SHOT_ATTEMPT, EventKind.SHOT_MISSED, EventKind.REBOUND)]:
-            by_id.pop(x.event_id, None)
-        attempts.pop(e.shot_id or "", None)
+        by_id.pop(e.event_id, None)
+        if e.shot_id:
+            for x in [x for x in by_id.values() if x.shot_id == e.shot_id and x.kind in
+                      (EventKind.SHOT_ATTEMPT, EventKind.REBOUND)]:
+                by_id.pop(x.event_id, None)
+            attempts.pop(e.shot_id, None)
 
 
 def _flight_values(by_id: dict[str, Event], attempts: dict[str, Event], flights: list[Any], court: Any,
