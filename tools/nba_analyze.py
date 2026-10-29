@@ -4,6 +4,7 @@
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> ball
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> events [--tag baseline] [--3d] [--start S --end S]
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> eval --tag baseline
+    .venv/bin/python tools/nba_analyze.py runs/nba/<game> fuse --tag baseline [--fusion-file calib.json] [--fusion '{}']
 
 The game folder holds ``game.json`` (``video``, ``espn_event``, optional ``home_color_bgr`` / ``away_color_bgr``),
 ``scorebug.jsonl`` (tools/nba_scan_scorebug.py), ``camera_parts/*.jsonl`` (tools/nba_track_court.py) and
@@ -125,7 +126,8 @@ def truth(root: Path):  # noqa: ANN201
 
 
 def cmd_fuse(root: Path, args: argparse.Namespace) -> None:
-    from courtvision.nba.fusion import FusionConfig, PlayDirection, fuse
+    from courtvision.nba.fusion import PlayDirection, fuse
+    from courtvision.nba.fusion_tune import fusion_config
     from courtvision.nba.scorebug_events import scorebug_events
 
     _, camera = load_game(root)
@@ -136,7 +138,16 @@ def cmd_fuse(root: Path, args: argparse.Namespace) -> None:
     bug = [b for b in scorebug_events(reads) if lo <= b.t <= hi]
     periods = [(r.t, r.period) for r in reads if r.period is not None]
     events = [Event.from_dict(json.loads(line)) for line in (out / "events.jsonl").open()]
-    cfg = FusionConfig(**(json.loads(args.fusion) if args.fusion else {}))
+    overrides: dict = {}
+    if args.fusion_file:  # a calibration (tools/nba_calibrate_fusion.py --out): its "config" object
+        doc = json.loads(Path(args.fusion_file).read_text())
+        if not isinstance(doc, dict) or not isinstance(doc.get("config"), dict):
+            raise SystemExit(f'{args.fusion_file}: no "config" object (FusionConfig overrides)')
+        overrides.update(doc["config"])
+    overrides.update(json.loads(args.fusion) if args.fusion else {})  # --fusion goes on top of the file
+    cfg = fusion_config(overrides)
+    if overrides:
+        print(f"FusionConfig overrides: {json.dumps(overrides)}")
     flights = BallTrack.load(root / "ball_track.json").flights if (root / "ball_track.json").exists() else []
     from courtvision.geometry.court import court_for
 
@@ -228,6 +239,9 @@ def main() -> int:
     ap.add_argument("--tol", type=float, default=2.5)
     ap.add_argument("--file", default="events.jsonl", help="eval: events file of the run (events.jsonl / fused.jsonl)")
     ap.add_argument("--fusion", default=None, help="fuse: FusionConfig overrides (JSON)")
+    ap.add_argument("--fusion-file", default=None,
+                    help='fuse: a JSON file whose "config" object holds FusionConfig overrides (the output of '
+                         "tools/nba_calibrate_fusion.py); --fusion overrides go on top")
     args = ap.parse_args()
     logging.basicConfig(level=logging.WARNING)
     root = Path(args.root)
