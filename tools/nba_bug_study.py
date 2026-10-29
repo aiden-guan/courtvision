@@ -210,9 +210,10 @@ def turnover_triggers(bug: list[BugEvent], acts: list, running, lo: float, hi: f
         return r.t if running(r.t) else next((t for t in reversed(stops) if t <= r.t), r.t)
 
     def explained(r: BugEvent) -> bool:
+        if any(a <= t - r.t <= z for t in fg) or any(0.0 <= s - r.t <= cfg.reset_make_after_s for s in scores):
+            return True
         w = whistle(r)
-        return (any(a <= t - r.t <= z for t in fg)
-                or any(0.0 <= s - r.t <= cfg.reset_make_after_s or w - cfg.score_lag_s <= s <= r.t for s in scores))
+        return not running(r.t) and any(w - cfg.score_lag_s <= s <= r.t for s in scores)  # the free throws
 
     def clock_off(t: float) -> bool:
         before = [g for tb, g in clocks if tb <= t]
@@ -232,7 +233,7 @@ def turnover_triggers(bug: list[BugEvent], acts: list, running, lo: float, hi: f
     starts = sorted(b.t for b in bug if b.kind == "clock_start")
     ones = [b.t for b in bug if b.kind == "score" and b.points == 1]
     for w, r in changes:
-        if w == r.t or not lo <= r.t < hi or any(w - cfg.rebound_window_s <= t <= r.t for t in fg):
+        if running(r.t) or not lo <= r.t < hi or any(w - cfg.rebound_window_s <= t <= r.t for t in fg):
             continue
         near = {c for t, c, _ in acts if w - cfg.reset_turnover_s <= t <= r.t + cfg.reset_turnover_s}
         label = "turnover" if "turnover" in near else "foul" if "foul" in near else \
