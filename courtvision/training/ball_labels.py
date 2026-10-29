@@ -15,18 +15,31 @@ candidates into one consistent path per clip (the single game ball):
 
 ``BallLabel.weight`` is 0 for "no label" frames (the ball loss ignores them), else the label's confidence.
 Thresholds are design choices checked on ESPN frames of Lakers @ Warriors (2024-12-25).
+
+``ball_labels.jsonl`` of a teacher folder (``tools/nba_teacher_labels.py``), one row per frame of each clip:
+
+    .venv/bin/python -m courtvision.training.ball_labels runs/nba/<game>/teacher-hard [--force]
+
+The candidates are the teacher's "sports ball" boxes (centre, half the longer side, score); their colour is read
+from the stored frames (``label_folder``).
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import math
+import os
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
 
-__all__ = ["BallLabel", "LinkConfig", "ball_color_likelihood", "link_ball_path"]
+__all__ = ["BallLabel", "LinkConfig", "ball_color_likelihood", "label_folder", "link_ball_path"]
 
 # median Lab (OpenCV 8-bit) of the centre of confident COCO "sports ball" detections on ESPN NBA frames
 BALL_LAB = (95.0, 149.0, 150.0)
@@ -147,3 +160,62 @@ def link_ball_path(candidates: Sequence[Sequence[tuple[float, float, float, floa
                 labels[t] = BallLabel((a[0] + s * (b[0] - a[0]), a[1] + s * (b[1] - a[1])), 0.5 * (a[2] + b[2]),
                                       cfg.fill_weight, "filled")
     return labels
+
+
+def label_folder(folder: Path, config: LinkConfig | None = None) -> list[dict[str, Any]]:
+    """``ball_labels.jsonl`` rows of a teacher folder: ``link_ball_path`` over the frames of each clip (in frame
+    order), with each candidate's colour read from the stored frame (``frames/<clip>/<frame>.jpg``, scaled from the
+    full-resolution ``size`` of its row; 0.5 when the image is missing)."""
+    by_clip: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for r in map(json.loads, (folder / "detections.jsonl").open()):
+        by_clip[int(r["clip"])].append(r)
+    out: list[dict[str, Any]] = []
+    for clip, rows in sorted(by_clip.items()):
+        rows.sort(key=lambda r: r["frame"])
+        cands, colors = [], []
+        for r in rows:
+            img = cv2.imread(str(folder / "frames" / f"{clip:04d}" / f"{int(r['frame']):06d}.jpg"))
+            s = img.shape[1] / float(r["size"][0]) if img is not None and r.get("size") else 0.5
+            row, col = [], []
+            for x1, y1, x2, y2, sc in r.get("balls", []):
+                cx, cy, rad = (x1 + x2) / 2.0, (y1 + y2) / 2.0, max(x2 - x1, y2 - y1) / 2.0
+                row.append((cx, cy, rad, float(sc)))
+                col.append(ball_color_likelihood(img, (cx * s, cy * s), rad * s) if img is not None else 0.5)
+            cands.append(row)
+            colors.append(col)
+        for r, lab in zip(rows, link_ball_path(cands, colors, config), strict=True):
+            out.append({"clip": clip, "frame": int(r["frame"]),
+                        "xy": None if lab.xy is None else [round(lab.xy[0], 2), round(lab.xy[1], 2)],
+                        "r": None if lab.radius is None else round(lab.radius, 2), "w": round(lab.weight, 4),
+                        "source": lab.source})
+    return out
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Write ball_labels.jsonl for a teacher folder (link_ball_path per clip).")
+    ap.add_argument("folder")
+    ap.add_argument("--force", action="store_true", help="replace an existing ball_labels.jsonl")
+    args = ap.parse_args(argv)
+    folder = Path(args.folder)
+    try:
+        kind = json.loads((folder / "meta.json").read_text()).get("kind")
+    except (OSError, ValueError):
+        kind = None
+    if kind == "pseudo":
+        ap.error(f"{folder} is a pseudo-label folder: its labels come from courtvision.training.pseudo_labels")
+    out = folder / "ball_labels.jsonl"
+    if out.exists() and not args.force:
+        ap.error(f"{out} exists (--force replaces it)")
+    rows = label_folder(folder)
+    tmp = folder / "ball_labels.jsonl.tmp"
+    tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    os.replace(tmp, out)
+    n: dict[str, int] = defaultdict(int)
+    for r in rows:
+        n[r["source"]] += 1
+    print(f"{out}: {len(rows)} frames, {dict(sorted(n.items()))}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
