@@ -1,0 +1,33 @@
+{
+ "meta": {"version": 1, "request": "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json",
+          "time": "2024-12-26T10:00:00.000Z"},
+ "leagueSchedule": {
+  "seasonYear": "2024-25", "leagueId": "00",
+  "gameDates": [
+   {"gameDate": "12/25/2024 00:00:00", "games": [
+    {"gameId": "0022400443", "gameCode": "20241225/SASNYK", "gameStatus": 3, "gameStatusText": "Final",
+     "gameSequence": 1, "gameDateEst": "2024-12-25T00:00:00Z", "gameTimeEst": "1900-01-01T12:00:00Z",
+     "gameDateTimeEst": "2024-12-25T12:00:00Z", "gameDateUTC": "2024-12-25T05:00:00Z",
+     "gameTimeUTC": "1900-01-01T17:00:00Z", "gameDateTimeUTC": "2024-12-25T17:00:00Z", "day": "Wed",
+     "arenaName": "Madison Square Garden", "arenaCity": "New York", "arenaState": "NY",
+     "homeTeam": {"teamId": 1610612752, "teamName": "Knicks", "teamCity": "New York", "teamTricode": "NYK",
+                  "teamSlug": "knicks", "wins": 20, "losses": 10, "score": 117, "seed": 0},
+     "awayTeam": {"teamId": 1610612759, "teamName": "Spurs", "teamCity": "San Antonio", "teamTricode": "SAS",
+                  "teamSlug": "spurs", "wins": 15, "losses": 15, "score": 114, "seed": 0}},
+    {"gameId": "0022400447", "gameCode": "20241225/LALGSW", "gameStatus": 3, "gameStatusText": "Final",
+     "gameSequence": 4, "gameDateEst": "2024-12-25T00:00:00Z", "gameTimeEst": "1900-01-01T20:00:00Z",
+     "gameDateTimeEst": "2024-12-25T20:00:00Z", "gameDateUTC": "2024-12-25T05:00:00Z",
+     "gameTimeUTC": "1900-01-01T01:00:00Z", "gameDateTimeUTC": "2024-12-26T01:00:00Z", "day": "Wed",
+     "arenaName": "Chase Center", "arenaCity": "San Francisco", "arenaState": "CA",
+     "homeTeam": {"teamId": 1610612744, "teamName": "Warriors", "teamCity": "Golden State", "teamTricode": "GSW",
+                  "teamSlug": "warriors", "wins": 15, "losses": 14, "score": 7, "seed": 0},
+     "awayTeam": {"teamId": 1610612747, "teamName": "Lakers", "teamCity": "Los Angeles", "teamTricode": "LAL",
+                  "teamSlug": "lakers", "wins": 17, "losses": 13, "score": 6, "seed": 0}}]},
+   {"gameDate": "12/26/2024 00:00:00", "games": [
+    {"gameId": "0022400451", "gameCode": "20241226/LALGSW", "gameStatus": 1, "gameStatusText": "7:00 pm ET",
+     "gameDateEst": "2024-12-26T00:00:00Z",
+     "homeTeam": {"teamId": 1610612744, "teamTricode": "GSW"}, "awayTeam": {"teamId": 1610612747,
+                                                                           "teamTricode": "LAL"}}]}
+  ]
+ }
+}

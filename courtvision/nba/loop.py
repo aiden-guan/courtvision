@@ -1630,10 +1630,16 @@ def descendants(pid: int, procs: Sequence[tuple[int, int, str]]) -> list[int]:
     return out
 
 
+# light tools (seconds, little memory; network lookups) that may run beside a step
+LIGHT_TOOLS = ("tools/nba_new_game.py",)
+
+
 def is_job(cmd: str) -> bool:
     """A CourtVision job: a tool of tools/ (nba_mac_jobs.sh included) or a training module; ``nba_loop.py status``
     and ``next`` only read."""
     if not JOB_RE.search(cmd):
+        return False
+    if any(tool in cmd for tool in LIGHT_TOOLS):
         return False
     if "nba_loop.py" in cmd:
         words = set(cmd.split())

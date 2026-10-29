@@ -780,3 +780,10 @@ def test_stopping_the_loop_stops_the_running_step_too(tmp_path: Path, monkeypatc
     assert json.loads((tmp_path / f"runs/nba/{G1}/logs/espn.json").read_text())["status"] == "interrupted"
     assert not (tmp_path / f"runs/nba/{G1}/espn_summary.json").exists()
     assert after == before  # the loop put the disposition back
+
+
+def test_adding_a_game_is_no_job_that_blocks_the_loop() -> None:
+    from courtvision.nba.loop import is_job
+
+    assert not is_job(".venv/bin/python tools/nba_new_game.py /videos/g.mp4 --date 2025-01-15 --teams LAL,BOS")
+    assert is_job(".venv/bin/python tools/nba_analyze.py runs/nba/g detect --workers 1")

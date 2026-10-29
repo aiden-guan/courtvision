@@ -11,14 +11,23 @@ totals). ``fetch_summary`` downloads it; the parsers turn it into CourtVision's 
 * ``box_score``: team and player counting stats (``TeamBox`` / ``PlayerBox``).
 * ``roster``: a ``Roster`` with ESPN athlete ids, names and jersey numbers.
 
+Finding a game (tools/nba_new_game.py): ``fetch_scoreboard`` downloads the scoreboard of a day
+(``.../scoreboard?dates=YYYYMMDD``, the games ESPN lists on that US date) and ``scoreboard_games`` /
+``summary_game`` reduce a scoreboard or a summary to its games (event id, US Eastern date, teams, status, national
+TV). ``team_code`` turns any spelling of a team (NBA.com tricode, ESPN abbreviation, an alias such as GS / NY / SA /
+NO / UTAH / WSH / BRK / PHO, or a name) into its NBA.com tricode, the code of the game folder names.
+
 ESPN data is NBA statistics: research use only (docs/TRAINING.md §1), never shipped in a product.
 """
 
 from __future__ import annotations
 
+import datetime as dt
+import gzip
 import json
 import re
 import urllib.request
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,9 +35,12 @@ from typing import Any
 from courtvision.training.align_pbp import PBPAction, parse_pbp_generic
 from courtvision.types import Team
 
-__all__ = ["PlayerBox", "TeamBox", "box_score", "fetch_summary", "load_summary", "pbp_actions", "roster", "teams"]
+__all__ = ["TEAMS", "PlayerBox", "TeamBox", "box_score", "fetch_scoreboard", "fetch_summary", "find_games",
+           "get_json", "load_summary", "parse_matchup", "pbp_actions", "roster", "scoreboard_games", "summary_game",
+           "team_code", "teams", "us_date"]
 
 SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={event}"
+SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date}"
 STATS = ("pts", "fgm", "fga", "fg3m", "fg3a", "ftm", "fta", "oreb", "dreb", "reb", "ast", "stl", "blk", "tov", "pf")
 
 
@@ -42,6 +54,220 @@ def fetch_summary(event_id: str, out: str | Path | None = None, timeout: float =
 
 def load_summary(path: str | Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text())
+
+
+def get_json(url: str, timeout: float = 30.0, headers: Mapping[str, str] | None = None) -> Any:
+    """A JSON document over HTTPS (urllib; a gzip body is unpacked). Network errors propagate
+    (``urllib.error.URLError`` / ``HTTPError``, ``TimeoutError``); a body that is not JSON raises ValueError."""
+    req = urllib.request.Request(url, headers=dict(headers or {}))
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed hosts (ESPN, NBA.com)
+        body = resp.read()
+    if body[:2] == b"\x1f\x8b":
+        body = gzip.decompress(body)
+    return json.loads(body)
+
+
+def fetch_scoreboard(date: str | dt.date, out: str | Path | None = None, timeout: float = 30.0) -> dict[str, Any]:
+    """ESPN's NBA scoreboard of one day (``date``: YYYY-MM-DD or a date): the games it lists on that US date."""
+    day = date if isinstance(date, dt.date) else dt.date.fromisoformat(str(date))
+    data = get_json(SCOREBOARD_URL.format(date=day.strftime("%Y%m%d")), timeout)
+    if out is not None:
+        Path(out).write_text(json.dumps(data))
+    return data
+
+
+# --------------------------------------------------------------------------- teams
+
+# NBA.com tricode -> (ESPN abbreviation, city, nickname, other names). The tricode names the game folders
+# (``runs/nba/2024-12-25-LAL-GSW``); ESPN writes GS, NY, NO, SA, UTAH and WSH, other sources BRK, PHO, CHO, NOH, NJN.
+TEAMS: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
+    "ATL": ("ATL", "Atlanta", "Hawks", ()),
+    "BKN": ("BKN", "Brooklyn", "Nets", ("BRK", "NJN", "New Jersey Nets")),
+    "BOS": ("BOS", "Boston", "Celtics", ()),
+    "CHA": ("CHA", "Charlotte", "Hornets", ("CHO", "Charlotte Bobcats", "Bobcats")),
+    "CHI": ("CHI", "Chicago", "Bulls", ()),
+    "CLE": ("CLE", "Cleveland", "Cavaliers", ("Cavs",)),
+    "DAL": ("DAL", "Dallas", "Mavericks", ("Mavs",)),
+    "DEN": ("DEN", "Denver", "Nuggets", ()),
+    "DET": ("DET", "Detroit", "Pistons", ()),
+    "GSW": ("GS", "Golden State", "Warriors", ()),
+    "HOU": ("HOU", "Houston", "Rockets", ()),
+    "IND": ("IND", "Indiana", "Pacers", ()),
+    "LAC": ("LAC", "LA", "Clippers", ("Los Angeles Clippers",)),
+    "LAL": ("LAL", "Los Angeles", "Lakers", ("LA Lakers",)),
+    "MEM": ("MEM", "Memphis", "Grizzlies", ()),
+    "MIA": ("MIA", "Miami", "Heat", ()),
+    "MIL": ("MIL", "Milwaukee", "Bucks", ()),
+    "MIN": ("MIN", "Minnesota", "Timberwolves", ("Wolves",)),
+    "NOP": ("NO", "New Orleans", "Pelicans", ("NOH", "NOK")),
+    "NYK": ("NY", "New York", "Knicks", ()),
+    "OKC": ("OKC", "Oklahoma City", "Thunder", ()),
+    "ORL": ("ORL", "Orlando", "Magic", ()),
+    "PHI": ("PHI", "Philadelphia", "76ers", ("Sixers",)),
+    "PHX": ("PHX", "Phoenix", "Suns", ("PHO",)),
+    "POR": ("POR", "Portland", "Trail Blazers", ("Blazers",)),
+    "SAC": ("SAC", "Sacramento", "Kings", ()),
+    "SAS": ("SA", "San Antonio", "Spurs", ()),
+    "TOR": ("TOR", "Toronto", "Raptors", ()),
+    "UTA": ("UTAH", "Utah", "Jazz", ()),
+    "WAS": ("WSH", "Washington", "Wizards", ()),
+}
+
+
+def _team_key(text: str) -> str:
+    """Lower case, dots dropped (L.A.), other punctuation as spaces."""
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(text).lower().replace(".", "")).split())
+
+
+def _team_index() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """(codes, names): key -> tricodes. Codes are tricodes, ESPN abbreviations and short upper-case aliases; names
+    are cities, nicknames, full names and the other aliases. "LA" / "Los Angeles" alone stay ambiguous."""
+    codes: dict[str, set[str]] = {}
+    names: dict[str, set[str]] = {}
+    for tri, (abbr, city, nick, other) in TEAMS.items():
+        for c in (tri, abbr, *(o for o in other if o.isupper() and len(o) <= 4)):
+            codes.setdefault(_team_key(c), set()).add(tri)
+        for n in (city, nick, f"{city} {nick}", *(o for o in other if not (o.isupper() and len(o) <= 4))):
+            names.setdefault(_team_key(n), set()).add(tri)
+    for both in ("la", "los angeles"):
+        names[both] = {"LAL", "LAC"}
+    return codes, names
+
+
+TEAM_CODES, TEAM_NAMES = _team_index()
+
+
+def team_code(text: str) -> str:
+    """The NBA.com tricode of a team written as its tricode, ESPN abbreviation, an alias (GS, NY, SA, NO, UTAH, WSH,
+    BRK, PHO, ...), its full name, nickname or city, in any case. ValueError when unknown or ambiguous."""
+    key = _team_key(text)
+    hits = TEAM_CODES.get(key) or TEAM_NAMES.get(key)
+    if not hits:
+        raise ValueError(f"unknown NBA team {text!r} (an NBA.com or ESPN abbreviation such as GSW or GS, or a name)")
+    if len(hits) > 1:
+        raise ValueError(f"{text!r} could be {' or '.join(sorted(hits))}: say which")
+    return next(iter(hits))
+
+
+def parse_matchup(text: str) -> tuple[str, str]:
+    """Two teams as written, as NBA.com tricodes in the order given: ``AWY,HOM``, ``AWY@HOM``, ``AWY at HOM``,
+    ``A vs B``, ``A/B``, ``AWY-HOM`` or two names separated by spaces (``Lakers Warriors``, ``LAL GSW``)."""
+    s = text.strip()
+    parts: list[str] | None = None
+    for sep in (r"@", r",", r"\s+(?:at|vs\.?|v\.?|versus)\s+", r"/"):
+        split = [p.strip() for p in re.split(sep, s, flags=re.IGNORECASE)]
+        if len(split) == 2 and all(split):
+            parts = split
+            break
+    if parts is not None:
+        pair = (team_code(parts[0]), team_code(parts[1]))
+    else:
+        options: list[tuple[str, str]] = []
+        dash = [p.strip() for p in s.split("-")]
+        if len(dash) == 2 and all(dash):
+            try:
+                options.append((team_code(dash[0]), team_code(dash[1])))
+            except ValueError:
+                pass
+        words = s.split()
+        for i in range(1, len(words)):
+            try:
+                options.append((team_code(" ".join(words[:i])), team_code(" ".join(words[i:]))))
+            except ValueError:
+                continue
+        options = list(dict.fromkeys(options))
+        if len(options) != 1:
+            raise ValueError(f"teams {text!r}: write them as AWY,HOM (for example LAL,GSW or Lakers@Warriors)")
+        pair = options[0]
+    if pair[0] == pair[1]:
+        raise ValueError(f"teams {text!r}: the same team twice")
+    return pair
+
+
+def _code_or_none(text: Any) -> str | None:
+    try:
+        return team_code(str(text)) if text else None
+    except ValueError:
+        return None
+
+
+# --------------------------------------------------------------------------- games of a scoreboard or a summary
+
+
+def us_date(start: str) -> str | None:
+    """The US Eastern date (YYYY-MM-DD) of an ESPN start time (UTC, "2024-12-26T01:00Z"): the day ESPN lists the
+    game on and the game folders are named after. None when unreadable."""
+    try:
+        t = dt.datetime.fromisoformat(str(start).strip())  # Python 3.11+ reads the "Z"
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.UTC)
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz: dt.tzinfo = ZoneInfo("America/New_York")
+    except (ImportError, KeyError, OSError, ValueError):  # no time zone database: EST (tip-offs are noon to 11 pm ET)
+        tz = dt.timezone(dt.timedelta(hours=-5))
+    return t.astimezone(tz).date().isoformat()
+
+
+def _national_tv(comp: Mapping[str, Any]) -> list[str]:
+    """National TV networks of a competition: ``broadcasts`` ``{"market": "national", "names": [...]}`` (scoreboard)
+    or ``{"market": {"type": "National"}, "media": {"shortName": ...}}`` (summary header, ``geoBroadcasts``)."""
+    names: list[str] = []
+    for b in [*(comp.get("broadcasts") or []), *(comp.get("geoBroadcasts") or [])]:
+        if not isinstance(b, Mapping):
+            continue
+        market = b.get("market")
+        if isinstance(market, str) and market.lower() == "national":
+            names += [str(n) for n in b.get("names") or [] if n]
+        elif isinstance(market, Mapping) and str(market.get("type", "")).lower() == "national":
+            name = (b.get("media") or {}).get("shortName")
+            if name:
+                names.append(str(name))
+    return list(dict.fromkeys(names))
+
+
+def _game(event_id: Any, start: Any, comp: Mapping[str, Any], status: Any) -> dict[str, Any]:
+    sides: dict[str, dict[str, Any]] = {}
+    for c in comp.get("competitors") or []:
+        t = c.get("team") or {}
+        abbr = str(t.get("abbreviation") or "")
+        code = _code_or_none(abbr) or _code_or_none(t.get("displayName"))
+        sides[str(c.get("homeAway"))] = {"abbr": abbr, "code": code, "name": str(t.get("displayName") or abbr),
+                                         "score": c.get("score")}
+    st = status.get("type") if isinstance(status, Mapping) else None
+    st = st if isinstance(st, Mapping) else {}
+    return {"event": str(event_id or ""), "start": start, "date": us_date(start) if start else None,
+            "away": sides.get("away"), "home": sides.get("home"),
+            "completed": st.get("completed") if isinstance(st.get("completed"), bool) else None,
+            "status": str(st.get("description") or st.get("name") or ""), "national_tv": _national_tv(comp)}
+
+
+def scoreboard_games(scoreboard: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The games of an ESPN scoreboard (``fetch_scoreboard``): ``{"event", "start" (UTC), "date" (US Eastern),
+    "away" / "home": {"abbr" (ESPN), "code" (NBA.com tricode, None for a team outside the NBA), "name", "score"},
+    "completed" (None: not given), "status", "national_tv"}``."""
+    out = []
+    for ev in scoreboard.get("events") or []:
+        comp = (ev.get("competitions") or [{}])[0]
+        out.append(_game(ev.get("id") or comp.get("id"), ev.get("date") or comp.get("date"), comp,
+                         comp.get("status") or ev.get("status")))
+    return out
+
+
+def summary_game(summary: Mapping[str, Any]) -> dict[str, Any]:
+    """The game of an ESPN summary (``fetch_summary``), as ``scoreboard_games`` gives it (from ``header``)."""
+    head = summary.get("header") or {}
+    comp = (head.get("competitions") or [{}])[0]
+    return _game(head.get("id") or comp.get("id"), comp.get("date"), comp, comp.get("status"))
+
+
+def find_games(games: Iterable[Mapping[str, Any]], teams: Iterable[str]) -> list[Mapping[str, Any]]:
+    """The games between two teams (NBA.com tricodes, either order)."""
+    want = set(teams)
+    return [g for g in games if g.get("away") and g.get("home") and {g["away"]["code"], g["home"]["code"]} == want]
 
 
 def teams(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
