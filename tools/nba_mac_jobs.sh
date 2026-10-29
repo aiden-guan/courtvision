@@ -8,9 +8,10 @@
 #   tools/nba_mac_jobs.sh full [ROOT]   # whole game in ROOT ($G or $G-v2): detection (into detections-full/, resumable
 #                                       # chunks), ball, events, fusion, evaluation
 #
-# A step refuses to start while another CourtVision job runs or with less than MIN_FREE % of memory free. Each step
-# logs to $G/logs/<step>.log. G, PY, EPOCHS (the training run's --epochs), DATA (teacher folders, space separated),
-# WEIGHTS, DET_DIR and MIN_FREE can be set in the environment.
+# A step refuses to start while another CourtVision job runs or with less than MIN_FREE % of memory free, and a
+# watchdog stops it if free memory falls below WATCH_FREE % while it runs. Each step logs to $G/logs/<step>.log.
+# G, PY, EPOCHS (the training run's --epochs), DATA (teacher folders, space separated), WEIGHTS, DET_DIR, MIN_FREE
+# and WATCH_FREE can be set in the environment.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if command -v caffeinate >/dev/null && [ -z "${NBA_AWAKE:-}" ]; then  # macOS: no sleep while a job runs
@@ -24,22 +25,53 @@ EPOCHS=${EPOCHS:-12}
 DATA=${DATA:-$G/teacher}
 WEIGHTS=${WEIGHTS:-runs/models/student/best.pt}
 MIN_FREE=${MIN_FREE:-25}
+WATCH_FREE=${WATCH_FREE:-8}
+JOBS="tools/nba_(analyze|track_court|teacher_labels|scan_scorebug|ball_bench|diagnose|fusion_ab)\.py|courtvision\.training\.train_student"
 V2=$G-v2  # the same game with new camera tracks; everything else is linked, so the old tracks stay for comparison
 mkdir -p "$G/logs"
 
+free_pct() {  # macOS system-wide free memory, % (empty elsewhere)
+    if command -v memory_pressure >/dev/null; then
+        memory_pressure -Q 2>/dev/null | sed -n 's/.*free percentage: *\([0-9]*\)%.*/\1/p'
+    fi
+}
+
+kill_tree() {  # a process and all its descendants
+    local c
+    for c in $(pgrep -P "$1"); do kill_tree "$c"; done
+    kill -TERM "$1" 2>/dev/null || true
+}
+
+watchdog() {  # stop the whole step when free memory falls below WATCH_FREE % (before macOS starts killing apps)
+    local main=$1 me free c
+    me=$(sh -c 'echo $PPID')  # this subshell (macOS bash 3.2 has no BASHPID)
+    while sleep 15; do
+        free=$(free_pct)
+        if [ -n "$free" ] && [ "$free" -lt "$WATCH_FREE" ]; then
+            echo "watchdog: only ${free}% of memory free: stopping the step" >&2
+            for c in $(pgrep -P "$main"); do
+                if [ "$c" != "$me" ]; then kill_tree "$c"; fi
+            done
+            kill -TERM "$main" 2>/dev/null || true
+            return
+        fi
+    done
+}
+
 guard() {
-    if pgrep -f "tools/nba_(analyze|track_court|teacher_labels|scan_scorebug|ball_bench|diagnose)\.py|courtvision\.training\.train_student" >/dev/null; then
+    if pgrep -f "$JOBS" >/dev/null; then
         echo "another CourtVision job is running (pgrep -fl nba_ / train_student): wait for it or stop it" >&2
         exit 3
     fi
-    if command -v memory_pressure >/dev/null; then
-        local free
-        free=$(memory_pressure -Q 2>/dev/null | sed -n 's/.*free percentage: *\([0-9]*\)%.*/\1/p')
-        if [ -n "$free" ] && [ "$free" -lt "$MIN_FREE" ]; then
-            echo "only ${free}% of memory free (need ${MIN_FREE}%): close other apps first" >&2
-            exit 3
-        fi
+    local free
+    free=$(free_pct)
+    if [ -n "$free" ] && [ "$free" -lt "$MIN_FREE" ]; then
+        echo "only ${free}% of memory free (need ${MIN_FREE}%): close other apps first" >&2
+        exit 3
     fi
+    watchdog "$$" &
+    WATCHDOG=$!
+    trap 'kill "$WATCHDOG" 2>/dev/null || true' EXIT
 }
 
 video() { "$PY" -c "import json, sys; print(json.load(open(sys.argv[1]))['video'])" "$G/game.json"; }
