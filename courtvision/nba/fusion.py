@@ -22,11 +22,13 @@ so its effect on the box score can be measured on its own:
 5. ``bug_rebounds``: the shot clock says the same more directly (NBA rule 7): after a missed field goal the first of
    a reset to 14 (the offence kept the ball), a count down from a fresh 24 (``run24``: the defence got it) or a
    put-back basket of the shooting team decides an offensive or a defensive rebound; such misses are settled before
-   the camera's pass, which handles the rest. ``oreb_misses``: a reset to 14 while the game clock runs, with no shot
-   just before it, is an offensive rebound of a miss nobody saw: a missed attempt is inferred for the team that kept
-   the ball. ``orphan_rebounds`` (first): a rebound recovers a missed shot, so an engine rebound whose latest shot
-   result before it is a make (the other team inbounds the ball), or that has no shot result within
-   ``rebound_window_s`` before it, is dropped.
+   the camera's pass, which handles the rest. ``team_rebounds``: the game clock stopping first (the ball out of
+   bounds, a loose-ball foul) means no player gained the ball: a team rebound, which the box score credits to no
+   player, so the engine's rebounds up to the stop go and the miss is settled with none. ``oreb_misses``: a reset to
+   14 while the game clock runs, with no shot just before it, is an offensive rebound of a miss nobody saw: a missed
+   attempt is inferred for the team that kept the ball. ``orphan_rebounds`` (first): a rebound recovers a missed
+   shot, so an engine rebound whose latest shot result before it is a make (the other team inbounds the ball), or
+   that has no shot result within ``rebound_window_s`` before it, is dropped.
 6. ``handler_values`` (off by default: to be measured): an inferred miss (no shot seen, no 3-D flight) takes 2 or 3
    points from where the shooting team last had the ball just before the release (the engine's possession /
    dribble / pass positions), at the basket that team attacks.
@@ -165,6 +167,7 @@ class FusionConfig:
     orphan_rebounds: bool = True  # engine rebounds with no miss just before them are dropped (pass 5)
     turnover_resets: bool = True  # engine steals / turnovers need a reset to 24 that no shot explains (pass 7)
     deadball_turnovers: bool = True  # a reset to 24 at a stoppage with no shot before it: a turnover (pass 7)
+    team_rebounds: bool = True  # bug_rebounds: a clock stop before any possession sign is a team rebound (no player's)
     rebound_window_s: float = 6.0  # the rebound of a miss happens within this
     bug_rebound_window_s: float = 8.0  # the shot clock shows who got the ball within this after the miss
     oreb_hold_s: float = 2.0  # the camera must stay in the other half this long to call a defensive rebound
@@ -416,7 +419,9 @@ def _bug_rebounds(events: list[Event], bug: list[BugEvent], cfg: FusionConfig,
     """Offensive / defensive rebounds of missed field goals from the shot clock (pass 5) -> (events, the misses
     settled). The first sign within ``bug_rebound_window_s`` after the miss (and before the next one) decides: a
     reset to 14 with the clock running or a put-back basket of the shooting team (offensive), a count from a
-    fresh 24 (defensive). A clock stop first (a foul, the ball out of bounds) or no sign leaves the miss open."""
+    fresh 24 (defensive). A clock stop first (a foul, the ball out of bounds) is a team rebound with
+    ``team_rebounds`` (no player's: the engine's rebounds up to the stop are dropped), else it leaves the miss
+    open, as no sign does."""
     out = list(events)
     marks = sorted((b for b in bug if b.kind in ("reset14", "run24", "score", "clock_stop")), key=lambda b: b.t)
     misses = sorted((e for e in out if e.kind is EventKind.SHOT_MISSED and not _is_ft(e) and e.team is not None
@@ -426,7 +431,14 @@ def _bug_rebounds(events: list[Event], bug: list[BugEvent], cfg: FusionConfig,
         nxt_t = misses[k + 1].t if k + 1 < len(misses) else math.inf
         hi = min(m.t + cfg.bug_rebound_window_s, nxt_t)
         mark = next((b for b in marks if m.t - 0.5 < b.t <= hi), None)
-        if mark is None or mark.kind == "clock_stop":
+        if mark is None:
+            continue
+        if mark.kind == "clock_stop":
+            if cfg.team_rebounds:
+                # the whistle before the shot clock showed anyone with the ball (a count from 24, or 14): the ball
+                # went out of bounds or a loose-ball foul, a team rebound the box score credits to no player
+                out = [e for e in out if not (e.kind is EventKind.REBOUND and 0.0 <= e.t - m.t and e.t <= mark.t)]
+                settled.add(m.event_id)
             continue
         assert m.team is not None
         if mark.kind == "reset14" and running(mark.t):

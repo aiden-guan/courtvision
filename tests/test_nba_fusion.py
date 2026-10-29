@@ -563,6 +563,20 @@ def test_each_miss_takes_only_the_signs_before_the_next_miss() -> None:
     assert [(r.team, r.attrs["offensive"]) for r in reb] == [(HOME, True), (AWAY, False)]
 
 
+def test_clock_stop_before_any_possession_sign_after_a_miss_is_a_team_rebound() -> None:
+    # the game clock stops (the ball out of bounds) before the shot clock shows a count from 24 or a 14: nobody
+    # had the ball, so the engine's rebound goes and the camera pass infers none
+    ev = shot("s1", 49.0, 50.0, HOME) + [Event("rb", EventKind.REBOUND, 51.0, 0, team=HOME, player_id="h2",
+                                               attrs={"offensive": True})]
+    bug = SIDES + [BugEvent(50.2, "reset24", shot_clock_before=9.0), BugEvent(52.0, "clock_stop", game_clock=300.0),
+                   BugEvent(60.0, "clock_start", game_clock=300.0), BugEvent(62.0, "run24", shot_clock_before=24.0)]
+    out = fuse(ev, bug, only("bug_rebounds", "team_rebounds", "rebounds"), direction=DREB, periods=PERIODS)
+    assert of(out, EventKind.REBOUND) == []
+    # without the rule the miss is left to the camera, which calls the defence's rebound
+    out = fuse(ev, bug, only("bug_rebounds", "rebounds"), direction=DREB, periods=PERIODS)
+    assert [(r.event_id, r.team, r.attrs["offensive"]) for r in of(out, EventKind.REBOUND)] == [("rb", AWAY, False)]
+
+
 def test_engine_rebound_after_a_make_or_with_no_miss_just_before_it_is_dropped() -> None:
     def reb(eid: str, t: float, team: Team) -> Event:
         return Event(eid, EventKind.REBOUND, t, 0, team=team, player_id=f"{team.value}-1", attrs={"offensive": False})
