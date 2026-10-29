@@ -7,7 +7,9 @@ so its effect on the box score can be measured on its own:
 1. ``makes``: every confirmed score change is a made basket of that team and value: the nearest engine shot
    result (made or missed, any team) within the window before the bug update is turned into that make (team,
    value; its attempt follows), else an attempt and a make are inferred (no shooter). Engine makes with no score
-   change are turned into misses (a ball that did not go in).
+   change are turned into misses (a ball that did not go in). A make the engine itself inferred from a score change
+   (``inferred: scoreboard``) comes after the shots the camera saw, and is dropped when its score change went to
+   another shot (it was that shot, seen late, not a miss of its own).
 2. ``rim_misses``: a shot-clock reset to 24 while the game clock runs, with no score change right after it and no
    engine turnover / steal near it, is a rim touch: the engine's missed shot just before it is kept; without one a
    missed attempt is inferred for the team in possession (``possession_at``).
@@ -195,6 +197,12 @@ def _is_ft(e: Event) -> bool:
     return e.value == 1 or e.attrs.get("shot_type") == "free_throw"
 
 
+def _engine_guess(e: Event) -> bool:
+    """A make the engine inferred from a score change it matched to no seen shot (``inferred: scoreboard``): the
+    engine's own reading of a score change the makes pass reads again, not a shot the camera saw."""
+    return e.attrs.get("inferred") == "scoreboard"
+
+
 def possession_at(events: list[Event], t: float) -> Team | None:
     """The team that last gained or used the ball before ``t`` (possession, pass, rebound, steal, shot)."""
     best: tuple[float, Team] | None = None
@@ -264,7 +272,9 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
             cands = [e for e in _results(list(by_id.values())) if e.event_id not in used and _is_ft(e) == ft
                      and lo <= e.t - tm <= hi]
             if cands:
-                c = min(cands, key=lambda e: (e.kind is not EventKind.SHOT_MADE or e.team is not s.team, abs(e.t - tm)))
+                # a shot the camera saw goes before the engine's own guess at this score change
+                c = min(cands, key=lambda e: (_engine_guess(e), e.kind is not EventKind.SHOT_MADE or e.team is not s.team,
+                                              abs(e.t - tm)))
                 used.add(c.event_id)
                 set_shot(c, True, s.team, s.points, "score change")
             else:
@@ -272,6 +282,12 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
                 used.add(f"fuse-s{n_new}r")
         for e in _results(list(by_id.values())):
             if e.kind is EventKind.SHOT_MADE and e.event_id not in used and e.source != "scoreboard":
+                if _engine_guess(e):  # its score change is another shot's make: the guess was no shot of its own
+                    by_id.pop(e.event_id, None)
+                    att = attempts.pop(e.shot_id or "", None)
+                    if att is not None:
+                        by_id.pop(att.event_id, None)
+                    continue
                 set_shot(e, False, e.team, e.value, "no score change")
     if cfg.ft_trips:
         _ft_trips(by_id, bug, cfg, add_shot)

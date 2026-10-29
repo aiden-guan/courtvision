@@ -273,6 +273,29 @@ def test_score_change_with_no_engine_shot_infers_an_attempt_and_a_make() -> None
     assert made[1].attrs["shot_type"] == "free_throw" and "shot_type" not in made[0].attrs
 
 
+def guess(sid: str, t_release: float, t_result: float, team: Team, value: int = 2) -> list[Event]:
+    """The engine's own make for a score change it matched to no seen shot (``inferred: scoreboard``)."""
+    return [dataclasses.replace(e, attrs={**e.attrs, "inferred": "scoreboard"})
+            for e in shot(sid, t_release, t_result, team, made=True, value=value)]
+
+
+def test_score_change_goes_to_the_seen_shot_and_the_engines_guess_at_it_is_dropped() -> None:
+    # the camera saw the try (called a miss of the wrong team) 3.7 s before the bug update; the engine, matching no
+    # seen shot to the +3, added its own make just before the update
+    ev = shot("s1", 444.3, 445.3, AWAY, value=3) + guess("s2", 447.8, 448.2, HOME, value=3)
+    out = ids(fuse(ev, [BugEvent(449.0, "score", HOME, 3)], only("makes")))
+    assert out["s1r"].kind is EventKind.SHOT_MADE and out["s1r"].team is HOME and out["s1r"].value == 3
+    assert out["s1a"].team is HOME and "s2r" not in out and "s2a" not in out
+
+
+def test_engines_guess_left_over_by_the_makes_pass_is_dropped_not_made_a_miss() -> None:
+    ev = shot("s1", 84.5, 85.3, AWAY) + guess("s2", 88.2, 88.6, AWAY)  # the guess falls after the make window
+    out = ids(fuse(ev, [BugEvent(89.0, "score", AWAY, 2)], only("makes")))
+    assert out["s1r"].kind is EventKind.SHOT_MADE and "s2r" not in out and "s2a" not in out
+    alone = ids(fuse(guess("s3", 47.0, 47.5, HOME), [BugEvent(49.5, "score", HOME, 2)], only("makes")))
+    assert alone["s3r"].kind is EventKind.SHOT_MADE and alone["s3r"].attrs["fused"] == "score change"
+
+
 # --------------------------------------------------------------------------- fusion: free-throw trips
 
 
