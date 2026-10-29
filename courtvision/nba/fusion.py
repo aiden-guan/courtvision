@@ -13,7 +13,9 @@ so its effect on the box score can be measured on its own:
 2. ``rim_misses``: a shot-clock reset to 24 while the game clock runs, with no score change right after it and no
    engine turnover / steal near it, is a rim touch: the engine's missed shot just before it (or released in the
    ``reset_window_s`` before it, its result seen late) is kept; without one a missed attempt is inferred for the
-   team in possession (``possession_at``).
+   team in possession (``possession_at``). ``held_resets``: the shot clock starts when a player gains the ball, so
+   after a rim touch the 24 holds while the ball is loose; a reset whose count starts at once (the 24 not read
+   twice: a ``run24`` from the value before the reset) is a change of possession (a steal), not a rim touch.
 3. ``assists``: assists of shots that ended up missed are retracted; a make without one takes the last completed
    pass of a teammate within ``assist_window_s`` (NBA scorers credit a pass leading directly to the basket).
    ``assist_possession``: the pass only has to fall in the scorer's possession, with no shot-clock reset (a rim
@@ -163,6 +165,7 @@ class FusionConfig:
     makes: bool = True
     ft_trips: bool = True
     rim_misses: bool = True
+    held_resets: bool = True  # rim_misses: only a reset whose 24 holds (the ball loose) is a rim touch
     assists: bool = True
     flight_values: bool = True  # misses take 2 / 3 from a 3-D flight that reaches the rim near them
     handler_values: bool = False  # inferred misses take 2 / 3 from the ball handler's last position (pass 6)
@@ -319,6 +322,9 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
                 continue
             if any(e.kind is EventKind.SHOT_ATTEMPT and not _is_ft(e) and lo <= e.t - r.t <= 0.0 for e in cur):
                 continue  # a shot in the air at the reset (its result, seen late, can come well after the rim)
+            if cfg.held_resets and any(b.kind == "run24" and b.shot_clock_before == r.shot_clock_before
+                                       and 0.0 < b.t - r.t <= 2.0 for b in bug):
+                continue  # the count started with the reset (the 24 never held): a team had the ball, no rim touch
             add_shot(r.t, possession_at(cur, r.t - cfg.inferred_release_s), 2, False, "shot clock reset (rim touch)")
     if cfg.oreb_misses:
         cur = sorted(by_id.values(), key=lambda e: e.t)

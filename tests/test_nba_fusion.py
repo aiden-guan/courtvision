@@ -384,6 +384,17 @@ def test_shot_clock_reset_with_an_engine_shot_in_the_air_adds_no_miss() -> None:
     assert sorted(e.event_id for e in out) == sorted(e.event_id for e in ev)
 
 
+def test_shot_clock_reset_whose_count_starts_at_once_is_no_rim_touch() -> None:
+    # 15 straight to 23 (a steal: the new offence has the ball, so the clock runs at once); after a rim touch the 24
+    # holds while the ball is loose (the second reset: 24 read twice, the count 1.5 s later)
+    ev = [Event("p1", EventKind.POSSESSION, 20.0, 0, team=HOME)]
+    bug = [BugEvent(30.0, "reset24", shot_clock_before=15.0), BugEvent(31.0, "run24", shot_clock_before=15.0),
+           BugEvent(60.0, "reset24", shot_clock_before=7.0), BugEvent(61.5, "run24", shot_clock_before=24.0)]
+    miss = of(fuse(ev, bug, only("rim_misses", "held_resets")), EventKind.SHOT_MISSED)
+    assert [(e.t, e.team) for e in miss] == [(60.0, HOME)]
+    assert len(of(fuse(ev, bug, only("rim_misses")), EventKind.SHOT_MISSED)) == 2  # switched off: both
+
+
 def test_shot_clock_reset_while_the_game_clock_is_stopped_is_no_rim_touch() -> None:
     # out of bounds at 25 s: the clock stops, the shot clock is reset for the other team at 30 s, play resumes at 45 s
     ev = [Event("p2", EventKind.PASS, 20.0, 0, team=AWAY, player_id="a1")]
