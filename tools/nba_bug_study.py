@@ -5,7 +5,9 @@ checked on a real game (research use; docs/NBA.md).
 
     .venv/bin/python tools/nba_bug_study.py runs/nba/<game> [--start S --end S]
 
-For each kind (``reset24`` split by whether the game clock runs, ``reset14`` likewise, ``run24``) it counts the true
+For each kind (``reset24`` split by whether the game clock runs, stops or has just restarted (within
+``FusionConfig.restart_window_s`` of a clock start: play resuming after free throws or an inbound), ``reset14``
+likewise, ``run24``) it counts the true
 action nearest to the event in a window: missed / made field goal, missed / made free throw, offensive / defensive /
 team rebound, steal, turnover, block, foul, or none. It also gives the time from a running ``reset24`` to the next
 ``run24`` for each of the true causes (a rim touch then a defensive rebound waits for the rebound; a steal starts
@@ -26,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from courtvision.nba.analyze import load_scorebug  # noqa: E402
+from courtvision.nba.fusion import FusionConfig  # noqa: E402
 from courtvision.nba.scorebug_events import BugEvent, scorebug_events  # noqa: E402
 from courtvision.types import EventKind  # noqa: E402
 from nba_analyze import truth  # noqa: E402
@@ -71,13 +74,20 @@ def main() -> int:
                    if al.t is not None and not al.action.synthetic and category(al.action) is not None),
                   key=lambda r: r[0])
     running = running_at(bug)
+    starts = [b.t for b in bug if b.kind == "clock_start"]
+    lo_r, hi_r = FusionConfig().restart_window_s
+
+    def state(t: float) -> str:
+        if any(lo_r <= t - s <= hi_r for s in starts):
+            return "restart"
+        return "running" if running(t) else "stopped"
     counts: dict[str, Counter] = defaultdict(Counter)
     gaps: dict[str, list[float]] = defaultdict(list)
     runs = [b.t for b in bug if b.kind == "run24"]
     for b in bug:
         if b.kind not in WINDOWS:
             continue
-        key = b.kind if b.kind == "run24" else f"{b.kind} ({'running' if running(b.t) else 'stopped'})"
+        key = b.kind if b.kind == "run24" else f"{b.kind} ({state(b.t)})"
         a, z = WINDOWS[b.kind]
         near = [(t, c) for t, c in acts if a <= t - b.t <= z]
         if b.kind == "run24":
@@ -86,7 +96,7 @@ def main() -> int:
         else:
             cause = min(near, key=lambda r: abs(r[0] - b.t))[1] if near else "none"
         counts[key][cause] += 1
-        if b.kind == "reset24" and running(b.t):
+        if b.kind == "reset24" and state(b.t) == "running":
             nxt = next((t for t in runs if 0.0 < t - b.t <= 6.0), None)
             if nxt is not None:
                 gaps[cause].append(round(nxt - b.t, 2))

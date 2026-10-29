@@ -25,7 +25,13 @@ so its effect on the box score can be measured on its own:
    the camera's pass, which handles the rest. ``oreb_misses``: a reset to 14 while the game clock runs, with no shot
    just before it, is an offensive rebound of a miss nobody saw: a missed attempt is inferred for the team that kept
    the ball.
-6. ``handler_values`` (off by default: to be measured): an inferred miss (no shot seen, no 3-D flight) takes 2 or 3
+   Resets right at a restart of the game clock (``restart_guard``) are neither: play resumes there after free
+   throws (a missed last one is rebounded as the clock starts) or an inbound.
+6. ``no_rebound_at_whistle``: a miss followed at once by a clock stop (the ball out of bounds, a foul on the
+   rebound) gets no inferred rebound: a team rebound is not in the box score. ``ft_rebounds`` (off by default: to be
+   measured): a reset as play resumes after a team's free throws marks a missed last free throw and its rebound
+   (14: the shooters kept the ball, 24: the defence got it).
+7. ``handler_values`` (off by default: to be measured): an inferred miss (no shot seen, no 3-D flight) takes 2 or 3
    points from where the shooting team last had the ball just before the release (the engine's possession /
    dribble / pass positions), at the basket that team attacks.
 
@@ -157,6 +163,11 @@ class FusionConfig:
     oreb_misses: bool = True
     rebound_window_s: float = 6.0  # the rebound of a miss happens within this
     bug_rebound_window_s: float = 8.0  # the shot clock shows who got the ball within this after the miss
+    restart_guard: bool = True  # resets at a restart of the clock infer no field-goal miss (pass 2)
+    restart_window_s: tuple[float, float] = (-1.5, 3.0)  # reset time - clock start: "at the restart"
+    no_rebound_at_whistle: bool = True  # a miss with a whistle right after it gets no inferred rebound (pass 6)
+    whistle_after_miss_s: float = 2.5  # a clock stop this soon after a miss is that whistle
+    ft_rebounds: bool = False  # a reset as play resumes after free throws: the last one missed, its rebound (pass 6)
     oreb_hold_s: float = 2.0  # the camera must stay in the other half this long to call a defensive rebound
     and_one_window_s: float = 90.0  # a team's basket this soon before its lone free throw (clock stopped): an and-one
     shot_deep_ft: float = 17.0  # a put-back attempt is taken with the camera this deep in the half (not mid-pan)
@@ -269,11 +280,19 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
         i = int(np.searchsorted(clock_t, t, side="right")) - 1
         return i < 0 or clock[i][1]
 
+    starts = [b.t for b in bug if b.kind == "clock_start"]
+    stops = [b.t for b in bug if b.kind == "clock_stop"]
+
+    def at_restart(t: float) -> bool:
+        """Play resuming: after free throws (a missed last one rebounded) or an inbound, not a field goal's rim."""
+        lo, hi = cfg.restart_window_s
+        return cfg.restart_guard and any(lo <= t - st <= hi for st in starts)
+
     if cfg.rim_misses:
         cur = sorted(by_id.values(), key=lambda e: e.t)
         for r in (b for b in bug if b.kind == "reset24"):
-            if not running(r.t):
-                continue  # a dead-ball reset (foul, violation, out of bounds), not a rim touch
+            if not running(r.t) or at_restart(r.t):
+                continue  # a dead-ball reset (foul, violation, out of bounds) or play resuming, not a rim touch
             if any(0.0 <= s.t - r.t <= cfg.reset_make_after_s for s in scores):
                 continue  # the reset was a make
             if any(e.kind in (EventKind.TURNOVER, EventKind.STEAL) and abs(e.t - r.t) <= cfg.reset_turnover_s for e in cur):
@@ -286,10 +305,11 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
             add_shot(r.t, possession_at(cur, r.t - cfg.inferred_release_s), 2, False, "shot clock reset (rim touch)")
     if cfg.oreb_misses:
         cur = sorted(by_id.values(), key=lambda e: e.t)
-        stops = [b.t for b in bug if b.kind == "clock_stop"]
         for r in (b for b in bug if b.kind == "reset14"):
-            # a foul or a kicked ball also sets 14, but it stops the game clock
-            if not (running(r.t) and running(r.t + 1.5)) or any(r.t - 0.5 <= t <= r.t + 1.5 for t in stops):
+            # a foul or a kicked ball also sets 14, but it stops the game clock; a missed last free throw's
+            # offensive rebound sets it as the clock starts
+            if not (running(r.t) and running(r.t + 1.5)) or any(r.t - 0.5 <= t <= r.t + 1.5 for t in stops) \
+                    or at_restart(r.t):
                 continue
             if any(e.kind in (EventKind.SHOT_MISSED, EventKind.SHOT_MADE) and r.t - 6.0 <= e.t <= r.t + 0.5
                    for e in cur):
@@ -340,7 +360,9 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
     if cfg.bug_rebounds:
         out, settled = _bug_rebounds(out, bug, cfg, running)
     if cfg.rebounds and sides:
-        out = _fix_rebounds(out, cfg, direction, attacker, settled)  # type: ignore[arg-type]
+        out = _fix_rebounds(out, cfg, direction, attacker, settled, stops)  # type: ignore[arg-type]
+    if cfg.ft_rebounds:
+        out = _ft_rebounds(out, bug, cfg)
     if cfg.handler_values and court is not None:
         out = _handler_values(out, cfg, court, attacker)
     if cfg.assists:
@@ -416,9 +438,10 @@ def _bug_rebounds(events: list[Event], bug: list[BugEvent], cfg: FusionConfig,
 
 
 def _fix_rebounds(events: list[Event], cfg: FusionConfig, direction: PlayDirection,
-                  attacker: Any, settled: set[str] | None = None) -> list[Event]:
+                  attacker: Any, settled: set[str] | None = None, stops: list[float] | None = None) -> list[Event]:
     """Re-type / re-team the rebound after each missed field goal from where the play goes next (pass 5); misses in
-    ``settled`` (the shot clock decided them) are left alone."""
+    ``settled`` (the shot clock decided them) are left alone. A miss with a clock stop right after it (``stops``;
+    the ball out of bounds, a foul) gets no inferred rebound (``no_rebound_at_whistle``)."""
     out = list(events)
     misses = [e for e in out if e.kind is EventKind.SHOT_MISSED and not _is_ft(e) and not e.attrs.get("blocked_oob")
               and e.event_id not in (settled or set())]
@@ -444,12 +467,53 @@ def _fix_rebounds(events: list[Event], cfg: FusionConfig, direction: PlayDirecti
             r = min(rebs, key=lambda e: abs(e.t - t_reb))
             if r.team is not reb_team or bool(r.attrs.get("offensive")) != offensive:
                 out[out.index(r)] = _replace(r, team=reb_team, attrs={"offensive": offensive, "fused": "play direction"})
+        elif cfg.no_rebound_at_whistle and any(m.t - 0.5 <= t <= m.t + cfg.whistle_after_miss_s for t in stops or ()):
+            continue  # out of bounds or a foul: a team rebound, not in the box score
         else:
             n_new += 1
             out.append(Event(f"fuse-reb{n_new}", EventKind.REBOUND, min(m.t + 1.5, max(m.t + 0.5, t_reb)), m.frame_idx,
                              team=reb_team,
                              player_id=f"{reb_team.value}-unknown", confidence=0.5, source="cv",
                              attrs={"offensive": offensive, "fused": "play direction", "inferred": True}))
+    out.sort(key=lambda e: e.t)
+    return out
+
+
+def _ft_rebounds(events: list[Event], bug: list[BugEvent], cfg: FusionConfig) -> list[Event]:
+    """The rebound of a missed last free throw (pass 6): a stoppage in which one team made free throws, ended by a
+    restart of the clock with a shot-clock reset at it (``restart_window_s``). After a made last free throw the
+    reset to 24 comes during the stoppage, before the inbound; after a missed one, at the rebound, which starts the
+    clock: 14 when the shooters kept the ball (offensive), 24 when the defence got it."""
+    out = list(events)
+    made_ft = [b for b in bug if b.kind == "score" and b.points == 1 and b.team is not None]
+    stops = sorted(b.t for b in bug if b.kind == "clock_stop")
+    resets = sorted((b for b in bug if b.kind in ("reset24", "reset14")), key=lambda b: b.t)
+    lo, hi = cfg.restart_window_s
+    n_new = 0
+    for st in sorted(b.t for b in bug if b.kind == "clock_start"):
+        stop = max((t for t in stops if t < st), default=None)
+        if stop is None:
+            continue
+        fts = [b for b in made_ft if stop - 1.0 < b.t <= st + 1.0]
+        teams = {b.team for b in fts}
+        r = next((b for b in resets if lo <= b.t - st <= hi), None)
+        if len(teams) != 1 or r is None:
+            continue  # no free throws, both teams shot (technicals), or no sign of a rebound
+        team = fts[0].team
+        assert team is not None
+        offensive = r.kind == "reset14"
+        reb_team = team if offensive else team.other()
+        rebs = [e for e in out if e.kind is EventKind.REBOUND and -2.0 <= e.t - st <= 2.0]
+        if rebs:
+            rb = min(rebs, key=lambda e: abs(e.t - st))
+            if rb.team is not reb_team or bool(rb.attrs.get("offensive")) != offensive:
+                out[out.index(rb)] = _replace(rb, team=reb_team, attrs={"offensive": offensive,
+                                                                       "fused": "free-throw rebound"})
+            continue
+        n_new += 1
+        out.append(Event(f"fuse-ftreb{n_new}", EventKind.REBOUND, st, 0, team=reb_team,
+                         player_id=f"{reb_team.value}-unknown", confidence=0.5, source="cv",
+                         attrs={"offensive": offensive, "fused": "free-throw rebound", "inferred": True}))
     out.sort(key=lambda e: e.t)
     return out
 
