@@ -9,7 +9,8 @@ encode most possession-level events of an NBA game:
   (NBA rule: the shot clock resets on a rim touch), a made basket, or a change of possession (a turnover, a
   defensive rebound of an airball).
 * **Shot clock 24 -> 14** (or up to 14 from below): the offence kept the ball after a rim touch (an offensive
-  rebound) or a foul / kicked ball in its front court (NBA rule 7).
+  rebound) or a foul / kicked ball in its front court (NBA rule 7). After a live-ball offensive rebound the count
+  usually starts at once, so the 14 is often read only once: 24 (or a low value) straight to 13 is that reset too.
 * **Shot clock 24 -> 23** soon after a reset (``run24``): a team gained the ball with a full clock (after a rim
   touch: the defence rebounded). A jump from a low value straight to 23 or 22 (the 24 shown too briefly to be read
   twice) is both a reset and a run.
@@ -95,6 +96,10 @@ def scorebug_events(reads: Sequence[ScoreboardReading], max_jump_gap_s: float = 
             out.append(BugEvent(t1, "reset24", shot_clock_before=v0, game_clock=g, period=p))
         elif v1 == 14 and (v0 >= 23 or v0 < 13):
             out.append(BugEvent(t1, "reset14", shot_clock_before=v0, game_clock=g, period=p))
+        elif v1 == 13 and (v0 >= 23 or v0 < 12):
+            # the reset's 14 was on screen for less than two reads (the offence's count starts at once): 24 (or a
+            # lower value) straight to 13 within a few seconds can only be a reset to 14 (NBA rule 7)
+            out.append(BugEvent(t1 - 1.0, "reset14", shot_clock_before=v0, game_clock=g, period=p))
         elif 22 <= v1 <= 23 and v0 < 20:  # the reset's 24 was on screen for less than two reads
             out.append(BugEvent(t1 - (24 - v1), "reset24", shot_clock_before=v0, game_clock=g, period=p))
             out.append(BugEvent(t1, "run24", shot_clock_before=v0, game_clock=g, period=p))

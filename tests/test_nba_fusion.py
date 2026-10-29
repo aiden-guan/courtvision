@@ -159,6 +159,32 @@ def test_shot_clock_drop_from_24_to_14_is_reset14_and_counting_down_through_14_i
                                                                          ("reset14", 12.0, 24.0)]
 
 
+def test_a_14_read_only_once_before_the_count_is_still_reset14() -> None:
+    # rim touch (24 held), the offence keeps the ball and its count starts at once: 14 is on screen for one read
+    def shot_clock(k: int) -> float:
+        if k < 24:
+            return 17 - k // 3  # 17 .. 10
+        if k < 33:
+            return 24.0
+        if k == 33:
+            return 14.0
+        return 13 - (k - 34) // 3  # 13, 13, 13, 12, ...
+
+    ev = scorebug_events(bug_reads(45, shot=shot_clock))
+    assert [(e.kind, round(e.t, 2), e.shot_clock_before) for e in ev] == [("reset24", 8.0, 10.0),
+                                                                         ("reset14", 10.33, 24.0)]
+    # a foul / kicked ball with 9 left: straight up to 13 (the 14 read once) is a reset to 14 as well
+    rs = bug_reads(20, shot=lambda k: 11 - k // 3 if k < 9 else 14.0 if k == 9 else 13 - (k - 10) // 3)
+    assert [(e.kind, round(e.t, 2), e.shot_clock_before) for e in scorebug_events(rs)] == [("reset14", 2.33, 9.0)]
+
+
+def test_a_13_after_the_bug_was_hidden_or_counting_from_15_is_no_reset14() -> None:
+    hidden = bug_reads(60, shot=lambda k: 24.0 if k < 6 else None if k < 45 else 13 - (k - 45) // 3)  # 13 s hidden
+    assert [e.kind for e in scorebug_events(hidden)] == []
+    counting = bug_reads(30, shot=lambda k: 16 - k // 3)  # 16, 15, 14, 13, ...: the count, not a reset
+    assert [e.kind for e in scorebug_events(counting)] == []
+
+
 def test_game_clock_stop_and_restart_above_a_minute() -> None:
     def game(k: int) -> float:
         if k < 30:
