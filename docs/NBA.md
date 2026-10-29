@@ -72,6 +72,34 @@ The teacher is RF-DETR Small (COCO) at 1312x736 on 150 clips of 36 frames. Its b
 where one consistent, ball-coloured path links them. Fast gaps are filled, so the student also learns the blurred
 balls the teacher misses.
 
+## The learning loop: better with every game
+
+Every analysed game becomes training data for the next analysis. Three things learn:
+
+| What learns | From | Tools |
+|---|---|---|
+| The ball and person detector (student) | Teacher labels (RF-DETR Small at high resolution) on random clips; teacher labels on clips around the shots, rebounds and turnovers an analysis missed, invented or gave the wrong team (hard examples); the student's own ball where a 3-D flight or a confident, consistent path pins it down (pseudo labels, weighted below the teacher's and never used to score a model) | `tools/nba_hard_examples.py`, `tools/nba_teacher_labels.py --times`, `courtvision.training.pseudo_labels`, `courtvision.training.train_student` |
+| The event engine's decisions (shot, make, three, rebound, steal, block) | The engine's cues on each game labelled by the play-by-play placed on video time (and NBA.com shot locations); labels that hinge on the alignment error or a team mistake are left out | `courtvision.training.nba_cue_rows`, `courtvision.training.fit_cue_models` |
+| The scorebug fusion settings (windows, thresholds, passes) | The box scores of the analysed games, with leave-one-game-out checks | `tools/nba_calibrate_fusion.py`, `nba_analyze.py fuse --fusion-file` |
+
+`tools/nba_loop.py` runs it: `status` and `next` show the plan, `run` takes the missing steps one at a time (refused
+while another job runs or with less than 25% memory free; stopped by a watchdog under 8%; resumable), and fits new
+model versions when their inputs change. Every version keeps its provenance in `runs/models/registry.json`, every
+evaluation goes to `runs/nba/leaderboard.jsonl`, and `promote` makes a version current only when its mean box error
+over the games it was not fitted on is lower. With one game nothing is held out, so the loop starts to learn for
+real from the second game: add a folder with a `game.json` (`video`, `espn_event`) and `run` again.
+
+```bash
+.venv/bin/python tools/nba_loop.py status
+.venv/bin/python tools/nba_loop.py run --game <YYYY-MM-DD-AWY-HOM>   # one game's stages, resumable
+.venv/bin/python tools/nba_loop.py run                               # then the fits and candidate evaluations
+.venv/bin/python tools/nba_loop.py promote <version>
+```
+
+To check single pieces by hand: `tools/nba_fusion_ab.py` (each fusion switch flipped on a run, in seconds) and
+`tools/nba_bug_study.py` (what the play-by-play says happened at each shot-clock reset, to check the fusion's
+shot-clock rules).
+
 ## In the studio
 
 Copy the trained student to `runs/studio/models/nba-student.pt` and the studio uses it instead of the COCO starter.
