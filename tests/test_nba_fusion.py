@@ -487,7 +487,10 @@ def test_reset_to_24_at_a_stoppage_with_no_shot_before_it_is_a_dead_ball_turnove
            BugEvent(90.0, "clock_start", game_clock=273.0),
            BugEvent(120.0, "clock_stop", game_clock=245.0),  # a foul: free throws, the last one in, the other team's 24
            BugEvent(140.0, "score", HOME, 1), BugEvent(141.0, "reset24", shot_clock_before=12.0, game_clock=245.0),
-           BugEvent(160.0, "clock_start", game_clock=244.0)]
+           BugEvent(160.0, "clock_start", game_clock=244.0),
+           BugEvent(200.0, "clock_stop", game_clock=210.0),  # a foul in the bonus: the 24 set before the free throws
+           BugEvent(202.0, "reset24", shot_clock_before=11.0, game_clock=210.0),
+           BugEvent(215.0, "score", AWAY, 1), BugEvent(230.0, "clock_start", game_clock=209.0)]
     to = of(fuse(ev, bug, only("deadball_turnovers")), EventKind.TURNOVER)
     assert [(e.t, e.team, e.attrs["fused"]) for e in to] == [(25.0, AWAY, "shot clock reset at a stoppage")]
     assert to[0].attrs["inferred"] and to[0].source == "scoreboard"

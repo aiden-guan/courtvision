@@ -48,10 +48,10 @@ so its effect on the box score can be measured on its own:
    dribble / pass positions), at the basket that team attacks.
 7. ``turnover_resets``: a steal or a turnover hands the ball to the other team, which gets a fresh 24 (NBA rule 7),
    so the shot clock resets to 24 with it, and no shot or score explains that reset (a possession that ends in a shot
-   is no turnover). An engine steal or turnover with no such reset near it is dropped. ``deadball_turnovers`` (off
-   by default): a reset to 24 at a stoppage with no shot or free throw before it is a dead-ball turnover (out of
-   bounds, a violation, an offensive foul) of the team that had the ball. Off: on Q2-Q4 of Lakers @ Warriors (not
-   tuned on) 6 of the 16 such resets were turnovers and 9 fouls, which the scorebug does not tell apart. ``reset_steals`` (run before ``rim_misses``): a
+   is no turnover). An engine steal or turnover with no such reset near it is dropped. ``deadball_turnovers``: a
+   reset to 24 at a stoppage with no shot before it and no free throw in the stoppage (the 24 is often set before
+   the free throws of a foul) is a dead-ball turnover (out of bounds, a violation, an offensive foul) of the team
+   that had the ball. ``reset_steals`` (run before ``rim_misses``): a
    reset to 24 in play with no shot attempt before it, after which the camera leaves the half the play was in, is a
    steal the engine missed (the ball changed hands in play), not a rim touch.
 
@@ -187,7 +187,7 @@ class FusionConfig:
     orphan_rebounds: bool = True  # engine rebounds with no miss just before them are dropped (pass 5)
     reset_steals: bool = True  # a reset to 24 in play with no shot before it and the ball changing hands: a steal
     turnover_resets: bool = True  # engine steals / turnovers need a reset to 24 that no shot explains (pass 7)
-    deadball_turnovers: bool = False  # a reset to 24 at a stoppage with no shot before it: a turnover (pass 7)
+    deadball_turnovers: bool = True  # a reset to 24 at a stoppage with no shot or free throw: a turnover (pass 7)
     team_rebounds: bool = False  # bug_rebounds: a clock stop before any possession sign is a team rebound (no player's)
     rebound_window_s: float = 6.0  # the rebound of a miss happens within this
     bug_rebound_window_s: float = 8.0  # the shot clock shows who got the ball within this after the miss
@@ -556,13 +556,15 @@ def _bug_turnovers(events: list[Event], bug: list[BugEvent], cfg: FusionConfig, 
     at a stoppage) is dropped; a steal is also the other team's turnover at the same time, so the pair goes together.
     With under 24 s on the game clock the shot clock is off and shows nothing: those are kept. ``deadball_turnovers``:
     such a reset at a stoppage, with no shot result in the ``rebound_window_s`` before the whistle (a team rebound,
-    a foul on the shot) and no engine turnover near, is a dead-ball turnover of the team that had the ball."""
+    a foul on the shot), no free throw before the game clock restarts (a foul: the 24 is often set before its free
+    throws) and no engine turnover near, is a dead-ball turnover of the team that had the ball."""
     out = list(events)
     resets = [b for b in bug if b.kind == "reset24"]
     if not resets:
         return out  # no shot clock read: nothing to check against
     scores = [b for b in bug if b.kind == "score"]
     stops = sorted(b.t for b in bug if b.kind == "clock_stop")
+    starts = sorted(b.t for b in bug if b.kind == "clock_start")
     clocks = sorted((b.t, b.game_clock) for b in bug if b.game_clock is not None)
     shots = [e for e in out if e.kind in (EventKind.SHOT_MADE, EventKind.SHOT_MISSED) and not _is_ft(e)]
     lo, hi = cfg.reset_window_s
@@ -590,6 +592,9 @@ def _bug_turnovers(events: list[Event], bug: list[BugEvent], cfg: FusionConfig, 
         for w, r in changes:
             if running(r.t):
                 continue  # a reset in play: a steal (``reset_steals``) or a rim touch
+            restart = next((t for t in starts if t > r.t), math.inf)
+            if any(s.points == 1 and r.t <= s.t <= restart for s in scores):
+                continue  # free throws in the stoppage: a foul (the 24 was set before them), not a turnover
             if any(w - cfg.rebound_window_s <= e.t <= r.t for e in shots):
                 continue  # the ball went out after that shot (a team rebound) or the shooter was fouled
             if any(e.kind is EventKind.TURNOVER and w - cfg.reset_turnover_s <= e.t <= r.t + cfg.reset_turnover_s
