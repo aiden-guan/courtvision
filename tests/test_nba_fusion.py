@@ -421,6 +421,19 @@ def test_shot_clock_reset_whose_count_starts_at_once_is_no_rim_touch() -> None:
     assert len(of(fuse(ev, bug, only("rim_misses")), EventKind.SHOT_MISSED)) == 2  # switched off: both
 
 
+def test_engine_miss_the_shot_clock_shows_no_sign_of_is_dropped_with_its_rebound() -> None:
+    # the clock runs from a fresh 24 at 114.7 s to the next reset at 134.3 s: nothing touched the rim at 117.5 s
+    ev = shot("s1", 117.1, 117.5, HOME) + [Event("rb", EventKind.REBOUND, 117.6, 0, team=HOME, player_id="h2",
+                                                 shot_id="s1", attrs={"offensive": True})]
+    ev += shot("s2", 129.0, 130.0, AWAY)  # reset 0.5 s after its result: kept
+    bug = [BugEvent(114.7, "run24", shot_clock_before=24.0), BugEvent(130.5, "reset24", shot_clock_before=9.0)]
+    assert sorted(ids(fuse(ev, bug, only("rimless_misses")))) == ["s2a", "s2r"]
+    stopped = bug + [BugEvent(118.5, "clock_stop", game_clock=300.0)]  # a foul on the shot, the ball out of bounds
+    assert "s1r" in ids(fuse(ev, stopped, only("rimless_misses")))
+    unread = [BugEvent(130.5, "reset24", shot_clock_before=9.0)]  # no shot clock read in the 24 s before the miss
+    assert "s1r" in ids(fuse(ev, unread, only("rimless_misses")))
+
+
 def test_shot_clock_reset_while_the_game_clock_is_stopped_is_no_rim_touch() -> None:
     # out of bounds at 25 s: the clock stops, the shot clock is reset for the other team at 30 s, play resumes at 45 s
     ev = [Event("p2", EventKind.PASS, 20.0, 0, team=AWAY, player_id="a1")]

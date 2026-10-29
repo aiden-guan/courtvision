@@ -16,6 +16,8 @@ so its effect on the box score can be measured on its own:
    team in possession (``possession_at``). ``held_resets``: the shot clock starts when a player gains the ball, so
    after a rim touch the 24 holds while the ball is loose; a reset whose count starts at once (the 24 not read
    twice: a ``run24`` from the value before the reset) is a change of possession (a steal), not a rim touch.
+   ``rimless_misses``: the other way round, an engine miss the shot clock shows no sign of (no reset, count or
+   score near its result, the game clock running on) did not reach the rim, and is dropped (``_rimless_misses``).
 3. ``assists``: assists of shots that ended up missed are retracted; a make without one takes the last completed
    pass of a teammate within ``assist_window_s`` (NBA scorers credit a pass leading directly to the basket).
    ``assist_possession``: the pass only has to fall in the scorer's possession, with no shot-clock reset (a rim
@@ -168,6 +170,7 @@ class FusionConfig:
     ft_trips: bool = True
     rim_misses: bool = True
     held_resets: bool = True  # rim_misses: only a reset whose 24 holds (the ball loose) is a rim touch
+    rimless_misses: bool = True  # engine misses the shot clock shows no sign of (no rim touch, no stop) are dropped
     assists: bool = True
     flight_values: bool = True  # misses take 2 / 3 from a 3-D flight that reaches the rim near them
     handler_values: bool = False  # inferred misses take 2 / 3 from the ball handler's last position (pass 6)
@@ -309,6 +312,8 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
         i = int(np.searchsorted(clock_t, t, side="right")) - 1
         return i < 0 or clock[i][1]
 
+    if cfg.rimless_misses:
+        _rimless_misses(by_id, attempts, bug, cfg, running)
     sides = attack_sides(scores, direction, cfg.score_lag_s) if direction is not None else {}
 
     def period_at(t: float) -> int | None:
@@ -675,6 +680,29 @@ def _ft_trips(by_id: dict[str, Event], bug: list[BugEvent], cfg: FusionConfig, a
                     by_id.pop(a.event_id, None)
         for j in range(max(0, want - len(misses))):
             add_shot(g[-1].t - cfg.score_lag_s + 8.0 * (j + 1), team, 1, False, "free-throw trip short of makes")
+
+
+def _rimless_misses(by_id: dict[str, Event], attempts: dict[str, Event], bug: list[BugEvent], cfg: FusionConfig,
+                    running: Any) -> None:
+    """Drop the engine's missed field goals the scorebug shows no sign of (pass 2c): a miss that reaches the rim
+    resets the shot clock, the next possession shows on it (a count from 24, a reset to 14), a put-back scores, and a
+    foul on the shot or the ball out of bounds stops the game clock. With the game clock running and the shot clock
+    read around the miss (a sign within 24 s on either side: a possession cannot run longer), none of these within
+    ``reset_window_s`` of its result leaves the engine's call (a pass, a dribble taken for a release) unsupported:
+    the miss, its attempt and the engine's rebound of it are dropped."""
+    signs = sorted(b.t for b in bug if b.kind in ("reset24", "reset14", "run24", "score", "clock_stop"))
+    lo, hi = cfg.reset_window_s
+    for e in [e for e in by_id.values() if e.kind is EventKind.SHOT_MISSED and not _is_ft(e)
+              and e.source != "scoreboard" and not e.attrs.get("inferred")]:
+        if not running(e.t) or not any(e.t - 24.0 <= t < e.t for t in signs) or not any(e.t < t <= e.t + 24.0
+                                                                                        for t in signs):
+            continue  # a dead ball, or the shot clock not read here
+        if any(-hi <= t - e.t <= -lo for t in signs):
+            continue
+        for x in [x for x in by_id.values() if x.shot_id == e.shot_id and x.kind in
+                  (EventKind.SHOT_ATTEMPT, EventKind.SHOT_MISSED, EventKind.REBOUND)]:
+            by_id.pop(x.event_id, None)
+        attempts.pop(e.shot_id or "", None)
 
 
 def _flight_values(by_id: dict[str, Event], attempts: dict[str, Event], flights: list[Any], court: Any,
