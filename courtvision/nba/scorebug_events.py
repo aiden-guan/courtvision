@@ -10,6 +10,9 @@ encode most possession-level events of an NBA game:
   defensive rebound of an airball).
 * **Shot clock 24 -> 14** (or up to 14 from below): the offence kept the ball after a rim touch (an offensive
   rebound) or a foul / kicked ball in its front court (NBA rule 7).
+* **Shot clock 24 -> 23** soon after a reset (``run24``): a team gained the ball with a full clock (after a rim
+  touch: the defence rebounded). A jump from a low value straight to 23 or 22 (the 24 shown too briefly to be read
+  twice) is both a reset and a run.
 * **Game clock stops / starts**: dead balls (fouls, violations, timeouts, out of bounds, made baskets in the last
   two minutes of a period) and the restart.
 
@@ -30,7 +33,7 @@ __all__ = ["BugEvent", "scorebug_events"]
 @dataclass(frozen=True)
 class BugEvent:
     t: float  # first read showing the change (video seconds)
-    kind: str  # "score" | "reset24" | "reset14" | "clock_stop" | "clock_start"
+    kind: str  # "score" | "reset24" | "reset14" | "run24" | "clock_stop" | "clock_start"
     team: Team | None = None  # score: the team that scored
     points: int = 0
     shot_clock_before: float | None = None
@@ -48,8 +51,9 @@ def _confirmed(values: Sequence[tuple[float, float | None]]) -> list[tuple[float
 
 
 def scorebug_events(reads: Sequence[ScoreboardReading], max_jump_gap_s: float = 3.0,
-                    persist_s: float = 4.0) -> list[BugEvent]:
-    """Score changes, shot-clock resets and game-clock stops / starts from scorebug reads (time order)."""
+                    persist_s: float = 4.0, max_run_gap_s: float = 6.0) -> list[BugEvent]:
+    """Score changes, shot-clock resets and runs, and game-clock stops / starts from scorebug reads (time order).
+    ``max_run_gap_s``: a 24 held longer than this before the count starts (a timeout, an inbound) is no ``run24``."""
     reads = sorted(reads, key=lambda r: r.t)
     out: list[BugEvent] = []
     # score: per team, confirmed increases of 1-3
@@ -74,17 +78,26 @@ def scorebug_events(reads: Sequence[ScoreboardReading], max_jump_gap_s: float = 
                 cur = v
             elif holds:
                 cur = v  # a correction (or a jump over a hidden stretch): no basket is invented for it
-    # shot clock: jumps up to 24 / 14, and drops from 24 to 14
+    # shot clock: jumps up to 24 / 14, drops from 24 to 14, and the count starting from a fresh 24
     sc = _confirmed([(r.t, r.shot_clock) for r in reads])
     gc_at = {r.t: (r.game_clock, r.period) for r in reads}
-    for (t0, v0), (t1, v1) in zip(sc[:-1], sc[1:], strict=True):
+    since = sc[0][0] if sc else 0.0  # first read of the value shown (a held value is re-confirmed now and then)
+    for k, ((t0, v0), (t1, v1)) in enumerate(zip(sc[:-1], sc[1:], strict=True)):
+        if k == 0 or sc[k - 1][1] != v0 or t0 - sc[k - 1][0] > max_jump_gap_s:
+            since = t0
+        g, p = gc_at.get(t1, (None, None))
+        if v0 == 24 and 21 <= v1 <= 23 and t1 - since <= max_run_gap_s:
+            out.append(BugEvent(t1, "run24", shot_clock_before=v0, game_clock=g, period=p))
+            continue
         if t1 - t0 > max_jump_gap_s:
             continue
-        g, p = gc_at.get(t1, (None, None))
         if v1 == 24 and v0 < 23:
             out.append(BugEvent(t1, "reset24", shot_clock_before=v0, game_clock=g, period=p))
         elif v1 == 14 and (v0 >= 23 or v0 < 13):
             out.append(BugEvent(t1, "reset14", shot_clock_before=v0, game_clock=g, period=p))
+        elif 22 <= v1 <= 23 and v0 < 20:  # the reset's 24 was on screen for less than two reads
+            out.append(BugEvent(t1 - (24 - v1), "reset24", shot_clock_before=v0, game_clock=g, period=p))
+            out.append(BugEvent(t1, "run24", shot_clock_before=v0, game_clock=g, period=p))
     # game clock: a value held for >= 1.4 s (0.5 s under a minute, tenths) is stopped; it starts again only when the
     # display counts down twice in a row (a single misread digit during a stoppage is no restart)
     gcs = [(r.t, r.game_clock, r.period) for r in reads if r.game_clock is not None]

@@ -120,7 +120,30 @@ def test_first_basket_of_a_game_read_from_period_one_counts_from_zero() -> None:
 def test_shot_clock_reset_to_24_from_a_low_value_is_reset24() -> None:
     # the shot clock runs 8 .. 3 (a value a second) and jumps back to 24 while the game clock runs
     rs = bug_reads(30, shot=lambda k: 8 - k // 3 if k < 18 else 24 - (k - 18) // 3, game=lambda k: 400.0 - k // 3)
-    assert scorebug_events(rs) == [BugEvent(6.0, "reset24", shot_clock_before=3.0, game_clock=394.0, period=2)]
+    assert scorebug_events(rs) == [BugEvent(6.0, "reset24", shot_clock_before=3.0, game_clock=394.0, period=2),
+                                   BugEvent(7.0, "run24", shot_clock_before=24.0, game_clock=393.0, period=2)]
+
+
+def test_count_from_a_fresh_24_is_run24_but_not_after_a_long_hold() -> None:
+    # a rim touch (24 held 2 s, then the defence's count) and later a timeout (24 held 30 s before the inbound)
+    def shot_clock(k: int) -> float:
+        if k < 12:
+            return 9 - k // 3
+        if k < 18:
+            return 24.0
+        if k < 60:
+            return 23 - (k - 18) // 3
+        if k < 150:
+            return 24.0
+        return 23 - (k - 150) // 3
+
+    ev = [(e.kind, round(e.t, 2)) for e in scorebug_events(bug_reads(160, shot=shot_clock))]
+    assert ev == [("reset24", 4.0), ("run24", 6.0), ("reset24", 20.0)]
+
+
+def test_a_jump_from_a_low_shot_clock_straight_to_23_is_a_reset_and_a_run() -> None:
+    rs = bug_reads(30, shot=lambda k: 7 - k // 3 if k < 12 else 23 - (k - 12) // 3)  # the 24 never read twice
+    assert [(e.kind, round(e.t, 2)) for e in scorebug_events(rs)] == [("reset24", 3.0), ("run24", 4.0)]
 
 
 def test_shot_clock_drop_from_24_to_14_is_reset14_and_counting_down_through_14_is_not() -> None:
@@ -438,3 +461,77 @@ def test_miss_with_no_rebound_seen_gets_an_inferred_one() -> None:
     reb = of(out, EventKind.REBOUND)
     assert [(r.t, r.team, r.player_id, r.attrs["offensive"]) for r in reb] == [(51.5, AWAY, "away-unknown", False)]
     assert reb[0].attrs["inferred"] and reb[0].attrs["fused"] == "play direction"
+
+
+# --------------------------------------------------------------------------- fusion: rebounds from the shot clock
+
+
+def test_reset_to_14_after_a_miss_is_an_offensive_rebound_of_the_shooting_team() -> None:
+    ev = shot("s1", 49.0, 50.0, HOME) + [Event("rb", EventKind.REBOUND, 51.0, 0, team=AWAY, player_id="a2",
+                                               attrs={"offensive": False})]
+    bug = [BugEvent(50.2, "reset24", shot_clock_before=9.0), BugEvent(52.3, "reset14", shot_clock_before=24.0)]
+    rb = ids(fuse(ev, bug, only("bug_rebounds")))["rb"]
+    assert rb.team is HOME and rb.attrs["offensive"] is True and rb.attrs["fused"] == "shot clock"
+
+
+def test_count_from_a_fresh_24_after_a_miss_is_a_defensive_rebound_even_against_the_camera() -> None:
+    # the camera stays on the right half (where home attacks) long after the miss: the camera pass alone would
+    # call an offensive rebound; the shot clock's count from 24 says the defence got the ball
+    d = aim_track((0, 10, 80.0), (10, 20, 15.0), (20, 90, 80.0))
+    ev = shot("s1", 49.0, 50.0, HOME) + shot("s2", 54.0, 55.0, HOME)
+    bug = SIDES + [BugEvent(50.2, "reset24", shot_clock_before=9.0), BugEvent(52.4, "run24", shot_clock_before=24.0)]
+    out = fuse(ev, bug, only("bug_rebounds", "rebounds"), direction=d, periods=PERIODS)
+    reb = sorted(of(out, EventKind.REBOUND), key=lambda e: e.t)
+    first = reb[0]
+    assert (first.team, first.attrs["offensive"], first.attrs["fused"]) == (AWAY, False, "shot clock")
+    assert first.attrs["inferred"] and 50.5 <= first.t <= 51.5
+
+
+def test_a_put_back_basket_is_an_offensive_rebound_and_a_clock_stop_leaves_the_miss_open() -> None:
+    ev = shot("s1", 49.0, 50.0, HOME) + shot("s2", 79.0, 80.0, AWAY)
+    bug = [BugEvent(53.0, "score", HOME, 2), BugEvent(81.0, "clock_stop", game_clock=300.0),
+           BugEvent(83.0, "run24", shot_clock_before=24.0)]
+    reb = of(fuse(ev, bug, only("bug_rebounds")), EventKind.REBOUND)
+    assert [(r.team, r.attrs["offensive"]) for r in reb] == [(HOME, True)]  # s2 (foul on the rebound): no call
+
+
+def test_each_miss_takes_only_the_signs_before_the_next_miss() -> None:
+    # a miss, the offensive rebound (14), a missed put-back, then the defence's count from 24
+    ev = shot("s1", 49.0, 50.0, HOME) + shot("s2", 52.0, 53.0, HOME)
+    bug = [BugEvent(51.8, "reset14", shot_clock_before=24.0), BugEvent(55.5, "run24", shot_clock_before=24.0)]
+    reb = sorted(of(fuse(ev, bug, only("bug_rebounds")), EventKind.REBOUND), key=lambda e: e.t)
+    assert [(r.team, r.attrs["offensive"]) for r in reb] == [(HOME, True), (AWAY, False)]
+
+
+def test_reset_to_14_with_no_shot_seen_infers_a_miss_and_its_offensive_rebound() -> None:
+    ev = [Event("p1", EventKind.POSSESSION, 40.0, 0, team=AWAY), Event("p2", EventKind.DRIBBLE, 45.0, 0, team=AWAY)]
+    bug = [BugEvent(48.0, "reset14", shot_clock_before=6.0)]
+    out = fuse(ev, bug, only("oreb_misses", "bug_rebounds"))
+    miss = of(out, EventKind.SHOT_MISSED)
+    assert [(e.t, e.team, e.attrs["fused"]) for e in miss] == [(46.5, AWAY, "shot clock reset to 14 (offensive rebound)")]
+    reb = of(out, EventKind.REBOUND)
+    assert [(r.team, r.attrs["offensive"]) for r in reb] == [(AWAY, True)]
+
+
+def test_reset_to_14_at_a_whistle_or_right_after_a_known_miss_infers_nothing() -> None:
+    ev = [Event("p1", EventKind.POSSESSION, 40.0, 0, team=AWAY)] + shot("s1", 69.0, 70.0, AWAY)
+    bug = [BugEvent(47.5, "clock_stop", game_clock=300.0), BugEvent(48.0, "reset14", shot_clock_before=6.0,
+                                                                     game_clock=300.0),
+           BugEvent(60.0, "clock_start", game_clock=299.0), BugEvent(72.0, "reset14", shot_clock_before=24.0)]
+    out = fuse(ev, bug, only("oreb_misses"))
+    assert sorted(e.event_id for e in out) == sorted(e.event_id for e in ev)
+
+
+def test_inferred_miss_takes_its_value_from_the_last_dribble_but_not_after_a_pass() -> None:
+    cfg = only("rim_misses", "handler_values")
+    ev = [Event("d1", EventKind.DRIBBLE, 27.5, 0, team=AWAY, player_id="a1", x=70.0, y=2.0)]  # right corner, 3
+    out = fuse(ev, [BugEvent(30.0, "reset24", shot_clock_before=9.0)], cfg, court=NBA)
+    miss = of(out, EventKind.SHOT_MISSED)[0]
+    assert (miss.value, miss.attrs["value_from"]) == (3, "ball handler")
+    assert of(out, EventKind.SHOT_ATTEMPT)[0].value == 3
+    ev2 = ev + [Event("p1", EventKind.PASS, 28.3, 0, team=AWAY, player_id="a1", other_player_id="a2", x=70.0, y=2.0)]
+    miss2 = of(fuse(ev2, [BugEvent(30.0, "reset24", shot_clock_before=9.0)], cfg, court=NBA), EventKind.SHOT_MISSED)[0]
+    assert miss2.value == 2 and "value_from" not in miss2.attrs
+    near = [Event("d1", EventKind.DRIBBLE, 27.5, 0, team=AWAY, player_id="a1", x=80.0, y=25.0)]  # in the lane: 2
+    miss3 = of(fuse(near, [BugEvent(30.0, "reset24", shot_clock_before=9.0)], cfg, court=NBA), EventKind.SHOT_MISSED)[0]
+    assert miss3.value == 2 and miss3.attrs["value_from"] == "ball handler"

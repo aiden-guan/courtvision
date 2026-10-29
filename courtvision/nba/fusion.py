@@ -19,6 +19,15 @@ so its effect on the box score can be measured on its own:
    camera aims at on its release. ``rebounds``: after a missed field goal the play either leaves that half (the
    defence rebounded: the camera crosses half court and stays) or the attack goes on there (an offensive rebound);
    the engine's rebound after the miss is re-typed and re-teamed accordingly, and a miss without one gets one.
+5. ``bug_rebounds``: the shot clock says the same more directly (NBA rule 7): after a missed field goal the first of
+   a reset to 14 (the offence kept the ball), a count down from a fresh 24 (``run24``: the defence got it) or a
+   put-back basket of the shooting team decides an offensive or a defensive rebound; such misses are settled before
+   the camera's pass, which handles the rest. ``oreb_misses``: a reset to 14 while the game clock runs, with no shot
+   just before it, is an offensive rebound of a miss nobody saw: a missed attempt is inferred for the team that kept
+   the ball.
+6. ``handler_values`` (off by default: to be measured): an inferred miss (no shot seen, no 3-D flight) takes 2 or 3
+   points from where the shooting team last had the ball just before the release (the engine's possession /
+   dribble / pass positions), at the basket that team attacks.
 
 Times: the ESPN bug shows a basket ``score_lag_s`` after it; a shot result is a little after its release.
 """
@@ -141,13 +150,18 @@ class FusionConfig:
     rim_misses: bool = True
     assists: bool = True
     flight_values: bool = True  # misses take 2 / 3 from a 3-D flight that reaches the rim near them
+    handler_values: bool = False  # inferred misses take 2 / 3 from the ball handler's last position (pass 6)
     shot_teams: bool = True
     rebounds: bool = True
+    bug_rebounds: bool = True
+    oreb_misses: bool = True
     rebound_window_s: float = 6.0  # the rebound of a miss happens within this
+    bug_rebound_window_s: float = 8.0  # the shot clock shows who got the ball within this after the miss
     oreb_hold_s: float = 2.0  # the camera must stay in the other half this long to call a defensive rebound
     and_one_window_s: float = 90.0  # a team's basket this soon before its lone free throw (clock stopped): an and-one
     shot_deep_ft: float = 17.0  # a put-back attempt is taken with the camera this deep in the half (not mid-pan)
     flight_match_s: float = 1.5  # a flight's rim pass this close to a missed shot's result is that shot
+    handler_window_s: float = 2.5  # pass 6: the ball handler's position this long before the release at most
     three_margin_ft: float = 0.5  # release beyond the arc by this much counts as a three (the ball is ahead of the feet)
     score_lag_s: float = 2.0  # ESPN: bug update after the ball goes in (median, Lakers @ Warriors)
     make_window_s: tuple[float, float] = (-3.5, 1.5)  # engine result time - (bug time - lag)
@@ -247,14 +261,15 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
                 set_shot(e, False, e.team, e.value, "no score change")
     if cfg.ft_trips:
         _ft_trips(by_id, bug, cfg, add_shot)
+    clock = sorted((b.t, b.kind == "clock_start") for b in bug if b.kind in ("clock_start", "clock_stop"))
+    clock_t = np.array([c[0] for c in clock])
+
+    def running(t: float) -> bool:
+        i = int(np.searchsorted(clock_t, t, side="right")) - 1
+        return i < 0 or clock[i][1]
+
     if cfg.rim_misses:
         cur = sorted(by_id.values(), key=lambda e: e.t)
-        clock = sorted((b.t, b.kind == "clock_start") for b in bug if b.kind in ("clock_start", "clock_stop"))
-
-        def running(t: float) -> bool:
-            i = int(np.searchsorted(np.array([c[0] for c in clock]), t, side="right")) - 1
-            return i < 0 or clock[i][1]
-
         for r in (b for b in bug if b.kind == "reset24"):
             if not running(r.t):
                 continue  # a dead-ball reset (foul, violation, out of bounds), not a rim touch
@@ -268,6 +283,19 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
             if any(e.kind is EventKind.SHOT_MADE and abs(e.t - r.t) <= 2.0 for e in cur):
                 continue
             add_shot(r.t, possession_at(cur, r.t - cfg.inferred_release_s), 2, False, "shot clock reset (rim touch)")
+    if cfg.oreb_misses:
+        cur = sorted(by_id.values(), key=lambda e: e.t)
+        stops = [b.t for b in bug if b.kind == "clock_stop"]
+        for r in (b for b in bug if b.kind == "reset14"):
+            # a foul or a kicked ball also sets 14, but it stops the game clock
+            if not (running(r.t) and running(r.t + 1.5)) or any(r.t - 0.5 <= t <= r.t + 1.5 for t in stops):
+                continue
+            if any(e.kind in (EventKind.SHOT_MISSED, EventKind.SHOT_MADE) and r.t - 6.0 <= e.t <= r.t + 0.5
+                   for e in cur):
+                continue  # the miss it follows is known
+            t_miss = r.t - 1.5  # the rim touch, the rebound and the 14 on the bug
+            add_shot(t_miss, possession_at(cur, t_miss - cfg.inferred_release_s), 2, False,
+                     "shot clock reset to 14 (offensive rebound)")
     if cfg.flight_values and flights and court is not None:
         _flight_values(by_id, attempts, flights, court, cfg)
     out = sorted(by_id.values(), key=lambda e: e.t)
@@ -307,8 +335,13 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
                     e = _replace(e, team=team, attrs={"team_from": "camera half"})
             fixed.append(e)
         out = fixed
+    settled: set[str] = set()
+    if cfg.bug_rebounds:
+        out, settled = _bug_rebounds(out, bug, cfg, running)
     if cfg.rebounds and sides:
-        out = _fix_rebounds(out, cfg, direction, attacker)  # type: ignore[arg-type]
+        out = _fix_rebounds(out, cfg, direction, attacker, settled)  # type: ignore[arg-type]
+    if cfg.handler_values and court is not None:
+        out = _handler_values(out, cfg, court, attacker)
     if cfg.assists:
         made_ids = {e.shot_id for e in out if e.kind is EventKind.SHOT_MADE and not _is_ft(e)}
         final = []
@@ -333,11 +366,61 @@ def fuse(engine_events: Iterable[Event], bug: list[BugEvent], config: FusionConf
     return out
 
 
-def _fix_rebounds(events: list[Event], cfg: FusionConfig, direction: PlayDirection,
-                  attacker: Any) -> list[Event]:
-    """Re-type / re-team the rebound after each missed field goal from where the play goes next (pass 5)."""
+def _set_rebound(out: list[Event], m: Event, nxt_t: float, window_s: float, team: Team, offensive: bool,
+                 t_reb: float, why: str, new_id: str) -> None:
+    """The rebound of miss ``m`` is ``team``'s (``offensive``): the engine's rebound after it (before the next miss
+    at ``nxt_t``) re-teamed / re-typed, else an inferred one at ``t_reb``."""
+    rebs = [e for e in out if e.kind is EventKind.REBOUND and 0.0 <= e.t - m.t <= window_s and e.t < nxt_t]
+    if rebs:
+        r = min(rebs, key=lambda e: abs(e.t - t_reb))
+        if r.team is not team or bool(r.attrs.get("offensive")) != offensive:
+            out[out.index(r)] = _replace(r, team=team, attrs={"offensive": offensive, "fused": why})
+        return
+    out.append(Event(new_id, EventKind.REBOUND, t_reb, m.frame_idx, team=team, player_id=f"{team.value}-unknown",
+                     confidence=0.5, source="cv", attrs={"offensive": offensive, "fused": why, "inferred": True}))
+
+
+def _bug_rebounds(events: list[Event], bug: list[BugEvent], cfg: FusionConfig,
+                  running: Any) -> tuple[list[Event], set[str]]:
+    """Offensive / defensive rebounds of missed field goals from the shot clock (pass 5) -> (events, the misses
+    settled). The first sign within ``bug_rebound_window_s`` after the miss (and before the next one) decides: a
+    reset to 14 with the clock running or a put-back basket of the shooting team (offensive), a count from a
+    fresh 24 (defensive). A clock stop first (a foul, the ball out of bounds) or no sign leaves the miss open."""
     out = list(events)
-    misses = [e for e in out if e.kind is EventKind.SHOT_MISSED and not _is_ft(e) and not e.attrs.get("blocked_oob")]
+    marks = sorted((b for b in bug if b.kind in ("reset14", "run24", "score", "clock_stop")), key=lambda b: b.t)
+    misses = sorted((e for e in out if e.kind is EventKind.SHOT_MISSED and not _is_ft(e) and e.team is not None
+                     and not e.attrs.get("blocked_oob")), key=lambda e: e.t)
+    settled: set[str] = set()
+    for k, m in enumerate(misses):
+        nxt_t = misses[k + 1].t if k + 1 < len(misses) else math.inf
+        hi = min(m.t + cfg.bug_rebound_window_s, nxt_t)
+        mark = next((b for b in marks if m.t - 0.5 < b.t <= hi), None)
+        if mark is None or mark.kind == "clock_stop":
+            continue
+        assert m.team is not None
+        if mark.kind == "reset14" and running(mark.t):
+            offensive, t_reb = True, mark.t - 1.0
+        elif mark.kind == "run24":
+            offensive, t_reb = False, mark.t - 1.5
+        elif mark.kind == "score" and mark.team is m.team and mark.points >= 2:
+            offensive, t_reb = True, m.t + 0.5  # a tip-in: the put-back is the rebound
+        else:
+            continue
+        team = m.team if offensive else m.team.other()
+        _set_rebound(out, m, nxt_t, cfg.bug_rebound_window_s, team, offensive, max(m.t + 0.5, t_reb),
+                     "shot clock", f"fuse-breb{len(settled) + 1}")
+        settled.add(m.event_id)
+    out.sort(key=lambda e: e.t)
+    return out, settled
+
+
+def _fix_rebounds(events: list[Event], cfg: FusionConfig, direction: PlayDirection,
+                  attacker: Any, settled: set[str] | None = None) -> list[Event]:
+    """Re-type / re-team the rebound after each missed field goal from where the play goes next (pass 5); misses in
+    ``settled`` (the shot clock decided them) are left alone."""
+    out = list(events)
+    misses = [e for e in out if e.kind is EventKind.SHOT_MISSED and not _is_ft(e) and not e.attrs.get("blocked_oob")
+              and e.event_id not in (settled or set())]
     shots = sorted((e for e in out if e.kind is EventKind.SHOT_ATTEMPT), key=lambda e: e.t)
     n_new = 0
     for m in misses:
@@ -442,6 +525,36 @@ def _flight_values(by_id: dict[str, Event], attempts: dict[str, Event], flights:
             if att is not None:
                 cur = by_id.get(att.event_id, att)
                 by_id[att.event_id] = _replace(cur, value=value, x=x, y=y, attrs={"value_from": "3-D flight"})
+
+
+def _handler_values(events: list[Event], cfg: FusionConfig, court: Any, attacker: Any) -> list[Event]:
+    """2 or 3 points for inferred misses from the shooting team's last ball position before the release (pass 6):
+    the dribbler's or the new possessor's position (not after a pass: its event carries the passer's); the basket
+    is the one the camera says that team attacks, else the nearer one."""
+    out = list(events)
+    held = sorted((e for e in out if e.kind in (EventKind.POSSESSION, EventKind.DRIBBLE, EventKind.PASS)
+                   and e.team is not None and e.x is not None and e.y is not None
+                   and not e.attrs.get("inferred")), key=lambda e: e.t)
+    atts = {e.shot_id: e for e in out if e.kind is EventKind.SHOT_ATTEMPT and e.shot_id}
+    for i, e in enumerate(out):
+        if e.kind is not EventKind.SHOT_MISSED or _is_ft(e) or not e.attrs.get("inferred") or e.team is None \
+                or e.attrs.get("value_from"):
+            continue
+        att = atts.get(e.shot_id or "")
+        t_rel = att.t if att is not None else e.t - cfg.inferred_release_s
+        h = [p for p in held if p.team is e.team and 0.0 <= t_rel - p.t <= cfg.handler_window_s]
+        if not h or h[-1].kind is EventKind.PASS:
+            continue  # after a pass the shooter is its receiver, whose position the pass does not carry
+        x, y = float(h[-1].x), float(h[-1].y)  # type: ignore[arg-type]
+        team, side = attacker(t_rel)
+        if side is None or team is not e.team:
+            side = min(("left", "right"), key=lambda sd: math.hypot(x - court.basket_xy(sd)[0], y - court.basket_xy(sd)[1]))
+        value = 3 if court.is_three(x, y, side) else 2
+        out[i] = _replace(e, value=value, x=x, y=y, attrs={"value_from": "ball handler"})
+        if att is not None:
+            j = out.index(att)
+            out[j] = _replace(att, value=value, x=x, y=y, attrs={"value_from": "ball handler"})
+    return out
 
 
 def _arc_margin(court: Any, x: float, y: float, side: str) -> float:
