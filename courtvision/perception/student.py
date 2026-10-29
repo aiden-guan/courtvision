@@ -11,6 +11,13 @@ The backbone is torchvision's ResNet-18 (ImageNet weights, first convolution wid
 decoder to stride 4. ``StudentDetector`` is a ``Detector``: it keeps the last frames, runs the network and
 returns PLAYER and BALL detections (ball boxes are drawn from the predicted point with the radius
 ``ball_radius_px``). Training: ``training/train_student.py`` on teacher labels (``training/ball_labels.py``).
+
+Other videos. A frame is scaled to fit 960x544 whole (a 16:9 frame of any resolution becomes 960x540, as in
+training; a taller one is padded at the right instead of losing its bottom rows). The training clips were 29.97 fps
+(``TRAIN_FPS``), so the input frames are 33 ms apart; on a faster video the earlier input frames are taken
+``history_step`` frames apart (every second frame at 50-60 fps) to keep that spacing, and with it the ball's blur
+and motion between the frames the network learned. A 60 fps camera's shorter exposure blurs less than the training
+frames did; that difference remains.
 """
 
 from __future__ import annotations
@@ -26,7 +33,8 @@ import numpy as np
 
 from courtvision.types import BBox, Detection, FrameDetections, ObjClass
 
-__all__ = ["INPUT_HW", "BallPersonNet", "StudentConfig", "StudentDetector", "decode", "preprocess_frames"]
+__all__ = ["INPUT_HW", "TRAIN_FPS", "BallPersonNet", "StudentConfig", "StudentDetector", "decode", "history_step",
+           "input_scale", "preprocess_frames"]
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +42,21 @@ INPUT_HW = (544, 960)  # network input (h, w); 1080p frames are scaled by 0.5 an
 STRIDE = 4
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 STD = np.array([0.229, 0.224, 0.225], np.float32)
+TRAIN_FPS = 29.97  # frame rate of the training clips: the input frames are 1 / TRAIN_FPS apart
+
+
+def history_step(fps: float, train_fps: float = TRAIN_FPS) -> int:
+    """Frames between two input frames on a ``fps`` video so that they are about as far apart as in training: 1 up
+    to 44 fps, 2 at 50 / 59.94 / 60 fps, 4 at 119.88 fps (1 for an unknown rate)."""
+    if not (isinstance(fps, (int, float)) and np.isfinite(fps) and fps > 0):
+        return 1
+    return max(1, int(np.floor(fps / train_fps + 0.5)))
+
+
+def input_scale(width: int, height: int) -> float:
+    """Network input px per frame px: the frame scaled to fit ``INPUT_HW`` whole (960 / width for a 16:9 frame)."""
+    s = INPUT_HW[1] / width
+    return s if height * s <= INPUT_HW[0] + 0.5 else INPUT_HW[0] / height
 
 
 def _torch() -> Any:
@@ -93,16 +116,19 @@ BallPersonNet = build_net  # the factory doubles as the public name
 
 
 def preprocess_frames(frames_bgr: list[np.ndarray]) -> np.ndarray:
-    """Frames (oldest first) -> (3 * n, H, W) float32 network input: scaled to 960 px wide, padded to 544 rows,
-    RGB, ImageNet-normalised."""
+    """Frames (oldest first) -> (3 * n, H, W) float32 network input: scaled to fit 960x544 (``input_scale``; 960 px
+    wide for 16:9), padded at the bottom (and at the right for a frame taller than 16:9), RGB, ImageNet-normalised."""
     h_in, w_in = INPUT_HW
     chans = []
     for f in frames_bgr:
-        s = w_in / f.shape[1]
-        img = cv2.resize(f, (w_in, int(round(f.shape[0] * s))), interpolation=cv2.INTER_AREA) if s != 1.0 else f
-        if img.shape[0] < h_in:
-            img = cv2.copyMakeBorder(img, 0, h_in - img.shape[0], 0, 0, cv2.BORDER_CONSTANT)
-        img = img[:h_in]
+        s = input_scale(f.shape[1], f.shape[0])
+        wide = s == w_in / f.shape[1]
+        size = (w_in if wide else round(f.shape[1] * s), round(f.shape[0] * s))
+        img = cv2.resize(f, size, interpolation=cv2.INTER_AREA) if s != 1.0 else f
+        if img.shape[0] < h_in or img.shape[1] < w_in:
+            img = cv2.copyMakeBorder(img, 0, max(0, h_in - img.shape[0]), 0, max(0, w_in - img.shape[1]),
+                                     cv2.BORDER_CONSTANT)
+        img = img[:h_in, :w_in]
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         chans.append(((rgb - MEAN) / STD).transpose(2, 0, 1))
     return np.concatenate(chans, axis=0)
@@ -144,16 +170,17 @@ class StudentConfig:
     person_thresh: float = 0.3
     ball_radius_px: float = 12.0  # box half-size drawn around a ball point (1080p); radius of an NBA ball in view
     half: bool = True  # fp16 on mps
+    frame_step: int = 1  # stream frames between two input frames: ``history_step(fps)`` (2 on a 50-60 fps stream)
 
 
 class StudentDetector:
-    """``Detector`` running ``BallPersonNet`` on the current and previous frames."""
+    """``Detector`` running ``BallPersonNet`` on the current and previous frames (``frame_step`` apart)."""
 
     def __init__(self, config: StudentConfig | None = None, net: Any | None = None) -> None:
         self.config = config or StudentConfig()
         self._net = net
         self._device: Any = None
-        self._buf: deque[np.ndarray] = deque(maxlen=self.config.frames)
+        self._buf: deque[np.ndarray] = deque(maxlen=(self.config.frames - 1) * max(1, self.config.frame_step) + 1)
         self.last_raw: tuple[list[tuple[float, float, float]], list[tuple[float, float, float, float, float]]] | None = None
 
     def _model(self) -> Any:
@@ -175,11 +202,12 @@ class StudentDetector:
     def infer(self, frames_bgr: list[list[np.ndarray]]) -> list[tuple[list, list]]:
         """Batch inference: each item is a list of ``frames`` frames (oldest first)."""
         x = np.stack([preprocess_frames(fs) for fs in frames_bgr])
-        return self.infer_arrays(x, [fs[-1].shape[1] for fs in frames_bgr])
+        return self.infer_arrays(x, [(fs[-1].shape[1], fs[-1].shape[0]) for fs in frames_bgr])
 
-    def infer_arrays(self, x: np.ndarray, frame_widths: list[int]) -> list[tuple[list, list]]:
+    def infer_arrays(self, x: np.ndarray, frame_sizes: list[int] | list[tuple[int, int]]) -> list[tuple[list, list]]:
         """Batch inference on preprocessed inputs (B, 3 * frames, H, W) (``preprocess_frames``; a caller that keeps
-        each frame's own preprocessed slice avoids redoing it for every sample that contains the frame)."""
+        each frame's own preprocessed slice avoids redoing it for every sample that contains the frame).
+        ``frame_sizes``: each sample's frame (width, height), or its width alone for a 16:9 frame."""
         torch = _torch()
         net = self._model()
         t = torch.from_numpy(np.ascontiguousarray(x)).to(self._device or "cpu")
@@ -189,19 +217,20 @@ class StudentDetector:
             out = net(t)
         res = {k: v.float().cpu().numpy() for k, v in out.items()}
         decoded = []
-        for i, width in enumerate(frame_widths):
+        for i, wh in enumerate(frame_sizes):
             one = {k: v[i] for k, v in res.items()}
             for k in ("ball_hm", "person_hm"):
                 one[k] = 1.0 / (1.0 + np.exp(-one[k]))
-            decoded.append(decode(one, INPUT_HW[1] / width, ball_thresh=self.config.ball_thresh,
+            scale = input_scale(*wh) if isinstance(wh, (tuple, list)) else INPUT_HW[1] / wh
+            decoded.append(decode(one, scale, ball_thresh=self.config.ball_thresh,
                                   person_thresh=self.config.person_thresh))
         return decoded
 
     def detect(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> FrameDetections:
         self._buf.append(frame_bgr)
-        frames = list(self._buf)
-        while len(frames) < self.config.frames:
-            frames.insert(0, frames[0])
+        buf, step = list(self._buf), max(1, self.config.frame_step)
+        frames = [buf[max(0, len(buf) - 1 - j * step)] for j in range(self.config.frames - 1, -1, -1)]  # oldest
+        #   first; the first frames of a stream repeat the earliest one
         balls, persons = self.infer([frames])[0]
         self.last_raw = (balls, persons)
         h, w = frame_bgr.shape[:2]

@@ -252,3 +252,79 @@ def test_teacher_plan_adds_random_clips_only_when_asked(tmp_path: Path) -> None:
                                        "--out", out]), FPS, 9000)
     assert len(plain) == 5 and all(o == "random" for _, o in plain)  # without --times: as before
     assert p.parse_args(["v.mp4", "--scorebug", str(bug), "--out", out]).clips is None  # 150 random clips
+
+
+# --------------------------------------------------------------------------- other frame rates
+
+
+def test_clips_cover_the_same_times_at_59_94_fps() -> None:
+    errors = [err("turnover", "miss", 500.0), err("rebound", "team", 300.0), err("shot", "miss", 100.0),
+              err("shot", "extra", 101.0)]
+    kinds = ["shot", "rebound", "turnover"]
+    slow = hard.plan_clips(errors, 29.97, 36, 100, kinds)[0]
+    fast = hard.plan_clips(errors, 59.94, 36, 100, kinds, frame_step=2)[0]
+    assert [c["t"] for c in fast] == pytest.approx([c["t"] for c in slow], abs=0.02)
+    assert [c["frame"] for c in fast] == pytest.approx([2 * c["frame"] for c in slow], abs=1)
+    assert all(b["frame"] - a["frame"] >= 72 for a, b in itertools.pairwise(fast))  # 36 frames 2 apart, no overlap
+    assert [c["events"] for c in fast] == [c["events"] for c in slow]
+
+
+def test_teacher_clips_at_60_fps_take_every_second_frame(tmp_path: Path) -> None:
+    times = tmp_path / "times.json"
+    times.write_text(json.dumps([10.0, 20.0]))
+    p = teacher.build_parser()
+    args = p.parse_args(["v.mp4", "--times", str(times), "--out", str(tmp_path / "t")])
+    assert teacher.frame_step(args, 29.97) == 1 and teacher.frame_step(args, 59.94) == 2
+    three = p.parse_args(["v.mp4", "--frame-step", "3", "--times", str(times), "--out", "x"])
+    assert teacher.frame_step(three, 60.0) == 3
+    assert teacher.plan(args, 59.94, 18000) == [(599, "times"), (1199, "times")]
+    assert teacher.starts_from_times([299.9], 59.94, 36, 18000, 2) == [18000 - 72 - 1]  # the clip ends in the video
+    bug = tmp_path / "scorebug.jsonl"
+    bug.write_text("".join(json.dumps({"t": k / 3.0, "game_clock": 700.0 - k / 3.0}) + "\n" for k in range(900)))
+    mixed = teacher.plan(p.parse_args(["v.mp4", "--times", str(times), "--clips", "6", "--scorebug", str(bug),
+                                       "--bugless-share", "0", "--out", "x"]), 59.94, 18000)
+    assert all(b - a >= 72 for (a, _), (b, _) in itertools.pairwise(mixed))
+
+
+def test_a_teacher_run_at_60_fps_stores_every_second_frame_and_links_the_ball_at_29_97_fps(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import cv2
+    import numpy as np
+
+    from courtvision.training.train_student import ClipDataset
+
+    video = tmp_path / "v60.avi"
+    wr = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 60.0, (640, 360))
+    for _ in range(400):
+        wr.write(np.full((360, 640, 3), (40, 90, 200), np.uint8))
+    wr.release()
+    times = tmp_path / "hard.json"
+    times.write_text(json.dumps({"clips": [{"t": 4.0}, {"t": 1.0}]}))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        from_numpy=lambda a: _Tensor(), backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False))))
+    monkeypatch.setitem(sys.modules, "rfdetr", SimpleNamespace(RFDETRSmall=_RFDETR))
+    out = tmp_path / "teacher-hard"
+    assert teacher.main([str(video), "--times", str(times), "--out", str(out), "--clip-frames", "12",
+                         "--save-width", "320"]) == 0
+    meta = json.loads((out / "meta.json").read_text())
+    assert meta["frame_step"] == 2 and meta["fps"] == 60.0
+    assert meta["clips"] == [{"clip": 0, "start": 60, "origin": "times"}, {"clip": 1, "start": 240, "origin": "times"}]
+    rows = [json.loads(line) for line in (out / "detections.jsonl").open()]
+    assert [r["frame"] for r in rows] == [*range(60, 84, 2), *range(240, 264, 2)]
+    assert all(r["t"] == round(r["frame"] / 60.0, 4) for r in rows)
+    labs = [json.loads(line) for line in (out / "ball_labels.jsonl").open()]  # 10 px a stored frame: 300 px/s
+    assert len(labs) == 24 and all(lab["source"] == "detected" for lab in labs)
+    ds = ClipDataset([out], None, train=False)
+    assert ds.items[5][2] == [66, 68, 70]  # the student's input frames: 1/30 s apart, as it sees them at 60 fps
+
+
+def test_without_a_camera_track_the_rate_is_the_videos(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import cv2
+    import numpy as np
+
+    wr = cv2.VideoWriter(str(tmp_path / "v.avi"), cv2.VideoWriter_fourcc(*"MJPG"), 50.0, (64, 36))
+    for _ in range(5):
+        wr.write(np.zeros((36, 64, 3), np.uint8))
+    wr.release()
+    assert hard.video_fps(tmp_path, "v.avi") == 50.0  # relative to the game folder
+    assert hard.video_fps(tmp_path, None) == 29.97 and "29.97" in capsys.readouterr().err

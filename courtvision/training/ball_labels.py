@@ -14,7 +14,9 @@ candidates into one consistent path per clip (the single game ball):
   gaps (the ball held behind a body) are left unlabelled.
 
 ``BallLabel.weight`` is 0 for "no label" frames (the ball loss ignores them), else the label's confidence.
-Thresholds are design choices checked on ESPN frames of Lakers @ Warriors (2024-12-25).
+Thresholds are design choices checked on ESPN frames of Lakers @ Warriors (2024-12-25): frames at 29.97 fps and px
+of a 1080-line frame. ``link_ball_path`` applies them at a clip's own rate (``fps``: the video's rate over the
+clip's frame step) and frame height (``LinkConfig.for_clip``); ``label_folder`` reads both from the folder.
 
 ``ball_labels.jsonl`` of a teacher folder (``tools/nba_teacher_labels.py``), one row per frame of each clip:
 
@@ -32,12 +34,14 @@ import math
 import os
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
+
+from courtvision.nba.analyze import REF_FPS, REF_HEIGHT, rate_ratio, scale_frames
 
 __all__ = ["BallLabel", "LinkConfig", "ball_color_likelihood", "label_folder", "link_ball_path"]
 
@@ -62,6 +66,8 @@ def ball_color_likelihood(img_bgr: np.ndarray, center: tuple[float, float], radi
 
 @dataclass
 class LinkConfig:
+    """Settings in the units of the tuning footage: frames at 29.97 fps (``REF_FPS``), px of a 1080-line frame."""
+
     min_score: float = 0.05
     max_candidates: int = 10
     color_weight: float = 0.6
@@ -76,6 +82,17 @@ class LinkConfig:
     fill_weight: float = 0.5
     min_pick_weight: float = 0.25  # picks below this unary are kept in the chain but not labelled
 
+    def for_clip(self, fps: float, height: float) -> LinkConfig:
+        """These settings in the frames and px of a clip at ``fps`` (its frames per second) with ``height``-line
+        frames (``self`` itself at 29.97 fps and 1080 lines), on the rule of ``analyze.BallLinkConfig.for_video``:
+        the same speeds and gap times, a restart r times as dear with r times the frames a second."""
+        r, s = rate_ratio(fps), height / REF_HEIGHT
+        if r == 1.0 and s == 1.0:
+            return self
+        return replace(self, max_gap=scale_frames(self.max_gap, r), max_step_px=self.max_step_px * s / r,
+                       free_step_px=self.free_step_px * s / r, speed_cost=self.speed_cost * r / s,
+                       restart_cost=self.restart_cost * r, flight_px=self.flight_px * s / r)
+
 
 @dataclass(frozen=True)
 class BallLabel:
@@ -87,10 +104,13 @@ class BallLabel:
 
 def link_ball_path(candidates: Sequence[Sequence[tuple[float, float, float, float]]],
                    colors: Sequence[Sequence[float]] | None = None,
-                   config: LinkConfig | None = None) -> list[BallLabel]:
+                   config: LinkConfig | None = None, *, fps: float = REF_FPS,
+                   height: float = REF_HEIGHT) -> list[BallLabel]:
     """``candidates[t]``: (cx, cy, radius, score) per frame; ``colors[t]``: their colour likelihoods (default 0.5).
-    Returns one ``BallLabel`` per frame."""
-    cfg = config or LinkConfig()
+    ``fps``: the clip's frames per second; ``height``: the lines of the frames its px are in (``config`` is in
+    the units of the tuning footage: ``LinkConfig.for_clip``). Returns one ``BallLabel`` per frame."""
+    cfg = (config or LinkConfig()).for_clip(fps, height)
+    gap_free = rate_ratio(fps)  # a link spanning up to one frame of the tuning footage skips nothing
     T = len(candidates)
     cands: list[list[tuple[float, float, float, float, float]]] = []  # cx, cy, r, unary, raw score
     for t in range(T):
@@ -120,7 +140,8 @@ def link_ball_path(candidates: Sequence[Sequence[tuple[float, float, float, floa
                     step = math.hypot(cx - px, cy - py) / g
                     if step > cfg.max_step_px:
                         continue
-                    val = V[tp][kp] + un - cfg.gap_cost * (g - 1) - cfg.speed_cost * max(0.0, step - cfg.free_step_px)
+                    val = V[tp][kp] + un - cfg.gap_cost * max(0.0, g - gap_free) \
+                        - cfg.speed_cost * max(0.0, step - cfg.free_step_px)
                     if val > v:
                         v, ptr = val, ("chain", (tp, kp))
             V[t][k], back[t][k] = v, ptr
@@ -162,10 +183,26 @@ def link_ball_path(candidates: Sequence[Sequence[tuple[float, float, float, floa
     return labels
 
 
+def clip_rate(folder: Path) -> float:
+    """Frames per second of a teacher folder's clips: the video's rate (``meta.json``) over the clip's frame step
+    (``tools/nba_teacher_labels.py`` stores every ``frame_step``-th frame); 29.97 for a folder without them."""
+    try:
+        meta = json.loads((Path(folder) / "meta.json").read_text())
+    except (OSError, ValueError):
+        meta = {}
+    meta = meta if isinstance(meta, dict) else {}
+    fps = meta.get("fps")
+    fps = float(fps) if isinstance(fps, (int, float)) and math.isfinite(fps) and fps > 0 else REF_FPS
+    step = meta.get("frame_step")
+    return fps / step if isinstance(step, int) and step > 1 else fps
+
+
 def label_folder(folder: Path, config: LinkConfig | None = None) -> list[dict[str, Any]]:
     """``ball_labels.jsonl`` rows of a teacher folder: ``link_ball_path`` over the frames of each clip (in frame
-    order), with each candidate's colour read from the stored frame (``frames/<clip>/<frame>.jpg``, scaled from the
-    full-resolution ``size`` of its row; 0.5 when the image is missing)."""
+    order, at the folder's ``clip_rate`` and the rows' frame height), with each candidate's colour read from the
+    stored frame (``frames/<clip>/<frame>.jpg``, scaled from the full-resolution ``size`` of its row; 0.5 when the
+    image is missing)."""
+    fps = clip_rate(folder)
     by_clip: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for r in map(json.loads, (folder / "detections.jsonl").open()):
         by_clip[int(r["clip"])].append(r)
@@ -183,7 +220,8 @@ def label_folder(folder: Path, config: LinkConfig | None = None) -> list[dict[st
                 col.append(ball_color_likelihood(img, (cx * s, cy * s), rad * s) if img is not None else 0.5)
             cands.append(row)
             colors.append(col)
-        for r, lab in zip(rows, link_ball_path(cands, colors, config), strict=True):
+        height = float(rows[0]["size"][1]) if rows[0].get("size") else REF_HEIGHT
+        for r, lab in zip(rows, link_ball_path(cands, colors, config, fps=fps, height=height), strict=True):
             out.append({"clip": clip, "frame": int(r["frame"]),
                         "xy": None if lab.xy is None else [round(lab.xy[0], 2), round(lab.xy[1], 2)],
                         "r": None if lab.radius is None else round(lab.radius, 2), "w": round(lab.weight, 4),

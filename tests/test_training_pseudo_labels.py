@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import itertools
 import json
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import cv2
@@ -16,6 +17,7 @@ from courtvision.nba.analyze import BallTrack, CameraTrack, DetectionCache
 from courtvision.perception.ball3d import Flight3D
 from courtvision.perception.student import STRIDE
 from courtvision.training import ball_labels, pseudo_labels
+from courtvision.training.ball_labels import BallLabel, LinkConfig
 from courtvision.training.pseudo_labels import (
     Candidate,
     FrameGate,
@@ -39,8 +41,8 @@ FPS = 30.0
 FOCAL, TILT = 1000.0, 16.8
 
 
-def cam_track(frames: range, pan: Callable[[int], float] = lambda f: -5.0) -> CameraTrack:
-    return CameraTrack(center=C, image_size=SIZE, fps=FPS, params={f: (pan(f), TILT, 0.0, FOCAL) for f in frames})
+def cam_track(frames: range, pan: Callable[[int], float] = lambda f: -5.0, fps: float = FPS) -> CameraTrack:
+    return CameraTrack(center=C, image_size=SIZE, fps=fps, params={f: (pan(f), TILT, 0.0, FOCAL) for f in frames})
 
 
 def project(track: CameraTrack, f: int, X: np.ndarray) -> tuple[float, float]:
@@ -50,8 +52,8 @@ def project(track: CameraTrack, f: int, X: np.ndarray) -> tuple[float, float]:
     return (float(FOCAL * pc[0] / pc[2] + SIZE[0] / 2), float(FOCAL * pc[1] / pc[2] + SIZE[1] / 2))
 
 
-def shot(f0: int = 30, f1: int = 60, rms: float = 0.3) -> Flight3D:
-    return Flight3D(f0 / FPS, f1 / FPS, np.array([40.0, 25.0, 8.0]), np.array([12.0, 0.0, 14.0]), rms, f1 - f0 + 1,
+def shot(f0: int = 30, f1: int = 60, rms: float = 0.3, fps: float = FPS) -> Flight3D:
+    return Flight3D(f0 / fps, f1 / fps, np.array([40.0, 25.0, 8.0]), np.array([12.0, 0.0, 14.0]), rms, f1 - f0 + 1,
                     (f0, f1))
 
 
@@ -79,15 +81,17 @@ def test_frame_gate_keeps_away_from_cuts_and_camera_run_ends_and_needs_the_score
 # --------------------------------------------------------------------------- flights
 
 
-def flight_scene(gap: range, wrong: int, weak: int) -> tuple[CameraTrack, BallTrack, DetectionCache, Flight3D]:
-    """A shot seen for frames 30-60 by a still camera; the student misses ``gap``, picks a wrong point 12 px off at
-    ``wrong`` and sees the ball only weakly (0.15, unlinked) at ``weak``."""
-    track = cam_track(range(100))
-    fl = shot()
+def flight_scene(gap: range, wrong: int, weak: int, fps: float = FPS) -> tuple[CameraTrack, BallTrack, DetectionCache,
+                                                                              Flight3D]:
+    """A shot seen for 1 s from 1 s (frames 30-60 at 30 fps) by a still camera; the student misses ``gap``, picks a
+    wrong point 12 px off at ``wrong`` and sees the ball only weakly (0.15, unlinked) at ``weak``."""
+    r = round(fps / FPS)
+    track = cam_track(range(100 * r), fps=fps)
+    fl = shot(30 * r, 60 * r, fps=fps)
     path: dict[int, tuple[float, float, float]] = {}
     cache = DetectionCache()
-    for f in range(30, 61):
-        u, v = project(track, f, fl.at(f / FPS))
+    for f in range(30 * r, 60 * r + 1):
+        u, v = project(track, f, fl.at(f / fps))
         if f in gap:
             cache.balls[f] = np.array([[u, v, 0.15]] if f == weak else np.zeros((0, 3)), np.float32)
             continue
@@ -129,12 +133,15 @@ def test_flights_that_fit_badly_or_lie_next_to_a_cut_give_no_labels() -> None:
 # --------------------------------------------------------------------------- the linked path
 
 
-def pass_scene(n: int = 81) -> tuple[CameraTrack, dict[int, tuple[float, float, float]], DetectionCache]:
-    """A pass at 4 ft, 12 ft/s, seen by a camera turning 0.25 degrees a frame; the student scores it 0.7."""
-    track = cam_track(range(n), pan=lambda f: -8.0 + 0.25 * f)
+def pass_scene(n: int = 81, fps: float = FPS) -> tuple[CameraTrack, dict[int, tuple[float, float, float]],
+                                                       DetectionCache]:
+    """A pass at 4 ft, 12 ft/s, seen by a camera turning 7.5 degrees a second (0.25 a frame at 30 fps); the student
+    scores it 0.7."""
+    k = FPS / fps  # 30 fps frames per frame
+    track = cam_track(range(n), pan=lambda f: -8.0 + 0.25 * k * f, fps=fps)
     path = {}
     for f in range(n):
-        u, v = project(track, f, np.array([30.0 + 0.4 * f, 20.0 + 0.1 * f, 4.0]))
+        u, v = project(track, f, np.array([30.0 + 0.4 * k * f, 20.0 + 0.1 * k * f, 4.0]))
         path[f] = (u, v, 0.7)
     cache = DetectionCache({f: np.array([p], np.float32) for f, p in path.items()})
     return track, path, cache
@@ -219,33 +226,38 @@ def decode(img: np.ndarray, scale: float) -> int:
     return sum(1 << k for k in range(8) if img[int(20 * scale), int((40 * k + 20) * scale)].mean() > 128)
 
 
-def make_game(root: Path, n: int = 120, cut: int = 100) -> tuple[CameraTrack, Flight3D, dict[int, tuple]]:
-    """A game folder with a 120-frame video, a still camera (a flagged cut at frame 100), a held ball, a shot
-    (frames 30-60, missed by the student at 40-42) and a pass; persons in every frame."""
+def make_game(root: Path, n: int = 120, cut: int = 100, fps: float = FPS) -> tuple[CameraTrack, Flight3D,
+                                                                                 dict[int, tuple]]:
+    """A game folder with a 4 s video (120 frames at 30 fps), a still camera (a flagged cut at 3.33 s), a held ball,
+    a shot (1-2 s, frames 30-60 at 30 fps, missed by the student for 0.1 s from 1.33 s) and a pass; persons in every
+    frame. At ``fps`` 60 the same game has twice the frames."""
+    r = round(fps / FPS)
+    n, cut = n * r, cut * r
     root.mkdir(parents=True, exist_ok=True)
     video = root / "source.avi"
-    wr = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), FPS, SIZE)
+    wr = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), fps, SIZE)
     for i in range(n):
         wr.write(encode(i))
     wr.release()
     (root / "game.json").write_text(json.dumps({"video": str(video)}))
     (root / "camera_parts").mkdir()
-    rows = [{"header": True, "center": C.tolist(), "image_size": list(SIZE), "fps": FPS}]
-    rows += [{"frame": f, "t": f / FPS, "status": "tracking", "cut": f == cut,
+    rows = [{"header": True, "center": C.tolist(), "image_size": list(SIZE), "fps": fps}]
+    rows += [{"frame": f, "t": f / fps, "status": "tracking", "cut": f == cut,
               "params": {"pan": -5.0, "tilt": TILT, "roll": 0.0, "f": FOCAL}} for f in range(n)]
     (root / "camera_parts" / "part0.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-    track = cam_track(range(n))
-    fl = shot()
+    track = cam_track(range(n), fps=fps)
+    fl = shot(30 * r, 60 * r, fps=fps)
     path: dict[int, tuple] = {}
-    for f in range(10, 91):
-        if 30 <= f <= 60:
-            X = fl.at(f / FPS)
-        elif f < 30:
-            X = np.array([36.0 + 0.2 * (f - 10), 25.0, 4.0])
+    for f in range(10 * r, 90 * r + 1):
+        g = f / r  # in frames of 30 fps
+        if 30 * r <= f <= 60 * r:
+            X = fl.at(f / fps)
+        elif f < 30 * r:
+            X = np.array([36.0 + 0.2 * (g - 10), 25.0, 4.0])
         else:
-            X = np.array([52.0 + 0.3 * (f - 61), 25.0 - 0.2 * (f - 61), 3.0])
-        if f not in (40, 41, 42):
-            path[f] = (*project(track, f, X), 0.6 if 30 <= f <= 60 else 0.7)
+            X = np.array([52.0 + 0.3 * (g - 61), 25.0 - 0.2 * (g - 61), 3.0])
+        if not 40 * r <= f < 43 * r:
+            path[f] = (*project(track, f, X), 0.6 if 30 * r <= f <= 60 * r else 0.7)
     cache = DetectionCache()
     for f in range(n):
         balls = [path[f]] if f in path else []
@@ -436,3 +448,226 @@ def test_teacher_folder_ball_labels_link_each_clip(tmp_path: Path) -> None:
     (folder / "meta.json").write_text(json.dumps({"kind": "pseudo"}))
     with pytest.raises(SystemExit):
         ball_labels.main([str(folder), "--force"])
+
+
+
+# --------------------------------------------------------------------------- other frame rates and frame sizes
+
+
+def test_pseudo_settings_count_frames_at_29_97_fps() -> None:
+    cfg = PseudoConfig()
+    assert cfg.scaled(29.97) is cfg and cfg.scaled(30000 / 1001) is cfg and cfg.scaled(FPS) is cfg
+    fast = cfg.scaled(59.94)
+    assert (fast.min_spacing, fast.cut_margin, fast.flight_min_agree, fast.flight_bracket, fast.motion_window,
+            fast.motion_min_side, fast.static_window) == (20, 30, 12, 8, 6, 4, 60)
+    assert (fast.context, fast.per_minute, fast.per_flight, fast.max_frames) == (2, 20, 3, 2000)  # not frame counts
+
+
+def test_flight_labels_cover_the_same_times_at_30_and_60_fps() -> None:
+    track, bt, cache, _ = flight_scene(gap=range(100, 112), wrong=114, weak=104, fps=60.0)  # 0.2 s missed
+    cands, spans = flight_candidates(bt, track, cache, everywhere, PseudoConfig())
+    by = {c.frame: c for c in cands}
+    assert spans == set(range(60, 121))
+    # 30 fps labels 52 and 53 of the gap 50-55 (1.733-1.8 s); at 60 fps the same time: 104-107 of 100-111
+    assert set(by) == set(range(60, 121)) - {100, 101, 102, 103, 108, 109, 110, 111}
+    assert by[114].kind == "filled" and by[104].kind == "filled" and by[80].kind == "confirmed"
+    assert by[104].hardness == pytest.approx(0.85)
+    # with the 30 fps frame counts the gap's frames are too far from the agreeing ones
+    unscaled = PseudoConfig(flight_bracket=2, flight_min_agree=3)  # -> 4 and 6 frames at 60 fps
+    assert not set(range(100, 112)) & {c.frame for c in flight_candidates(bt, track, cache, everywhere, unscaled)[0]}
+
+
+def test_path_labels_follow_the_same_times_at_60_fps() -> None:
+    track, path, cache = pass_scene(n=162, fps=60.0)
+    for f in (60, 61):
+        path[f] = (*path[f][:2], 0.2)  # unsure for 1/30 s, between confident neighbours
+    path[80] = (path[80][0] + 12.0, path[80][1], 0.7)  # a wrong pick off the line
+    for f in range(140, 148):
+        path[f] = (*path[f][:2], 0.3)  # unsure for 0.13 s
+    for f in (110, 111):  # something else scores nearly as high as the ball for 1/30 s
+        cache.balls[f] = np.array([path[f], (path[f][0] + 60.0, path[f][1], 0.65)], np.float32)
+    cache.balls.update({f: np.array([path[f]], np.float32) for f in (60, 61, 80, *range(140, 148))})
+    gate = FrameGate(track.params.keys(), cuts=[], margin=10)
+    by = {c.frame: c for c in path_candidates(BallTrack(path, []), track, cache, gate, PseudoConfig())}
+    # 30 fps: the wrong pick's 0.1 s either side, the ambiguous frame and the unsure frames without a confident
+    # neighbour on one side are out; frames 30 and 71-72 are anchored (test above). The same times at 60 fps:
+    assert set(by) == set(range(10, 152)) - set(range(74, 87)) - {110, 111} - {140, 141, 146, 147}
+    assert {f for f, c in by.items() if c.kind == "anchored"} == {60, 61, 142, 143, 144, 145}
+
+
+def test_selection_spacing_is_a_time_at_60_fps() -> None:
+    fpm = int(60 * 60.0)
+    cands = [Candidate(f, (0.0, 0.0), 0.4, "path", "scored", 0.5) for f in range(0, 2 * fpm, 3)]
+    got = [c.frame for c in select_targets(cands, PseudoConfig(max_frames=40, per_minute=20), 60.0)]
+    assert len(got) == 40 and min(b - a for a, b in itertools.pairwise(got)) >= 20  # 10 frames of 29.97 fps
+    assert sorted({f // fpm for f in got}) == [0, 1]
+    # a variable frame rate: the minute bins follow the frames' times
+    late = select_targets(cands, PseudoConfig(max_frames=40, per_minute=20), 60.0, time_of=lambda f: f / 30.0)
+    assert {c.frame // (fpm // 2) for c in late} == {0, 1, 2, 3}
+
+
+def test_pseudo_clips_store_the_context_at_the_students_spacing() -> None:
+    def at(*frames: int) -> list[Candidate]:
+        return [Candidate(f, (0.0, 0.0), 0.4, "path", "scored", 0.5) for f in frames]
+
+    assert pseudo_labels._clips(at(10, 12, 30), 2) == [[8, 9, 10, 11, 12], [28, 29, 30]]  # 30 fps: as before
+    assert pseudo_labels._clips(at(10, 12, 30), 2, step=2) == [[6, 8, 10, 12], [26, 28, 30]]
+    assert pseudo_labels._clips(at(10, 11, 30), 2, step=2) == [[6, 8, 10], [26, 28, 30]]  # 11 would interleave
+    assert pseudo_labels._clips(at(10, 15), 2, step=2) == [[6, 8, 10], [11, 13, 15]]  # touching, not shared
+
+
+def test_pseudo_folder_at_60_fps_keeps_the_times_and_the_students_input_spacing(tmp_path: Path) -> None:
+    root, out = tmp_path / "game", tmp_path / "pseudo"
+    make_game(root, fps=60.0)
+    assert pseudo_labels.main([str(root), "--out", str(out), "--max-frames", "6", "--per-minute", "6",
+                               "--save-width", "320"]) == 0
+    meta = json.loads((out / "meta.json").read_text())
+    assert meta["frame_step"] == 2 and meta["fps"] == 60.0 and meta["counts"]["labelled"] == 6
+    dets = [json.loads(line) for line in (out / "detections.jsonl").open()]
+    targets = sorted(r["frame"] for r in dets if not r.get("context"))
+    assert all(30 <= f <= 168 for f in targets)  # 0.5 s from the start, the cut at 200 and the end of the run
+    assert all(b - a >= 20 for a, b in itertools.pairwise(targets))
+    for r in dets:
+        assert r["t"] == round(r["frame"] / 60.0, 4)
+        img = cv2.imread(str(out / "frames" / f"{r['clip']:04d}" / f"{r['frame']:06d}.jpg"))
+        assert decode(img, 0.5) == r["frame"]
+    ds = ClipDataset([out], None, train=False)
+    assert len(ds) == 6
+    assert all(fr == [det["frame"] - 4, det["frame"] - 2, det["frame"]] for _, _, fr, det, _ in ds.items)
+
+
+def _link_ball_path_063e638(candidates: Sequence[Sequence[tuple[float, float, float, float]]],
+                            colors: Sequence[Sequence[float]] | None = None,
+                            config: LinkConfig | None = None) -> list[BallLabel]:
+    """``ball_labels.link_ball_path`` of commit 063e638, verbatim (frames and px whatever the clip)."""
+    cfg = config or LinkConfig()
+    T = len(candidates)
+    cands: list[list[tuple[float, float, float, float, float]]] = []  # cx, cy, r, unary, raw score
+    for t in range(T):
+        row = []
+        for k, (cx, cy, r, sc) in enumerate(candidates[t]):
+            if sc < cfg.min_score:
+                continue
+            col = colors[t][k] if colors is not None else 0.5
+            row.append((cx, cy, r, sc + cfg.color_weight * col - cfg.bias, sc))
+        row.sort(key=lambda c: -c[3])
+        cands.append(row[: cfg.max_candidates])
+    # V[t][k]: best total of chains ending with candidate k of frame t. Its back pointer is ("chain", t', k')
+    # (the previous pick of the same chain) or ("restart", node) (a new chain after the best total that
+    # ended before t; node None = nothing before). prefix[t]: (best total ending before t, its node).
+    V: list[list[float]] = [[-math.inf] * len(c) for c in cands]
+    back: list[list[tuple[str, tuple[int, int] | None]]] = [[("restart", None)] * len(c) for c in cands]
+    prefix: list[tuple[float, tuple[int, int] | None]] = [(0.0, None)]
+    for t in range(T):
+        base, base_node = prefix[t]
+        for k, (cx, cy, _, un, _) in enumerate(cands[t]):
+            v, ptr = base - cfg.restart_cost + un, ("restart", base_node)
+            for g in range(1, cfg.max_gap + 1):
+                tp = t - g
+                if tp < 0:
+                    break
+                for kp, (px, py, _, _, _) in enumerate(cands[tp]):
+                    step = math.hypot(cx - px, cy - py) / g
+                    if step > cfg.max_step_px:
+                        continue
+                    val = V[tp][kp] + un - cfg.gap_cost * (g - 1) - cfg.speed_cost * max(0.0, step - cfg.free_step_px)
+                    if val > v:
+                        v, ptr = val, ("chain", (tp, kp))
+            V[t][k], back[t][k] = v, ptr
+        bv, bn = prefix[t]
+        for k in range(len(cands[t])):
+            if V[t][k] > bv:
+                bv, bn = V[t][k], (t, k)
+        prefix.append((bv, bn))
+    chains: list[list[tuple[int, int]]] = []
+    node = prefix[T][1]
+    current: list[tuple[int, int]] = []
+    while node is not None:
+        current.append(node)
+        kind, nxt = back[node[0]][node[1]]
+        if kind == "restart":
+            chains.append(current)
+            current = []
+        node = nxt
+    if current:
+        chains.append(current)
+    labels = [BallLabel(None, None, 0.0, "none") for _ in range(T)]
+    for chain in chains:
+        chain.sort()
+        for t, k in chain:
+            cx, cy, r, un, sc = cands[t][k]
+            if un >= cfg.min_pick_weight:
+                labels[t] = BallLabel((cx, cy), r, float(min(1.0, 0.5 + un)), "detected")
+        for (t0, k0), (t1, k1) in zip(chain[:-1], chain[1:], strict=True):  # noqa: RUF007
+            if t1 - t0 < 2:
+                continue
+            a, b = cands[t0][k0], cands[t1][k1]
+            speed = math.hypot(b[0] - a[0], b[1] - a[1]) / (t1 - t0)
+            if speed < cfg.flight_px:
+                continue
+            for t in range(t0 + 1, t1):
+                s = (t - t0) / (t1 - t0)
+                labels[t] = BallLabel((a[0] + s * (b[0] - a[0]), a[1] + s * (b[1] - a[1])), 0.5 * (a[2] + b[2]),
+                                      cfg.fill_weight, "filled")
+    return labels
+
+
+def random_clip(seed: int, n: int = 36) -> tuple[list, list]:
+    """Teacher candidates (cx, cy, r, score) of one clip and their colour likelihoods: a wandering ball and
+    clutter."""
+    rng = np.random.default_rng(seed)
+    cands, colors = [], []
+    xy, v = np.array([900.0, 500.0]), np.array([25.0, -8.0])
+    for _ in range(n):
+        v = np.clip(v + rng.normal(0, 8, 2), -70, 70)
+        xy = np.clip(xy + v, 0, [1919, 1079])
+        row = [(*xy, 12.0, rng.uniform(0.03, 0.9))] if rng.random() < 0.7 else []
+        row += [(rng.uniform(0, 1920), rng.uniform(0, 1080), 10.0, rng.uniform(0.0, 0.8))
+                for _ in range(rng.integers(0, 4))]
+        cands.append(row)
+        colors.append([float(rng.uniform(0, 1)) for _ in row])
+    return cands, colors
+
+
+def test_teacher_ball_labels_at_29_97_fps_and_1080_lines_are_those_of_commit_063e638() -> None:
+    for seed in range(12):
+        cands, colors = random_clip(seed)
+        for cfg in (None, ball_labels.LinkConfig(max_gap=3, flight_px=8.0)):
+            assert ball_labels.link_ball_path(cands, colors, cfg) == _link_ball_path_063e638(cands, colors, cfg)
+            assert ball_labels.link_ball_path(cands, colors, cfg, fps=30000 / 1001, height=1080) == \
+                _link_ball_path_063e638(cands, colors, cfg)
+
+
+def flight_clip(fps: float, height: int = 1080) -> list[list[tuple[float, float, float, float]]]:
+    """A ball moving 600 px/s (of a 1080-line frame) for 1.2 s, missed by the teacher for 0.1 s from 0.5 s."""
+    s = height / 1080
+    out = []
+    for f in range(round(1.2 * fps)):
+        t = f / fps
+        out.append([] if 0.5 <= t < 0.6 else [((300.0 + 600.0 * t) * s, 400.0 * s, 12.0 * s, 0.6)])
+    return out
+
+
+def test_teacher_ball_labels_fill_the_same_flight_gap_at_any_rate_and_size() -> None:
+    def sources(labels: list) -> str:
+        return "".join({"detected": "d", "filled": "f", "none": "-"}[lab.source] for lab in labels)
+
+    at30 = ball_labels.link_ball_path(flight_clip(29.97), fps=29.97)
+    assert sources(at30) == "d" * 15 + "f" * 3 + "d" * 18
+    at60 = ball_labels.link_ball_path(flight_clip(59.94), fps=59.94)
+    assert sources(at60) == "d" * 30 + "f" * 6 + "d" * 36  # the same 0.1 s filled
+    # 10 px a frame at 59.94 fps is under the 14 px/frame of 29.97 fps: unconverted, the gap stayed empty
+    assert set(sources(_link_ball_path_063e638(flight_clip(59.94)))[30:36]) == {"-"}
+    for height in (720, 2160):
+        labels = ball_labels.link_ball_path(flight_clip(29.97, height), height=height)
+        assert sources(labels) == sources(at30)
+        assert labels[16].xy == pytest.approx((at30[16].xy[0] * height / 1080, at30[16].xy[1] * height / 1080))
+    assert set(sources(_link_ball_path_063e638(flight_clip(29.97, 720)))[15:18]) == {"-"}  # 13.3 px < 14
+
+
+def test_teacher_folder_clip_rate(tmp_path: Path) -> None:
+    assert ball_labels.clip_rate(tmp_path) == 29.97  # no meta.json: the first teacher folders
+    (tmp_path / "meta.json").write_text(json.dumps({"kind": "teacher", "fps": 59.94, "frame_step": 2}))
+    assert ball_labels.clip_rate(tmp_path) == pytest.approx(29.97)
+    (tmp_path / "meta.json").write_text(json.dumps({"kind": "teacher", "fps": 59.94}))
+    assert ball_labels.clip_rate(tmp_path) == 59.94

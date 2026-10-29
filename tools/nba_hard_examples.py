@@ -12,9 +12,14 @@ the predictions left over are ``extra``. Each event with one of ``--outcomes`` a
 1.5 s either side), inside the run's window. Events are taken kind by kind in ``--kinds`` order (shots and rebounds
 first); within a kind, those whose window the ball path covers least come first (the detector most likely lost the
 ball), then in time order; an event is taken while the clips of all windows taken stay within ``--max-clips``.
-Overlapping windows merge, and each merged window is cut into back-to-back clips of ``--clip-frames`` frames.
-Events with the game camera tracked on less than ``--min-camera-share`` of their window are skipped, and so are such
-clips: the student only runs where the camera is, so those errors are not the detector's.
+Overlapping windows merge, and each merged window is cut into back-to-back clips of ``--clip-frames`` frames
+``--frame-step`` apart (as tools/nba_teacher_labels.py stores them: by default the student's input spacing, every
+second frame at 50-60 fps, so a clip covers the same time at any rate). Events with the game camera tracked on less
+than ``--min-camera-share`` of their window are skipped, and so are such clips: the student only runs where the
+camera is, so those errors are not the detector's.
+
+The frame rate and frame times are the camera track's (``CameraTrack.time``: decoder timestamps on a
+variable-frame-rate video); without a camera track, the video's rate (``game.json``), else 29.97 fps with a warning.
 
 Writes ``--out`` (JSON): the video, fps and clip length, one entry per clip (start ``t`` in video seconds and its
 ``frame``, the events that asked for it, camera and ball-path shares) and the outcome counts. Research use only
@@ -124,17 +129,25 @@ def _tiles(windows: Sequence[tuple[int, int, int]], clip_frames: int, camera_fra
 def plan_clips(errors: Sequence[Outcome], fps: float, clip_frames: int, max_clips: int, kinds: Sequence[str],
                camera_frames: set[int] | None = None, ball_frames: set[int] | None = None,
                bounds: tuple[float, float] = (0.0, math.inf), min_camera_share: float = 0.5,
-               windows: dict[str, tuple[float, float]] | None = None) -> tuple[list[dict[str, Any]], list[Outcome],
-                                                                                dict[str, int]]:
-    """Teacher clips for ``errors`` (see the module docstring) -> (clips, the errors they cover, skip counts)."""
+               windows: dict[str, tuple[float, float]] | None = None, frame_step: int = 1,
+               camera: Any | None = None) -> tuple[list[dict[str, Any]], list[Outcome], dict[str, int]]:
+    """Teacher clips for ``errors`` (see the module docstring) -> (clips, the errors they cover, skip counts). A clip
+    takes ``clip_frames * frame_step`` video frames. ``camera``: a variable-frame-rate ``CameraTrack`` maps times and
+    frames (``time`` / ``frame_at``); otherwise frame = time * ``fps``."""
     win = windows or WINDOWS
+    vfr = camera is not None and getattr(camera, "vfr", False)
+    span = clip_frames * frame_step
     order = {k: i for i, k in enumerate(kinds)}
     cand = []
     skipped = {"off_camera": 0, "over_cap": 0}
     for e in errors:
         pre, post = win[e.name]
-        lo = max(0, math.floor(max(bounds[0], e.t - pre) * fps))
-        hi = math.ceil(min(bounds[1], e.t + post) * fps)
+        if vfr:
+            lo = max(0, camera.frame_at(max(bounds[0], e.t - pre)))
+            hi = camera.frame_at(min(bounds[1], e.t + post))
+        else:
+            lo = max(0, math.floor(max(bounds[0], e.t - pre) * fps))
+            hi = math.ceil(min(bounds[1], e.t + post) * fps)
         if hi < lo:
             continue
         cam = _share(lo, hi, camera_frames)
@@ -149,18 +162,37 @@ def plan_clips(errors: Sequence[Outcome], fps: float, clip_frames: int, max_clip
     info: list[tuple[Outcome, float | None, float | None]] = []
     for _, _, _, lo, hi, e, cam, ball in cand:
         trial = [*taken, (lo, hi, len(taken))]
-        if len(_tiles(trial, clip_frames, camera_frames, min_camera_share)) > max_clips:
+        if len(_tiles(trial, span, camera_frames, min_camera_share)) > max_clips:
             skipped["over_cap"] += 1
             continue
         taken = trial
         info.append((e, cam, ball))
     clips = []
-    for s, ids in _tiles(taken, clip_frames, camera_frames, min_camera_share):
-        clips.append({"t": round(s / fps, 3), "frame": s, "events": [info[i][0].to_dict() for i in sorted(ids)],
-                      "camera_share": _share(s, s + clip_frames - 1, camera_frames),
+    for s, ids in _tiles(taken, span, camera_frames, min_camera_share):
+        clips.append({"t": round(camera.time(s) if vfr else s / fps, 3), "frame": s,
+                      "events": [info[i][0].to_dict() for i in sorted(ids)],
+                      "camera_share": _share(s, s + span - 1, camera_frames),
                       "ball_share": None if ball_frames is None else round(
-                          sum(1 for f in range(s, s + clip_frames) if f in ball_frames) / clip_frames, 3)})
+                          sum(1 for f in range(s, s + span) if f in ball_frames) / span, 3)})
     return clips, [e for e, _, _ in info], skipped
+
+
+def video_fps(root: Path, video: str | None) -> float:
+    """The frame rate of the game's video (``game.json``), for a game folder without a camera track; 29.97 fps, with
+    a warning, when it cannot be read."""
+    import cv2
+
+    if video:
+        p = Path(video)
+        if not p.is_absolute() and not p.exists() and (root / p).exists():
+            p = root / p
+        cap = cv2.VideoCapture(str(p))
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) if cap.isOpened() else 0.0
+        cap.release()
+        if math.isfinite(fps) and fps > 0:
+            return fps
+    print(f"warning: {root}: no camera track and no readable video: frames counted at 29.97 fps", file=sys.stderr)
+    return 29.97
 
 
 def load_truth(root: Path, lo: float, hi: float) -> list[Event]:
@@ -183,7 +215,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--outcomes", default="miss,extra,team")
     ap.add_argument("--tol", type=float, default=2.5)
     ap.add_argument("--max-clips", type=int, default=150)
-    ap.add_argument("--clip-frames", type=int, default=36)
+    ap.add_argument("--clip-frames", type=int, default=36, help="frames tools/nba_teacher_labels.py stores per clip")
+    ap.add_argument("--frame-step", type=int, default=0,
+                    help="video frames between two stored frames (0: the student's input spacing, as "
+                         "tools/nba_teacher_labels.py's default)")
     ap.add_argument("--min-camera-share", type=float, default=0.5)
     args = ap.parse_args(argv)
     kinds = [k for k in args.kinds.split(",") if k]
@@ -202,23 +237,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     errors = [o for o in rows if o.outcome in outcomes]
 
     from courtvision.nba.analyze import BallTrack, CameraTrack
+    from courtvision.perception.student import history_step
 
-    fps, camera_frames, ball_frames = 29.97, None, None
+    camera, camera_frames, ball_frames = None, None, None
+    game = json.loads((root / "game.json").read_text()) if (root / "game.json").exists() else {}
     parts = sorted((root / "camera_parts").glob("part*.jsonl"))
     if parts:
         camera = CameraTrack.load(parts)
         fps, camera_frames = camera.fps, set(camera.params)
+    else:
+        fps = video_fps(root, game.get("video"))
     if (root / "ball_track.json").exists():
         ball_frames = set(BallTrack.load(root / "ball_track.json").path)
+    step = args.frame_step if args.frame_step > 0 else history_step(fps)
     clips, chosen, skipped = plan_clips(errors, fps, args.clip_frames, args.max_clips, kinds, camera_frames,
-                                        ball_frames, (lo, hi), args.min_camera_share)
-    game = json.loads((root / "game.json").read_text()) if (root / "game.json").exists() else {}
+                                        ball_frames, (lo, hi), args.min_camera_share, frame_step=step, camera=camera)
     doc = {"game_root": str(root.resolve()), "video": game.get("video"), "tag": args.tag, "file": name, "fps": fps,
            "clip_frames": args.clip_frames, "kinds": kinds, "outcomes": sorted(outcomes), "tol_s": args.tol,
            "summary": dict(sorted(Counter(f"{o.name}:{o.outcome}" for o in rows).items())),
            "selected": dict(sorted(Counter(f"{o.name}:{o.outcome}" for o in chosen).items())),
            "skipped": skipped, "camera": camera_frames is not None, "ball_path": ball_frames is not None,
            "clips": clips}
+    if step > 1:
+        doc["frame_step"] = step
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, indent=1))

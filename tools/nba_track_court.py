@@ -8,6 +8,12 @@ the game clock (``broadcast_court.estimate_center``). Every ``--stride``-th fram
 (``BroadcastCourtTracker``; hard cuts from ``ShotBoundaryDetector`` drop the camera). One JSON line per tracked
 frame: ``frame``, ``t``, ``status`` and, when the court is in view, ``params`` (full-resolution camera) with
 ``coverage`` / ``inliers`` / ``rmse``. The first line is a header with the centre.
+
+The video is checked first (``analyze.probe_video``; its warnings are printed). On a variable-frame-rate video the
+header says ``"vfr": true``, ``t`` is each frame's decoder timestamp (``CameraTrack.time`` uses them), the frames are
+numbered in decoding order from the start (it is read from its start: OpenCV's seeks land on other frames there)
+and ``--start`` / ``--duration`` cut parts at those timestamps. ``CameraTrack.load`` fills gaps of up to 0.1 s
+between tracked frames, so a ``--stride`` beyond 3 at 29.97 fps (6 at 59.94) leaves every tracked frame alone.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from courtvision.geometry.court import court_for  # noqa: E402
+from courtvision.nba.analyze import CameraTrack, probe_video, rate_ratio, scale_frames  # noqa: E402
 from courtvision.perception.broadcast import ShotBoundaryDetector  # noqa: E402
 from courtvision.perception.broadcast_court import (  # noqa: E402
     BroadcastCourtTracker,
@@ -49,10 +56,19 @@ def main() -> int:
     args = ap.parse_args()
 
     court = court_for("nba")
+    info = probe_video(args.video)
+    for w in info.warnings:
+        print(f"warning: {args.video}: {w}", file=sys.stderr, flush=True)
+    vfr = info.vfr and info.times is not None
     cap = cv2.VideoCapture(args.video)
     fps = cap.get(cv2.CAP_PROP_FPS)
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fill = scale_frames(CameraTrack.MAX_FILL_FRAMES, rate_ratio(fps))
+    if args.stride - 1 > fill:
+        print(f"warning: --stride {args.stride} leaves {args.stride - 1} frames between tracked frames; the camera "
+              f"track fills gaps of up to {fill} at {fps:.2f} fps, so no two tracked frames would be joined",
+              file=sys.stderr, flush=True)
     cfg = BroadcastTrackerConfig(evidence=EvidenceConfig(exclude=ESPN_EXCLUDE))
     rows = [json.loads(line) for line in open(args.scorebug)]
     if args.center:
@@ -75,16 +91,30 @@ def main() -> int:
               f"({time.time() - t0:.0f}s)", flush=True)
     tracker = BroadcastCourtTracker(court, (W, H), center, cfg)
     cuts = ShotBoundaryDetector()
-    first = int(args.start * fps)
-    last = n_frames if args.duration is None else min(n_frames, int((args.start + args.duration) * fps))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, first)
+    if vfr:  # parts cut at timestamps; frames numbered from the start
+        assert info.times is not None
+        first = int(np.searchsorted(info.times, args.start - 1e-6))
+        last = n_frames if args.duration is None else \
+            min(n_frames, int(np.searchsorted(info.times, args.start + args.duration - 1e-6)))
+        cap.release()
+        cap = cv2.VideoCapture(args.video)
+        k = 0
+        while k < first and cap.grab():
+            k += 1
+    else:
+        first = int(args.start * fps)
+        last = n_frames if args.duration is None else min(n_frames, int((args.start + args.duration) * fps))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     counts: dict[str, int] = {}
     with out.open("w") as fh:
-        fh.write(json.dumps({"header": True, "center": [float(v) for v in center], "image_size": [W, H],
-                             "fps": fps, "stride": args.stride}) + "\n")
+        header = {"header": True, "center": [float(v) for v in center], "image_size": [W, H], "fps": fps,
+                  "stride": args.stride}
+        if vfr:
+            header["vfr"] = True
+        fh.write(json.dumps(header) + "\n")
         for idx in range(first, last):
             ok = cap.grab()
             if not ok:
@@ -97,7 +127,8 @@ def main() -> int:
             cut = cuts.update(img)
             fix = tracker.update(img, cut=cut)
             counts[fix.status] = counts.get(fix.status, 0) + 1
-            row = {"frame": idx, "t": round(idx / fps, 4), "status": fix.status, "cut": bool(cut)}
+            t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0 if vfr else idx / fps  # the decoder's timestamp
+            row = {"frame": idx, "t": round(t, 4), "status": fix.status, "cut": bool(cut)}
             if fix.params is not None:
                 p = fix.params
                 row.update(params={"pan": round(p.pan, 4), "tilt": round(p.tilt, 4), "roll": round(p.roll, 4),

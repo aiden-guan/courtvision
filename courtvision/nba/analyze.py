@@ -16,6 +16,17 @@ players, events) can be re-run quickly while they are improved:
    without the game camera (replays, close-ups) carry only the scoreboard.
 6. ``run_engine``: the event engine (``events/engine.py``) on those states.
 
+**Other frame rates and sizes.** The settings were tuned on one ESPN game at 29.97 fps and 1920x1080
+(``REF_FPS``, ``REF_HEIGHT``). Settings counted in frames are frames at ``REF_FPS`` and are converted to the camera
+track's rate (``rate_ratio``: the same time; exactly the tuned numbers at 29.97 / 30 fps); pixel settings are px of a
+1080-line frame, scaled with the frame height. Time is ``CameraTrack.time``: frame / fps, or the decoder's timestamps
+when the tracker found a variable frame rate. ``probe_video`` checks a file before frame / fps is trusted. Limits:
+a variable-frame-rate file is read without seeking (OpenCV's seeks land on the wrong frame there), which is slow:
+converting it to a constant rate first (``ffmpeg -i in.mp4 -fps_mode cfr -r 30000/1001 out.mp4``) is better; an
+interlaced source shows combing on a fast ball (deinterlace first, e.g. ``-vf bwdif=mode=send_field`` at twice the
+rate); a letterboxed or pillarboxed picture scales the pixel settings by the frame, not the picture, and moves the
+scorebug (crop first, e.g. ``-vf crop=W:H:X:Y``); non-square pixels break the camera model (``-vf scale=iw*sar:ih``).
+
 Research use only (NBA footage and statistics; docs/TRAINING.md §1).
 """
 
@@ -24,8 +35,10 @@ from __future__ import annotations
 import json
 import logging
 import math
-from collections.abc import Iterator
-from dataclasses import dataclass, field
+import shutil
+import subprocess
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -46,9 +59,188 @@ from courtvision.types import (
     ScoreboardReading,
 )
 
-__all__ = ["BallTrack", "CameraTrack", "DetectionCache", "detect_video", "link_ball", "load_scorebug"]
+__all__ = ["REF_FPS", "REF_HEIGHT", "BallTrack", "CameraTrack", "DetectionCache", "VideoInfo", "detect_video",
+           "link_ball", "load_scorebug", "probe_video", "rate_ratio", "scale_frames"]
 
 log = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- frame rate and frame size
+
+REF_FPS = 29.97  # the rate the frame-count settings were tuned at (ESPN, Lakers @ Warriors 2024-12-25)
+REF_HEIGHT = 1080  # the pixel settings are px of a 1080-line frame
+
+
+def rate_ratio(fps: float) -> float:
+    """Frames of a ``fps`` video per frame of the tuning footage (``fps / REF_FPS``). Exactly 1.0 within 0.5 % of
+    ``REF_FPS`` (29.97 and 30 fps, NTSC 30000/1001 and integer, are one rate here, so the tuned settings apply
+    unchanged) and for an unknown rate (0 or not finite)."""
+    if not (isinstance(fps, (int, float)) and math.isfinite(fps) and fps > 0):
+        return 1.0
+    r = fps / REF_FPS
+    return 1.0 if abs(r - 1.0) <= 0.005 else r
+
+
+def scale_frames(n: int, ratio: float, minimum: int = 1) -> int:
+    """A frame count of the tuning footage -> about the same time in frames of a video ``ratio`` times its rate
+    (``n`` itself at ratio 1)."""
+    if ratio == 1.0:
+        return n
+    return max(minimum, math.floor(n * ratio + 0.5))
+
+
+def _scale_odd(n: int, ratio: float) -> int:
+    """``scale_frames`` for a centred window: the odd count nearest ``n * ratio`` (``n`` itself at ratio 1)."""
+    if ratio == 1.0:
+        return n
+    return max(1, 2 * math.floor(n * ratio / 2.0) + 1)
+
+
+@dataclass
+class VideoInfo:
+    """What a video file says about its timing and picture (``probe_video``)."""
+
+    path: str
+    fps: float  # OpenCV's rate (the container's mean rate on a variable-rate file)
+    n_frames: int  # OpenCV's frame count
+    size: tuple[int, int]
+    duration_s: float | None = None  # ffprobe
+    times: np.ndarray | None = None  # each frame's presentation time (s from the first; ffprobe's packets)
+    vfr: bool = False  # frame / fps strays more than half a frame from ``times``
+    interlaced: bool = False
+    warnings: list[str] = field(default_factory=list)
+
+    def time(self, frame: int) -> float:
+        if self.vfr and self.times is not None and 0 <= frame < len(self.times):
+            return float(self.times[frame])
+        return frame / self.fps
+
+    def frame_at(self, t: float) -> int:
+        """The frame shown at video time ``t`` (the nearest; frame / fps unless the rate is variable)."""
+        if self.vfr and self.times is not None and len(self.times):
+            j = int(np.searchsorted(self.times, t))
+            if j > 0 and (j == len(self.times) or t - self.times[j - 1] <= self.times[j] - t):
+                j -= 1
+            return j
+        return round(t * self.fps)
+
+
+def _ffprobe(path: str, entries: str, csv: bool = False) -> str | None:
+    exe = shutil.which("ffprobe")
+    if exe is None:
+        return None
+    cmd = [exe, "-v", "error", "-select_streams", "v:0", "-show_entries", entries, "-of", "csv=p=0" if csv else "json",
+           path]
+    try:
+        return subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _rate(text: Any) -> float | None:
+    try:
+        a, _, b = str(text).partition("/")
+        v = float(a) / float(b or 1)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
+def black_bars(frames: list[np.ndarray], level: int = 24) -> tuple[int, int, int, int]:
+    """Rows (top, bottom) and columns (left, right) at the frame edges that are black in every frame (all channels
+    at most ``level``): a letterboxed or pillarboxed picture."""
+    if not frames:
+        return 0, 0, 0, 0
+    peak = np.max(np.stack([f.max(axis=2) for f in frames]), axis=0)
+    rows, cols = peak.max(axis=1) <= level, peak.max(axis=0) <= level
+
+    def run(flags: np.ndarray) -> int:
+        return int(np.argmin(flags)) if not flags.all() else len(flags)
+
+    return run(rows), run(rows[::-1]), run(cols), run(cols[::-1])
+
+
+def probe_video(path: Path | str, timestamps: bool = True, samples: int = 5) -> VideoInfo:
+    """Rate, frame count and size of a video (OpenCV), checked against ffprobe when it is installed: the stream's
+    duration, its field order, its pixel aspect and (``timestamps``) every frame's presentation time; ``samples``
+    frames spread over the video are checked for black bars. ``warnings`` says what would make frame / fps, the frame
+    numbers or the pixel settings wrong (see the module docstring for what to do)."""
+    path = str(path)
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"cannot open {path}")
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frames: list[np.ndarray] = []
+    for k in range(samples if n > 0 else 0):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int((k + 0.5) * n / samples))
+        ok, img = cap.read()
+        if ok:
+            frames.append(img)
+    cap.release()
+    info = VideoInfo(path, fps, n, (w, h))
+    warn = info.warnings
+    if not (math.isfinite(fps) and 0 < fps <= 1000):
+        warn.append(f"no usable frame rate ({fps}): times would be wrong")
+    raw = _ffprobe(path, "stream=avg_frame_rate,r_frame_rate,duration,field_order,sample_aspect_ratio:format=duration")
+    if raw:
+        doc = json.loads(raw)
+        st = (doc.get("streams") or [{}])[0]
+        for d in (st.get("duration"), (doc.get("format") or {}).get("duration")):
+            if info.duration_s is None and _rate(d) is not None:
+                info.duration_s = _rate(d)
+        if st.get("field_order") in ("tt", "bb", "tb", "bt"):
+            info.interlaced = True
+            warn.append(f"interlaced ({st['field_order']}): each frame weaves two fields {500 / max(fps, 1e-9):.1f} ms "
+                        "apart, so a fast ball shows combing; deinterlace first (ffmpeg -vf bwdif=mode=send_field "
+                        "doubles the rate)")
+        sar = st.get("sample_aspect_ratio")
+        if sar and sar not in ("1:1", "0:1", "N/A"):
+            warn.append(f"non-square pixels (sample aspect {sar}): the camera model needs square pixels "
+                        "(ffmpeg -vf scale=iw*sar:ih,setsar=1)")
+    if info.duration_s and fps > 0 and n > 0:
+        expect = info.duration_s * fps
+        if abs(n - expect) > max(2.0, 0.005 * expect):
+            warn.append(f"frame count {n} and rate {fps:.3f} fps disagree with the duration {info.duration_s:.2f} s "
+                        f"({expect:.0f} frames): frame / fps is not the video time")
+    if timestamps:
+        pts = _ffprobe(path, "packet=pts_time,flags", csv=True)
+        if pts:
+            vals = []
+            for line in pts.splitlines():
+                fields = line.split(",")
+                if len(fields) > 1 and "D" in fields[1]:
+                    continue  # pre-roll before an edit list's start: never shown (a stream-copied trim)
+                try:
+                    vals.append(float(fields[0]))
+                except ValueError:
+                    continue  # N/A (no timestamp) or an empty line
+            ts = np.sort(np.array(vals, float))
+            if len(ts):
+                info.times = ts - ts[0]
+                if n > 0 and abs(len(ts) - n) > 1:
+                    warn.append(f"OpenCV counts {n} frames, the stream has {len(ts)}")
+                if fps > 0 and len(ts) > 2:
+                    drift = float(np.max(np.abs(info.times - np.arange(len(ts)) / fps)))
+                    if drift > 0.5 / fps:
+                        info.vfr = True
+                        d = np.diff(info.times)
+                        warn.append(f"variable frame rate (frame intervals {1000 * d.min():.1f}-{1000 * d.max():.1f} "
+                                    f"ms; frame / fps strays up to {drift:.2f} s from the frame times): OpenCV's seeks "
+                                    "land on the wrong frames, so the tools read such a file from its start; "
+                                    "converting it to a constant rate is faster (ffmpeg -fps_mode cfr -r <rate>)")
+    if frames and all(float(f.std()) < 2.0 for f in frames):
+        warn.append(f"the {len(frames)} sampled frames decode as flat images (OpenCV cannot decode this file: "
+                    "seen with interlaced H.264 and MPEG-2 in OpenCV 5.0.0); re-encode it with ffmpeg first (e.g. "
+                    "-vf bwdif -c:v libx264)")
+        return info
+    top, bottom, left, right = black_bars(frames)
+    if h and w and (top + bottom >= 0.02 * h or left + right >= 0.02 * w):
+        warn.append(f"black bars (top {top}, bottom {bottom}, left {left}, right {right} px): the pixel settings "
+                    "scale with the frame, not the picture, and the scorebug is not where its layout expects; crop "
+                    f"first (ffmpeg -vf crop={w - left - right}:{h - top - bottom}:{left}:{top})")
+    return info
 
 
 # --------------------------------------------------------------------------- camera
@@ -56,17 +248,28 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class CameraTrack:
-    """The game camera per frame (full-resolution pixels): fixed centre, per-frame pan / tilt / roll / focal."""
+    """The game camera per frame (full-resolution pixels): fixed centre, per-frame pan / tilt / roll / focal.
+    ``times``: each tracked frame's decoder timestamp (s) when the video's frame rate is variable (the tracker's
+    header says ``"vfr"``); None: a frame's time is frame / fps."""
 
     center: np.ndarray
     image_size: tuple[int, int]
     fps: float
     params: dict[int, tuple[float, float, float, float]] = field(default_factory=dict)  # frame -> pan, tilt, roll, f
+    times: dict[int, float] | None = None
+
+    # frames (at REF_FPS) of the smoothing window and of the longest gap filled (``_smooth_runs``)
+    SMOOTH_FRAMES = 5
+    MAX_FILL_FRAMES = 3
 
     @classmethod
-    def load(cls, paths: list[Path], smooth: int = 5, max_fill: int = 3) -> CameraTrack:
-        center, size, fps = None, (1920, 1080), 29.97
+    def load(cls, paths: list[Path], smooth: int | None = None, max_fill: int | None = None) -> CameraTrack:
+        """The parts of ``tools/nba_track_court.py`` (each starts with a header: centre, frame size, rate). The fits
+        are smoothed by ``_smooth_runs`` over ``smooth`` frames after gaps of up to ``max_fill`` frames are filled; by
+        default ``SMOOTH_FRAMES`` and ``MAX_FILL_FRAMES`` at REF_FPS (0.17 s, 0.1 s) in the track's own frames."""
+        center, size, fps, vfr = None, None, None, False
         raw: dict[int, tuple[float, float, float, float]] = {}
+        stamps: dict[int, float] = {}
         for p in sorted(paths):
             for line in p.open():
                 try:
@@ -75,15 +278,69 @@ class CameraTrack:
                     continue  # a line still being written by the tracker
                 if r.get("header"):
                     center, size, fps = np.array(r["center"], float), tuple(r["image_size"]), float(r["fps"])
+                    vfr = vfr or bool(r.get("vfr"))
                     continue
+                if vfr and r.get("t") is not None and r.get("frame") is not None:  # (the header comes first)
+                    stamps[int(r["frame"])] = float(r["t"])
                 q = r.get("params")
                 if q is not None and r.get("status") != "held":
                     raw[int(r["frame"])] = (q["pan"], q["tilt"], q["roll"], q["f"])
-        if center is None:
+        if center is None or size is None or fps is None:
             raise ValueError("no camera header")
-        track = cls(center, (int(size[0]), int(size[1])), fps)
-        track.params = _smooth_runs(raw, smooth, max_fill)
+        ratio = rate_ratio(fps)
+        track = cls(center, (int(size[0]), int(size[1])), fps, times=stamps if vfr and stamps else None)
+        track.params = _smooth_runs(raw, _scale_odd(cls.SMOOTH_FRAMES, ratio) if smooth is None else smooth,
+                                    scale_frames(cls.MAX_FILL_FRAMES, ratio) if max_fill is None else max_fill)
         return track
+
+    @property
+    def vfr(self) -> bool:
+        """The video's frame rate is variable: frame / fps is not its time, and a seek lands on the wrong frame."""
+        return self.times is not None
+
+    def _table(self) -> tuple[np.ndarray, np.ndarray]:
+        """The tracked frames and their times as sorted arrays (rebuilt when ``times`` changes)."""
+        times = self.times or {}
+        key = (id(self.times), len(times))
+        if getattr(self, "_tab_key", None) != key:
+            fr = np.array(sorted(times), np.int64)
+            self._tab = (fr, np.array([times[int(f)] for f in fr], float))
+            self._tab_key = key
+        return self._tab
+
+    def time(self, frame: int) -> float:
+        """Video time (s) of ``frame``: frame / fps; on a variable-rate video its decoder timestamp (interpolated
+        between tracked frames, at ``fps`` beyond them)."""
+        if self.times is None:
+            return frame / self.fps
+        t = self.times.get(frame)
+        if t is not None:
+            return t
+        fr, ts = self._table()
+        if not len(fr):
+            return frame / self.fps
+        if frame < fr[0]:
+            return float(ts[0] - (fr[0] - frame) / self.fps)
+        if frame > fr[-1]:
+            return float(ts[-1] + (frame - fr[-1]) / self.fps)
+        return float(np.interp(frame, fr, ts))
+
+    def frame_at(self, t: float) -> int:
+        """The frame shown at video time ``t`` (the nearest: round(t * fps) at a constant rate)."""
+        if self.times is None:
+            return round(t * self.fps)
+        fr, ts = self._table()
+        if not len(fr):
+            return round(t * self.fps)
+        if t <= ts[0]:
+            return int(fr[0] - round((ts[0] - t) * self.fps))
+        if t >= ts[-1]:
+            return int(fr[-1] + round((t - ts[-1]) * self.fps))
+        j = int(np.searchsorted(ts, t))
+        a, b = j - 1, j
+        if fr[b] - fr[a] > 1:  # an untracked stretch: in proportion
+            return int(fr[a] + round((t - ts[a]) / (ts[b] - ts[a]) * (fr[b] - fr[a])))
+        return int(fr[a] if t - ts[a] <= ts[b] - t else fr[b])
 
     def get(self, frame: int) -> CameraParams | None:
         q = self.params.get(frame)
@@ -185,10 +442,23 @@ class DetectionCache:
         self.persons.update(other.persons)
 
 
-def iter_frames(video: Path, start: int = 0, end: int | None = None) -> Iterator[tuple[int, np.ndarray]]:
+def iter_frames(video: Path, start: int = 0, end: int | None = None, exact: bool = False
+                ) -> Iterator[tuple[int, np.ndarray]]:
+    """Frames [start, end) of ``video`` with their numbers (the order the decoder gives them, from 0). OpenCV's frame
+    seek is exact on a constant-frame-rate file but lands on another frame of a variable-rate one (it turns the
+    number into a time with the mean rate: a seek to frame 200 of a test file returned its 245th frame); ``exact``
+    decodes and drops the frames before ``start`` instead."""
     cap = cv2.VideoCapture(str(video))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-    idx = start
+    if exact:
+        idx = 0
+        while idx < start and cap.grab():
+            idx += 1
+        if idx < start:
+            cap.release()
+            return
+    else:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        idx = start
     while end is None or idx < end:
         ok, img = cap.read()
         if not ok:
@@ -200,17 +470,23 @@ def iter_frames(video: Path, start: int = 0, end: int | None = None) -> Iterator
 
 def detect_video(video: Path, camera: CameraTrack, weights: Path, start: int = 0, end: int | None = None,
                  batch: int = 4, progress: bool = True) -> DetectionCache:
-    """Student detections on every frame of [start, end) whose court is in view (the camera is tracked)."""
+    """Student detections on every frame of [start, end) whose court is in view (the camera is tracked). The
+    student sees each frame with two earlier ones spaced as in its training clips (``student.history_step``: the
+    previous two frames at 29.97 fps, every second frame at 50-60 fps)."""
     import time
 
-    from courtvision.perception.student import StudentConfig, StudentDetector
-
-    from courtvision.perception.student import preprocess_frames
+    from courtvision.perception.student import (
+        StudentConfig,
+        StudentDetector,
+        history_step,
+        preprocess_frames,
+    )
 
     det = StudentDetector(StudentConfig(weights=str(weights), ball_thresh=0.04, person_thresh=0.25))
+    n_in, step = det.config.frames, history_step(camera.fps)
     cache = DetectionCache()
     hist: list[np.ndarray] = []  # each frame's own preprocessed (3, H, W) slice, oldest first
-    pending: list[tuple[int, np.ndarray, int]] = []
+    pending: list[tuple[int, np.ndarray, tuple[int, int]]] = []
     t0 = time.time()
     n = 0
 
@@ -218,21 +494,23 @@ def detect_video(video: Path, camera: CameraTrack, weights: Path, start: int = 0
         nonlocal n
         if not pending:
             return
-        res = det.infer_arrays(np.stack([x for _, x, _ in pending]), [w for _, _, w in pending])
+        res = det.infer_arrays(np.stack([x for _, x, _ in pending]), [wh for _, _, wh in pending])
         for (f, _, _), (balls, persons) in zip(pending, res, strict=True):
             cache.balls[f] = np.asarray(balls, np.float32).reshape(-1, 3)
             cache.persons[f] = np.asarray(persons, np.float32).reshape(-1, 5)
         n += len(pending)
         pending.clear()
 
-    for idx, img in iter_frames(video, start, end):
-        hist = (hist + [preprocess_frames([img])])[-3:]
+    for idx, img in iter_frames(video, start, end, exact=camera.vfr):
+        if not hist and (img.shape[1], img.shape[0]) != tuple(camera.image_size):
+            raise ValueError(f"{video} is {img.shape[1]}x{img.shape[0]}, the camera track "
+                             f"{camera.image_size[0]}x{camera.image_size[1]}: detections would be misplaced")
+        hist = (hist + [preprocess_frames([img])])[-((n_in - 1) * step + 1):]
         if camera.get(idx) is None:
             continue
-        fs = list(hist)
-        while len(fs) < 3:
-            fs.insert(0, fs[0])
-        pending.append((idx, np.concatenate(fs, axis=0), img.shape[1]))
+        fs = [hist[max(0, len(hist) - 1 - j * step)] for j in range(n_in - 1, -1, -1)]  # oldest first; the
+        #   first frames of the range repeat the earliest one
+        pending.append((idx, np.concatenate(fs, axis=0), (img.shape[1], img.shape[0])))
         if len(pending) >= batch:
             flush()
             if progress and n % 2000 < batch:
@@ -246,15 +524,51 @@ def detect_video(video: Path, camera: CameraTrack, weights: Path, start: int = 0
 
 @dataclass
 class BallLinkConfig:
+    """Ball path settings in the units of the tuning footage: frames at ``REF_FPS`` and px of a ``REF_HEIGHT``-line
+    frame. ``link_ball`` applies them in the camera track's own frames and px (``for_video``)."""
+
     min_score: float = 0.08
     max_candidates: int = 6
     bias: float = 0.25
-    max_gap: int = 6
-    max_step_px: float = 90.0  # per frame, after removing the camera's turn
-    free_step_px: float = 30.0
-    speed_cost: float = 0.004
-    gap_cost: float = 0.1
+    max_gap: int = 6  # frames a chain may skip (0.2 s)
+    max_step_px: float = 90.0  # per frame, after removing the camera's turn (2700 px/s)
+    free_step_px: float = 30.0  # per frame: slower steps cost nothing
+    speed_cost: float = 0.004  # per px / frame above free_step_px, per link
+    gap_cost: float = 0.1  # per skipped frame
     restart_cost: float = 0.5
+
+    def for_video(self, fps: float, height: float) -> BallLinkConfig:
+        """These settings in the frames and px of a ``fps`` video of ``height`` lines (``self`` itself at REF_FPS
+        and REF_HEIGHT). The same ball speeds (px / s of a 1080-line frame) and gap times pass the gates. A frame's
+        score counts as before, so with r = ``rate_ratio(fps)`` times the frames a second a path's evidence grows r
+        times as fast; the costs keep pace: a link costs what a link of the same speed cost before (there are r
+        times as many), a restart r times as much, and a skip ``gap_cost`` per skipped frame beyond r - 1
+        (``link_ball``), so one stretch of time without the ball costs r times as much as before."""
+        r, s = rate_ratio(fps), height / REF_HEIGHT
+        if r == 1.0 and s == 1.0:
+            return self
+        return replace(self, max_gap=scale_frames(self.max_gap, r), max_step_px=self.max_step_px * s / r,
+                       free_step_px=self.free_step_px * s / r, speed_cost=self.speed_cost * r / s,
+                       restart_cost=self.restart_cost * r)
+
+
+def _video_of(camera: Any) -> tuple[float, float]:
+    """(fps, frame height) of a camera track; a stand-in without them (tools/nba_ball_bench.py) is taken for the
+    tuning footage."""
+    size = getattr(camera, "image_size", None)
+    return float(getattr(camera, "fps", REF_FPS)), float(size[1]) if size is not None else float(REF_HEIGHT)
+
+
+def flight_config_for(fps: float, config: FlightSearchConfig | None = None) -> FlightSearchConfig | None:
+    """``ball3d.find_flights`` settings counted in path points (one a frame: ``min_obs``, ``seed_obs``,
+    ``max_skip``, given for REF_FPS) for a ``fps`` video, so a flight needs as long a stretch as before; ``config``
+    itself (None: find_flights' defaults) at REF_FPS."""
+    r = rate_ratio(fps)
+    if r == 1.0:
+        return config
+    cfg = config or FlightSearchConfig()
+    return replace(cfg, min_obs=scale_frames(cfg.min_obs, r), seed_obs=tuple(scale_frames(n, r) for n in cfg.seed_obs),
+                   max_skip=scale_frames(cfg.max_skip, r, minimum=0))
 
 
 @dataclass
@@ -299,8 +613,11 @@ def _warp(M: np.ndarray, pts: np.ndarray) -> np.ndarray:
 
 def link_ball(cache: DetectionCache, camera: CameraTrack, config: BallLinkConfig | None = None) -> dict[int, tuple[float, float, float]]:
     """One ball path per camera segment (see ``training/ball_labels.link_ball_path``), with candidate motion measured
-    after mapping the earlier frame's candidates through the camera's frame-to-frame homography."""
-    cfg = config or BallLinkConfig()
+    after mapping the earlier frame's candidates through the camera's frame-to-frame homography. ``config`` is in
+    the units of the tuning footage (``BallLinkConfig.for_video`` converts it to the camera track's)."""
+    fps, height = _video_of(camera)
+    cfg = (config or BallLinkConfig()).for_video(fps, height)
+    gap_free = rate_ratio(fps)  # a link spanning up to one frame of the tuning footage skips nothing
     path: dict[int, tuple[float, float, float]] = {}
     for seg in _segments(sorted(f for f in cache.balls if camera.get(f) is not None)):
         T = len(seg)
@@ -326,7 +643,8 @@ def link_ball(cache: DetectionCache, camera: CameraTrack, config: BallLinkConfig
                 M = camera.frame_to_frame(seg[tp], seg[t])
                 prev = _warp(M, cands[tp][:, :2].astype(float)) if M is not None else cands[tp][:, :2]
                 D = np.linalg.norm(cands[t][:, None, :2] - prev[None, :, :], axis=2) / g
-                val = V[tp][None, :] + un[:, None] - cfg.gap_cost * (g - 1) - cfg.speed_cost * np.maximum(0.0, D - cfg.free_step_px)
+                val = V[tp][None, :] + un[:, None] - cfg.gap_cost * max(0.0, g - gap_free) \
+                    - cfg.speed_cost * np.maximum(0.0, D - cfg.free_step_px)
                 val[D > cfg.max_step_px] = -np.inf
                 k = np.argmax(val, axis=1)
                 v = val[np.arange(len(un)), k]
@@ -353,25 +671,30 @@ def link_ball(cache: DetectionCache, camera: CameraTrack, config: BallLinkConfig
 def build_ball_track(cache: DetectionCache, camera: CameraTrack, config: BallLinkConfig | None = None,
                      flight_config: FlightSearchConfig | None = None, court: CourtSpec | None = None) -> BallTrack:
     """The linked ball path and its 3-D flights; flights that come down at a rim are refitted through it (the
-    rim pins the depth a single camera sees poorly: ``ball3d.find_flights``)."""
+    rim pins the depth a single camera sees poorly: ``ball3d.find_flights``). Both configs are in the units of the
+    tuning footage (``BallLinkConfig.for_video``, ``flight_config_for``); the flights are fitted on the frames'
+    times (``CameraTrack.time``)."""
     cfg = config or BallLinkConfig()
     court = court or court_for("nba")
     baskets = {side: court.basket_xy(side) for side in ("left", "right")}
     path = link_ball(cache, camera, cfg)
+    max_gap = cfg.for_video(camera.fps, camera.image_size[1]).max_gap
+    min_run = scale_frames(6, rate_ratio(camera.fps))
+    flight_config = flight_config_for(camera.fps, flight_config)
     flights: list[Flight3D] = []
     frames = sorted(path)
     # one run per stretch of the path whose gaps the linker itself bridges (a missed detection mid-flight must not
     # cut the flight in two: find_flights skips such gaps itself)
     runs: list[list[int]] = []
     for f in frames:
-        if runs and f - runs[-1][-1] <= cfg.max_gap and all(camera.get(g) is not None for g in range(runs[-1][-1] + 1, f)):
+        if runs and f - runs[-1][-1] <= max_gap and all(camera.get(g) is not None for g in range(runs[-1][-1] + 1, f)):
             runs[-1].append(f)
         else:
             runs.append([f])
     for seg in runs:
-        if len(seg) < 6:
+        if len(seg) < min_run:
             continue
-        t = np.array([f / camera.fps for f in seg])
+        t = np.array([camera.time(f) for f in seg])
         uv = np.array([path[f][:2] for f in seg])
         cams = [camera.get(f) for f in seg]
         flights += find_flights(t, uv, cams, camera.image_size, frames=np.array(seg), config=flight_config,  # type: ignore[arg-type]
@@ -485,8 +808,37 @@ def ball_state(frame: int, t: float, track: BallTrack, camera: CameraTrack, use_
                      confidence=float(min(1.0, 0.4 + p[2])), interpolated=False)
 
 
-def scoreboard_by_frame(reads: list[ScoreboardReading], fps: float) -> dict[int, ScoreboardReading]:
-    return {int(round(r.t * fps)): r for r in reads}
+def scoreboard_by_frame(reads: list[ScoreboardReading], fps: float,
+                        frame_at: Callable[[float], int] | None = None) -> dict[int, ScoreboardReading]:
+    """The scorebug reads by the frame shown at their time: round(t * fps), or ``frame_at`` (``CameraTrack.frame_at``,
+    which also knows a variable frame rate)."""
+    if frame_at is None:
+        return {int(round(r.t * fps)): r for r in reads}
+    return {frame_at(r.t): r for r in reads}
+
+
+def perception_rate_overrides(fps: float) -> dict[str, Any]:
+    """``PerceptionConfig`` overrides for the pipeline settings counted in frames (its own fields and its ``tracker``
+    and ``identity`` dicts), so that on a ``fps`` video they keep the times they have at REF_FPS; {} there (the
+    tuned pipeline unchanged). They are: ByteTrack's lost-track buffer (its own ``frame_rate`` rule) and how long a
+    lost track is still reported, the team-colour sampling interval, the age that makes a track established, the
+    per-track memory, the per-frame decay of a coasting track's confidence, and the identity layer's young-track age,
+    its per-frame coasting penalty and its rate. Taken from the pipeline's current defaults."""
+    r = rate_ratio(fps)
+    if r == 1.0:
+        return {}
+    from courtvision.perception.identity import IdentityConfig
+    from courtvision.perception.pipeline import PerceptionConfig
+    from courtvision.perception.tracker import TrackerConfig
+
+    p, tc, ic = PerceptionConfig(), TrackerConfig(), IdentityConfig()
+    return {"team_observe_every": scale_frames(p.team_observe_every, r),
+            "duplicate_new_frames": scale_frames(p.duplicate_new_frames, r),
+            "track_memory_frames": scale_frames(p.track_memory_frames, r),
+            "coast_confidence_decay": p.coast_confidence_decay ** (1.0 / r),
+            "tracker": {"frame_rate": float(fps), "emit_lost_frames": scale_frames(tc.emit_lost_frames, r, 0)},
+            "identity": {"relink_new_track_frames": scale_frames(ic.relink_new_track_frames, r),
+                         "coast_penalty": ic.coast_penalty / r, "fps": float(fps)}}
 
 
 @dataclass
@@ -505,7 +857,9 @@ class PerceiveConfig:
 def perceive(video: Path, camera: CameraTrack, cache: DetectionCache, ball: BallTrack,
              reads: list[ScoreboardReading], config: PerceiveConfig | None = None, start: int = 0,
              end: int | None = None) -> Iterator[FrameState]:
-    """FrameStates of [start, end) (see the module docstring)."""
+    """FrameStates of [start, end) (see the module docstring). Frame times are ``camera.time``; the pipeline's
+    frame-count settings keep their times at the camera's rate (``perception_rate_overrides``). The event engine's
+    own frame counts are not converted (``run_engine``)."""
     from courtvision.perception.pipeline import PerceptionConfig, PerceptionPipeline
 
     cfg = config or PerceiveConfig()
@@ -516,15 +870,17 @@ def perceive(video: Path, camera: CameraTrack, cache: DetectionCache, ball: Ball
         team["home_color_bgr"] = cfg.home_color_bgr
     if cfg.away_color_bgr is not None:
         team["away_color_bgr"] = cfg.away_color_bgr
+    rate = perception_rate_overrides(camera.fps)
     pcfg = PerceptionConfig(team=team, foot_direct=True, court_margin_ft=4.0, compute_embeddings=True,
-                            tracker=dict(cfg.tracker))
+                            tracker={**rate.pop("tracker", {}), **cfg.tracker}, identity=rate.pop("identity", {}),
+                            **rate)
     first_cam = next(iter(sorted(camera.params)))
     calib0 = Calibration(homography=camera.homography(first_cam), image_size=size, league=cfg.league)  # type: ignore[arg-type]
     pipe = PerceptionPipeline(CachedDetector(cache, camera=camera if cfg.rectify_boxes else None), calib0, config=pcfg)
-    board = scoreboard_by_frame(reads, camera.fps)
+    board = scoreboard_by_frame(reads, camera.fps, camera.frame_at)
     prev_cam_frame: int | None = None
-    for idx, img in iter_frames(video, start, end):
-        t = idx / camera.fps
+    for idx, img in iter_frames(video, start, end, exact=camera.vfr):
+        t = camera.time(idx)
         sb = board.get(idx)
         cam = camera.get(idx)
         if cam is None:
@@ -549,6 +905,10 @@ def perceive(video: Path, camera: CameraTrack, cache: DetectionCache, ball: Ball
 
 
 def run_engine(frames: Iterator[FrameState], league: str = "nba", config: dict[str, Any] | None = None) -> list[Any]:
+    """The event engine on the frame states. Its settings in seconds follow the frames' times, but several are
+    counts of observed frames tuned at 30 fps (``ball_reacquire_frames``, ``holder_vote_loose_n``,
+    ``holder_clear_frames``, ``toss_min_frames``, ``holder_oob_frames``, ...): at another rate pass converted
+    values in ``config``."""
     from courtvision.events.engine import EventEngine, EventEngineConfig
     from courtvision.geometry.rules import rules_for
     from courtvision.perception.pipeline import _sub

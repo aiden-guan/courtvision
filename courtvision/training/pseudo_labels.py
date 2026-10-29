@@ -31,11 +31,16 @@ distractors come first), at most ``per_minute`` frames, ``min_spacing`` frames a
 flight; the minutes take turns until ``--max-frames``, which spreads the set over the game. The video is read
 once, front to back, one frame at a time.
 
+Frame counts in ``PseudoConfig`` are frames at 29.97 fps (``analyze.REF_FPS``) and are applied in the camera track's
+own frames (the same times; unchanged at 29.97 / 30 fps); its px are px of a 1080-line frame, scaled with the frame
+height. Times are ``CameraTrack.time`` (decoder timestamps on a variable-frame-rate video).
+
 Output, a teacher-format folder that ``train_student.py`` reads like a teacher folder: ``frames/<clip>/<frame>.jpg``
 (``save_width`` px wide), ``detections.jsonl`` (the cached persons and ball candidates, full-resolution px, with
 the frame's ``size``) and ``ball_labels.jsonl``. Each labelled frame is a clip with its two predecessors, stored as
-``"context": true`` rows (the student's earlier input frames, not samples). ``meta.json`` marks the folder
-``"kind": "pseudo"``. Label weights are at most ``max_weight`` (``train_student.PSEUDO_MAX_WEIGHT``, 0.5: the weight
+``"context": true`` rows (the student's earlier input frames, not samples; ``student.history_step`` frames apart,
+as the student sees them: every second frame at 50-60 fps, written as ``frame_step`` in meta.json). ``meta.json``
+marks the folder ``"kind": "pseudo"``. Label weights are at most ``max_weight`` (``train_student.PSEUDO_MAX_WEIGHT``, 0.5: the weight
 of the teacher's filled frames; its detections weigh 0.75-1.0), and the cached persons, the student's own boxes,
 train with ``person_weight`` (0 by default: its misses would become negatives): the student's own errors weigh
 less than the teacher's labels, and the held-out score that picks ``best.pt`` stays teacher-only. Thresholds are
@@ -56,15 +61,22 @@ import sys
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
 
-from courtvision.nba.analyze import BallTrack, CameraTrack, DetectionCache
+from courtvision.nba.analyze import (
+    BallTrack,
+    CameraTrack,
+    DetectionCache,
+    rate_ratio,
+    scale_frames,
+)
 from courtvision.perception.court_search import CameraParams
+from courtvision.perception.student import history_step
 from courtvision.training.train_student import PSEUDO_MAX_WEIGHT
 
 __all__ = ["Candidate", "FrameGate", "InputError", "PseudoConfig", "build_candidates", "flight_candidates",
@@ -82,6 +94,9 @@ class InputError(Exception):
 
 @dataclass
 class PseudoConfig:
+    """Frame counts are frames at 29.97 fps (``analyze.REF_FPS``: ``scaled`` gives them for another rate); px are
+    px of a 1080-line frame."""
+
     min_score: float = 0.5  # a ball point trusted on its own score, and the score an anchoring neighbour needs
     max_frames: int = 2000  # labelled frames (each stored with its two previous frames)
     per_minute: int = 20  # labelled frames per minute of video
@@ -92,11 +107,11 @@ class PseudoConfig:
     bug_tol_s: float = 1.0
     flight_max_rms_px: float = 3.0  # 1080-line px; the fitted flight's reprojection rms
     flight_inlier_px: float = 5.0  # a path point this close to the flight's projection agrees with it
-    flight_min_agree: int = 6  # agreeing path points a flight needs
+    flight_min_agree: int = 6  # agreeing path points a flight needs (one a frame)
     flight_bracket: int = 4  # a flight frame needs agreeing points at most this many frames before and after
     filled_share: float = 0.7  # weight share of a flight frame without an agreeing point (confirmed: 1)
     motion_window: int = 3  # path neighbours within this many frames on each side
-    motion_min_side: int = 2  # neighbours needed on each side
+    motion_min_side: int = 2  # neighbours needed on each side (one a frame)
     motion_tol_px: float = 6.0  # 1080-line px: the quadratic's fit to the neighbours and its prediction
     static_window: int = 30  # frames on each side
     static_px: float = 6.0  # 1080-line px: a path point within this of itself over the window is static
@@ -110,6 +125,20 @@ class PseudoConfig:
     person_weight: float = 0.0  # training weight of the cached person boxes (written to meta.json)
     context: int = 2  # previous frames stored with each labelled frame (the student sees three)
     save_width: int = 960
+
+    def scaled(self, fps: float) -> PseudoConfig:
+        """The frame counts for a ``fps`` video (the same times; ``self`` itself at 29.97 / 30 fps). Counts of path
+        points (``flight_min_agree``, ``motion_min_side``) scale too: a path has a point a frame. ``context`` stays
+        two frames (``student.history_step`` spaces them)."""
+        r = rate_ratio(fps)
+        if r == 1.0:
+            return self
+        return replace(self, min_spacing=scale_frames(self.min_spacing, r), cut_margin=scale_frames(self.cut_margin, r),
+                       flight_min_agree=scale_frames(self.flight_min_agree, r),
+                       flight_bracket=scale_frames(self.flight_bracket, r),
+                       motion_window=scale_frames(self.motion_window, r),
+                       motion_min_side=scale_frames(self.motion_min_side, r),
+                       static_window=scale_frames(self.static_window, r))
 
 
 @dataclass(frozen=True)
@@ -169,11 +198,13 @@ def scorebug_live(path: Path, tol_s: float = 1.0) -> Callable[[float], bool]:
 
 
 class FrameGate:
-    """Frames fit for a label: inside a run of consecutive camera frames and at least ``margin`` frames from its ends
-    and from every cut the court tracker flagged; with ``live``, the scorebug shown at the frame's time."""
+    """Frames fit for a label: inside a run of consecutive camera frames and at least ``margin`` frames (of this
+    video) from its ends and from every cut the court tracker flagged; with ``live``, the scorebug shown at the
+    frame's time (``time_of``, e.g. ``CameraTrack.time``; default frame / ``fps``)."""
 
     def __init__(self, camera_frames: Iterable[int], cuts: Iterable[int], margin: int,
-                 live: Callable[[float], bool] | None = None, fps: float = 29.97) -> None:
+                 live: Callable[[float], bool] | None = None, fps: float = 29.97,
+                 time_of: Callable[[int], float] | None = None) -> None:
         f = np.array(sorted(int(x) for x in camera_frames), np.int64)
         if len(f):
             br = np.flatnonzero(np.diff(f) != 1)
@@ -181,7 +212,7 @@ class FrameGate:
         else:
             self._start = self._end = np.zeros(0, np.int64)
         self._cuts = np.array(sorted({int(c) for c in cuts}), np.int64)
-        self.margin, self.live, self.fps = margin, live, fps
+        self.margin, self.live, self.fps, self.time_of = margin, live, fps, time_of
 
     def __call__(self, frame: int) -> bool:
         i = int(np.searchsorted(self._start, frame, side="right")) - 1
@@ -192,7 +223,7 @@ class FrameGate:
         j = int(np.searchsorted(self._cuts, frame))
         if any(0 <= k < len(self._cuts) and abs(int(self._cuts[k]) - frame) <= self.margin for k in (j - 1, j)):
             return False
-        return self.live is None or self.live(frame / self.fps)
+        return self.live is None or self.live(self.time_of(frame) if self.time_of is not None else frame / self.fps)
 
 
 # --------------------------------------------------------------------------- geometry
@@ -236,7 +267,9 @@ def _scores_near(cands: np.ndarray | None, xy: tuple[float, float], near: float,
 
 def flight_candidates(track: BallTrack, camera: CameraTrack, cache: DetectionCache, gate: Callable[[int], bool],
                       cfg: PseudoConfig) -> tuple[list[Candidate], set[int]]:
-    """Labels from the fitted 3-D flights (see the module docstring) -> (candidates, frames of the flights used)."""
+    """Labels from the fitted 3-D flights (see the module docstring) -> (candidates, frames of the flights used).
+    ``cfg`` counts frames at 29.97 fps (``PseudoConfig.scaled`` to the camera's rate here)."""
+    cfg = cfg.scaled(camera.fps)
     size = camera.image_size
     s = size[1] / 1080.0
     out: list[Candidate] = []
@@ -250,7 +283,7 @@ def flight_candidates(track: BallTrack, camera: CameraTrack, cache: DetectionCac
             cam = camera.get(f)
             if cam is None:
                 continue
-            p = _to_px(fl.at(f / camera.fps) - np.asarray(cam.center, float), cam, size)
+            p = _to_px(fl.at(camera.time(f)) - np.asarray(cam.center, float), cam, size)
             if p is None:
                 continue
             uv[f] = p
@@ -276,7 +309,10 @@ def flight_candidates(track: BallTrack, camera: CameraTrack, cache: DetectionCac
 def path_candidates(track: BallTrack, camera: CameraTrack, cache: DetectionCache, gate: Callable[[int], bool],
                     cfg: PseudoConfig, skip: set[int] | None = None) -> list[Candidate]:
     """Labels from points of the linked path whose motion the path itself confirms (see the module docstring);
-    frames in ``skip`` (those of the flights used) are left to the flights."""
+    frames in ``skip`` (those of the flights used) are left to the flights. ``cfg`` counts frames at 29.97 fps
+    (``PseudoConfig.scaled`` to the camera's rate here); on a variable-rate video the motion is fitted on the
+    frames' times."""
+    cfg = cfg.scaled(camera.fps)
     size = camera.image_size
     s = size[1] / 1080.0
     skip = skip or set()
@@ -286,6 +322,8 @@ def path_candidates(track: BallTrack, camera: CameraTrack, cache: DetectionCache
     pts = np.array([track.path[int(f)][:3] for f in frames], float)
     cams = [camera.get(int(f)) for f in frames]
     has = np.array([c is not None for c in cams])
+    # the fit's time axis in frames: the frame numbers, or on a variable-rate video the times in nominal frames
+    axis = np.array([camera.time(int(f)) * camera.fps for f in frames]) if camera.vfr else frames
     d = np.zeros((len(frames), 3))
     for i, cam in enumerate(cams):
         if cam is not None:
@@ -307,7 +345,7 @@ def path_candidates(track: BallTrack, camera: CameraTrack, cache: DetectionCache
         anchored = pts[before, 2].max() >= cfg.min_score and pts[after, 2].max() >= cfg.min_score
         if own < cfg.min_score and not anchored:
             continue
-        dt = (frames[nb] - f).astype(float)
+        dt = (axis[nb] - axis[i]).astype(float)
         A = np.column_stack([np.ones_like(dt), dt, dt * dt])
         coef, *_ = np.linalg.lstsq(A, d[nb], rcond=None)
         if np.linalg.norm(A @ coef - d[nb], axis=1).max() * cam.f > cfg.motion_tol_px * s:
@@ -333,17 +371,25 @@ def path_candidates(track: BallTrack, camera: CameraTrack, cache: DetectionCache
     return out
 
 
-def select_targets(cands: Sequence[Candidate], cfg: PseudoConfig, fps: float) -> list[Candidate]:
+def _minute(frame: int, fps: float, time_of: Callable[[int], float] | None = None) -> int:
+    """The minute of video a frame falls in (by ``time_of``, e.g. ``CameraTrack.time``, or frame / fps)."""
+    return int(time_of(frame) // 60.0) if time_of is not None else int(frame // (60.0 * fps))
+
+
+def select_targets(cands: Sequence[Candidate], cfg: PseudoConfig, fps: float,
+                   time_of: Callable[[int], float] | None = None) -> list[Candidate]:
     """A bounded, spread-out set (see the module docstring): one candidate per frame (the higher weight), minutes
-    of video taking turns, each offering its hardest remaining candidate that keeps ``min_spacing`` to every
-    chosen frame and ``per_flight``; at most ``per_minute`` per minute and ``max_frames`` in all."""
+    of video taking turns, each offering its hardest remaining candidate that keeps ``min_spacing`` (frames at
+    29.97 fps, converted to ``fps``) to every chosen frame and ``per_flight``; at most ``per_minute`` per minute and
+    ``max_frames`` in all. ``time_of``: frame -> video time on a variable-rate video (default frame / fps)."""
+    cfg = cfg.scaled(fps)
     best: dict[int, Candidate] = {}
     for c in cands:
         if c.frame not in best or c.weight > best[c.frame].weight:
             best[c.frame] = c
     bins: dict[int, list[Candidate]] = defaultdict(list)
     for c in best.values():
-        bins[int(c.frame // (60.0 * fps))].append(c)
+        bins[_minute(c.frame, fps, time_of)].append(c)
     for lst in bins.values():  # ties in a scrambled but fixed order, not from the start of the minute
         lst.sort(key=lambda c: (-c.hardness, (c.frame * 2654435761) % 4294967296))
     order = sorted(bins)
@@ -436,7 +482,8 @@ def build_candidates(root: Path, cfg: PseudoConfig, det_dir: str | None = None,
     det_dir, cache = resolve_detections(root, track, det_dir, ball_track)
     bug = root / "scorebug.jsonl"
     live = scorebug_live(bug, cfg.bug_tol_s) if cfg.bug_check and bug.is_file() else None
-    gate = FrameGate(camera.params.keys(), load_cuts(parts), cfg.cut_margin, live, camera.fps)
+    gate = FrameGate(camera.params.keys(), load_cuts(parts), cfg.scaled(camera.fps).cut_margin, live, camera.fps,
+                     camera.time)
     fc, spans = flight_candidates(track, camera, cache, gate, cfg)
     pc = path_candidates(track, camera, cache, gate, cfg, skip=spans)
     ctx = {"camera": camera, "cache": cache, "det_dir": det_dir, "bug_check": live is not None,
@@ -447,23 +494,31 @@ def build_candidates(root: Path, cfg: PseudoConfig, det_dir: str | None = None,
 # --------------------------------------------------------------------------- output
 
 
-def _clips(targets: Sequence[Candidate], context: int) -> list[list[int]]:
-    """Runs of consecutive frames: each target with its ``context`` predecessors (touching runs merge)."""
+def _clips(targets: Sequence[Candidate], context: int, step: int = 1) -> list[list[int]]:
+    """Each target with its ``context`` predecessors ``step`` frames apart (the student's input frames); runs that
+    touch on the same frame grid merge. A target whose frames would cross another run off its grid is left out."""
     clips: list[list[int]] = []
     for c in sorted(targets, key=lambda c: c.frame):
-        fr = list(range(c.frame - context, c.frame + 1))
-        if clips and fr[0] <= clips[-1][-1] + 1:
+        fr = list(range(c.frame - context * step, c.frame + 1, step))
+        if clips and fr[0] <= clips[-1][-1] + step and (fr[0] - clips[-1][-1]) % step == 0:
             clips[-1].extend(f for f in fr if f > clips[-1][-1])
+        elif clips and fr[0] <= clips[-1][-1]:
+            continue  # its input frames would interleave with the previous run's
         else:
             clips.append(fr)
     return clips
 
 
 def write_folder(out: Path, video: Path, targets: Sequence[Candidate], cache: DetectionCache, cfg: PseudoConfig,
-                 meta: dict[str, Any], progress: bool = True) -> dict[str, int]:
-    """Read ``video`` once and write the teacher-format folder (see the module docstring) -> counts."""
+                 meta: dict[str, Any], progress: bool = True, camera: CameraTrack | None = None) -> dict[str, int]:
+    """Read ``video`` once and write the teacher-format folder (see the module docstring) -> counts. The context
+    frames are ``student.history_step`` frames apart at the video's rate (``camera``, else ``meta["fps"]``); with a
+    variable-rate ``camera`` the video is read from its start (OpenCV's seeks land on other frames there) and the
+    rows' times are the camera's."""
+    vfr = camera is not None and camera.vfr
+    step = history_step(camera.fps if camera is not None else float(meta.get("fps") or 29.97))
     by_frame = {c.frame: c for c in targets}
-    clips = _clips(targets, cfg.context)
+    clips = _clips(targets, cfg.context, step)
     where = {f: ci for ci, fr in enumerate(clips) for f in fr}
     (out / "frames").mkdir(parents=True, exist_ok=True)
     (out / "meta.json").write_text(json.dumps({**meta, "complete": False}, indent=1))
@@ -474,7 +529,12 @@ def write_folder(out: Path, video: Path, targets: Sequence[Candidate], cache: De
     expect = tuple(meta["image_size"]) if meta.get("image_size") else None
     saved: dict[int, tuple[int, int]] = {}  # frame -> its (w, h)
     first, last = min(where), max(where)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, first)
+    if vfr:
+        k = 0
+        while k < first and cap.grab():
+            k += 1
+    else:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     t0 = time.time()
     for idx in range(first, last + 1):
         if idx not in where:
@@ -510,7 +570,8 @@ def write_folder(out: Path, video: Path, targets: Sequence[Candidate], cache: De
             r = BALL_RADIUS_1080 * h / 1080.0
             balls = cache.balls.get(f, np.zeros((0, 3), np.float32))
             persons = cache.persons.get(f, np.zeros((0, 5), np.float32))
-            row: dict[str, Any] = {"clip": ci, "frame": f, "t": round(f / fps, 4), "size": [w, h],
+            t = camera.time(f) if vfr and camera is not None else f / fps
+            row: dict[str, Any] = {"clip": ci, "frame": f, "t": round(t, 4), "size": [w, h],
                                    "persons": [[round(float(v), 1) for v in p[:4]] + [round(float(p[4]), 3)]
                                                for p in persons],
                                    "balls": [[round(float(x - r), 1), round(float(y - r), 1), round(float(x + r), 1),
@@ -589,8 +650,9 @@ def _run(root: Path, out: Path, cfg: PseudoConfig, args: argparse.Namespace) -> 
     t0 = time.time()
     cands, ctx = build_candidates(root, cfg, args.det_dir, args.ball_track)
     camera: CameraTrack = ctx["camera"]
-    targets = select_targets(cands, cfg, camera.fps)
-    minutes = Counter(int(c.frame // (60 * camera.fps)) for c in targets)
+    time_of = camera.time if camera.vfr else None
+    targets = select_targets(cands, cfg, camera.fps, time_of)
+    minutes = Counter(_minute(c.frame, camera.fps, time_of) for c in targets)
     det_dir = ctx["det_dir"]
     print(f"{det_dir}: ball path {ctx['n_path']} frames, {ctx['n_flights']} flights; candidates {_counts(cands)}; "
           f"selected {len(targets)} {_counts(targets)} over {len(minutes)} minutes "
@@ -609,7 +671,11 @@ def _run(root: Path, out: Path, cfg: PseudoConfig, args: argparse.Namespace) -> 
             "max_weight": cfg.max_weight, "person_weight": cfg.person_weight, "config": asdict(cfg),
             "counts": {"candidates": _counts(cands), "selected": _counts(targets)},
             "created": time.strftime("%Y-%m-%dT%H:%M:%S")}
-    counts = write_folder(out, video, targets, ctx["cache"], cfg, meta)
+    if history_step(camera.fps) > 1:  # the context frames' spacing (1, unwritten, at 29.97 fps)
+        meta["frame_step"] = history_step(camera.fps)
+    if camera.vfr:
+        meta["vfr"] = True
+    counts = write_folder(out, video, targets, ctx["cache"], cfg, meta, camera=camera)
     print(f"{out}: {counts['labelled']} labelled frames in {counts['clips']} clips, {counts['frames']} frames "
           f"({counts['clips_dropped']} clips dropped; {time.time() - t0:.0f}s)")
     return 0
