@@ -1529,9 +1529,13 @@ class LiveGame:
             from courtvision.perception import vision_ocr
 
             if vision_ocr.available():
+                from courtvision.perception.scorebug_layout import load_saved_profile
                 from courtvision.perception.scorebug_ocr import ESPN_2024, OCRScorebugReader
 
-                reader = OCRScorebugReader(ESPN_2024)
+                # the layout tools/nba_scan_scorebug.py discovered for this video (next to it or in its game
+                # folder), else the hand-measured ESPN bug
+                reader = OCRScorebugReader(load_saved_profile(self.config.source.path, pc.calibration_path)
+                                           or ESPN_2024)
         tracker = None
         if self._auto_center is not None:
             from courtvision.perception.broadcast_court import BroadcastCourtTracker
