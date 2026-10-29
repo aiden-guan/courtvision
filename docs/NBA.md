@@ -36,6 +36,35 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
    can be (focal length in the prior's field of view, looking down into the aim box, nearly level, a tight fit).
    Close-ups and replays fail it and stay "lost", which the broadcast gate treats as not live.
 
+## Adding a game
+
+Any NBA game recording (any broadcaster, arena, resolution or frame rate) joins the learning loop with one command;
+it finds the ESPN event from the date and the teams (guessed from the file name when not given), writes
+`runs/nba/<date>-<AWY>-<HOM>/game.json` with the ESPN box score and the NBA.com shot locations, and names the next
+command:
+
+```bash
+.venv/bin/python tools/nba_new_game.py "/path/to/recording.mp4" --check     # validates only
+.venv/bin/python tools/nba_new_game.py "/path/to/recording.mp4" [--date YYYY-MM-DD --teams AWY,HOM]
+.venv/bin/python tools/nba_new_game.py --batch games.csv                    # video,date,teams per row
+.venv/bin/python tools/nba_loop.py run --game <YYYY-MM-DD-AWY-HOM>
+```
+
+What makes other games work without hand tuning:
+
+* **Scorebug.** `nba_scan_scorebug.py --profile auto` (the default) finds the broadcast's scorebug from text
+  recognition of whole frames at ~30 moments: the fields are told apart by how they behave (a game clock that counts
+  down, scores that never decrease, a 0-24 shot clock beside the clock), home and away by the teams' codes and the
+  play-by-play scores. The layout is saved as `scorebug_profile.json` (check its notes for "ASSUMED" or "GUESSED");
+  the court tracker masks that bug and the studio reads with it. When discovery fails it falls back to the ESPN 2024
+  layout with a warning.
+* **Frame rates and sizes.** Settings counted in frames are defined at 29.97 fps and converted (59.94 / 50 fps work
+  alike); pixel settings scale with the frame height (720p to 4K). Variable-frame-rate recordings use decoder
+  timestamps; converting them first is faster (`ffmpeg -i in.mp4 -fps_mode cfr -r 30000/1001 out.mp4`). Interlaced
+  sources may decode wrongly in OpenCV: check `probe_video`'s warnings (printed by the tracker and the teacher tool).
+* **Teams.** Without jersey colours in game.json the engine's home / away clusters are arbitrary; the fusion's
+  `team_map` swaps them when the scorebug's baskets say so.
+
 ## Running it on a game
 
 ```bash
