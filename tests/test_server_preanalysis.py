@@ -225,3 +225,31 @@ def test_deleting_a_replay_waits_for_loading_and_forgets_the_finished_job(app, t
         assert ws.replay_status(video_id) is None  # no stale "Replay ready" after deletion
 
     asyncio.run(check())
+
+
+class FlakyDetector(PeopleDetector):
+    """Fails on two frames: an analysis ahead logs and passes over them instead of stopping."""
+
+    def detect(self, image, frame_idx, t):
+        if frame_idx in (20, 21):
+            raise RuntimeError(f"bad frame {frame_idx}")
+        return super().detect(image, frame_idx, t)
+
+
+def test_an_analysis_ahead_passes_over_a_frame_that_fails(tmp_path, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    cfg = load_config(None, ["narration.llm_enabled=false", "narration.tts=none", "jev.mode=off"])
+    app = create_studio_app(cfg, root=tmp_path / "workspace", auth_token="local-test", detector=FlakyDetector(),
+                            lab_runs=tmp_path / "runs", detector_factory=FlakyDetector)
+    data = write_video(tmp_path / "clip.avi").read_bytes()
+    with TestClient(app) as client:
+        video = client.post("/api/studio/upload?name=Game.avi", content=data, headers=AUTH).json()
+        status = wait_replay(client, video["id"], ("done", "failed"))
+    assert status["state"] == "done" and status["failed_frames"] == 2
+    assert status["first_error"].startswith("frame 20 at ") and "bad frame 20" in status["first_error"]
+
+
+def test_rate_stride_reads_a_high_frame_rate_video_at_about_30_frames_a_second():
+    assert [pa.rate_stride(f) for f in (25.0, 29.97, 30.0, 50.0, 59.94, 60.0, 119.88)] == [1, 1, 1, 2, 2, 2, 4]
+    assert pa.rate_stride(None) == 1 and pa.rate_stride(0.0) == 1 and pa.rate_stride(float("nan")) == 1

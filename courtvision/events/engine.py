@@ -362,6 +362,10 @@ class EventEngineConfig:
     # --- attacking side
     default_attacking: dict[str, str] = field(default_factory=lambda: {"home": "right", "away": "left"})  # assumption until shots are seen
     # --- reconciliation (reconcile.py)
+    # Score changes decide shot results: confirm or veto makes, flip misses, infer unseen makes, emit corrections.
+    # False: the scoreboard's scores are left out of the shots (its clock and period still count), so made or missed
+    # is the camera's call (and the shot judge's, ``judge_shot``)
+    score_reconcile: bool = True
     make_confirm_wait_s: float = 3.0  # make-wait band (§7A.5 / narration §11.2); sourced (placeholder)
     make_to_miss_conf: float = 0.7  # max confidence of a make revised to a miss for lack of a delta (needs_review); tuned
     reconcile_match_back_s: float = 10.0  # delta may lag the make by up to this; unverified
@@ -720,6 +724,24 @@ class EventEngine:
         self._put(ev)
         return self._out
 
+    def judge_shot(self, shot_id: str, made: bool, p_made: float, now: float) -> list[Event]:
+        """A verdict of the shot judge (``nba/live_judge.py``: what the camera saw at the rim after the result) on a
+        shot this engine resolved: a make it called missed is flipped (rebound and block retracted, ``_flip_to_made``),
+        a miss it called made is revised (``_make_to_miss``), an agreeing call is kept; either way the result carries
+        ``p_made`` and is confirmed, so the scoreboard no longer revises it. A shot already confirmed (operator,
+        scoreboard), unresolved or unknown is left alone. New events and revisions."""
+        self._out = []
+        entry = self._shots.get(shot_id)
+        if entry is None or entry.confirmed or entry.made is None or entry.result_id is None:
+            return self._out
+        if made and entry.made is False:
+            self._flip_to_made(entry, entry.value, by="vision")
+        elif not made and entry.made is True:
+            self._make_to_miss(entry, now, by="vision")
+        entry.confirmed = True
+        self._revise(entry.result_id, attrs={"vision_p_made": round(float(p_made), 4), "judged_by": "vision"})
+        return self._out
+
     @property
     def events(self) -> list[Event]:
         """Latest revision of each event (RETRACTED included), sorted by t."""
@@ -961,7 +983,7 @@ class EventEngine:
         for u in self.scoreboard.update(sb):
             if isinstance(u, PeriodChange):
                 self._on_period_change(u, frame)
-            elif isinstance(u, ScoreChange):
+            elif isinstance(u, ScoreChange) and self.config.score_reconcile:
                 self.reconciler.add(u)
         sbc = self.scoreboard.config
         trusted = sb.source in sbc.immediate_sources
@@ -2793,7 +2815,8 @@ class EventEngine:
         f = self._flight
         if f is not None and f.context == "live" and (f.state == "shot" or (f.state == "air" and f.samples)):
             inflight.add(f.release.team)
-        actions = self.reconciler.step(now, list(self._recent), self.scoreboard.is_streaming(now), inflight, force=force,
+        streaming = self.config.score_reconcile and self.scoreboard.is_streaming(now)
+        actions = self.reconciler.step(now, list(self._recent), streaming, inflight, force=force,
                                        revisited=self._rim_revisit)
         for a in actions:
             self._apply(a, now)
@@ -3128,6 +3151,10 @@ class EventEngine:
             self._revise(entry.result_id, kind=EventKind.SHOT_MADE, value=value, status=EventStatus.CONFIRMED,
                          attrs={"flipped_by": "scoreboard", "confirmed_by": "scoreboard", "points": value,
                                 "needs_review": False, "reason": "scoreboard delta matched a shot called missed"})
+        elif by == "vision":
+            self._revise(entry.result_id, kind=EventKind.SHOT_MADE, value=value,
+                         attrs={"flipped_by": "vision", "points": value, "needs_review": False,
+                                "reason": "the ball was seen going down through the rim"})
         self._retract(entry.rebound_id, f"the shot was made ({by})")
         self._retract(entry.block_id, f"the shot was made ({by})")
         entry.rebound_id = entry.block_id = None
@@ -3168,6 +3195,10 @@ class EventEngine:
                          **({"confidence": conf} if conf is not None else {}),
                          attrs={"needs_review": True, "points": 0,
                                 "reason": f"no scoreboard change within {self.config.make_confirm_wait_s:.1f} s"})
+        elif by == "vision":
+            self._revise(entry.result_id, kind=EventKind.SHOT_MISSED,
+                         attrs={"flipped_by": "vision", "points": 0, "needs_review": False,
+                                "reason": "the ball was not seen going through the rim"})
         self._retract(entry.assist_id, f"the shot was not made ({by})")
         entry.assist_id = None
         d = self._dead

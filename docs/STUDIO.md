@@ -74,9 +74,12 @@ the band to jump to any moment. The browser has to be able to play the file; H.2
 
 Everything shown comes from the video except the play-by-play. That is placed on video time through the scorebug
 clock and is shown only to judge the analysis by. The held-out accuracies in the panel are the run's own: the team
-with the ball in settled play, and made or missed on real shots. So far they come from one game. A video that no game
-folder analyses shows "Not analysed": add it with `tools/nba_new_game.py` and run the steps in NBA.md through
-`timeline`.
+with the ball in settled play, and made or missed on real shots. A video that no game folder analyses gets its
+possession analysis from its analysis ahead (Replay, below): the camera and the ball of every frame it analysed, the
+possession timeline decoded with the stored settings, and every shot decided by the shot models fitted on the
+research games (`runs/studio/models/shot-models.json`, `tools/nba_shot_models.py`; `courtvision/nba/auto_analysis.py`).
+It has no play-by-play beside it. Until that analysis has run the panel shows "Not analysed"; a research game folder
+(`tools/nba_new_game.py`, NBA.md) is still preferred when there is one.
 
 ## Replay: the analysis done ahead
 
@@ -93,10 +96,26 @@ is installed (the NBA detector or a downloaded checkpoint; the first download of
 video opened); any other video starts with **Prepare replay** in the row under the status cells. The row shows how far
 it has got and about how long is left; **Stop** ends it, and Replay works up to where it got. It runs the same pipeline
 and settings as Live, unpaced, one video at a time, with Jev, Claude and spoken narration off: no cloud calls. It
-takes a while, at the analysis's own pace: about 2 hours at every frame for a 79-minute game on an M3 Pro. **Every
-2nd frame** or **every 3rd frame** finishes 2 or 3 times sooner; the boxes then update 15 or 10 times a second, and
-the plays come from fewer frames. Replay plays up to what has been analysed so far and pauses there. Live analysis
-at the same time slows both.
+takes a while, at the analysis's own pace: about 2 hours for a 79-minute game on an M3 Pro before the court was
+tracked in a process of its own (below). It analyses about **30 frames a second**: a 50-60 fps video is read at every
+2nd frame, as the detector, the tracker and the event engine are set up for 29.97 fps (and Live reads it the same
+way). **15 frames a second** or **10 frames a second** finishes 2 or 3 times sooner; the boxes then update less
+often, and the plays come from fewer frames. Replay plays up to what has been analysed so far and pauses there. Live
+analysis at the same time slows both.
+
+The court is tracked in a worker process that reads the video itself and works ahead of the detector
+(`perception/court_worker.py`); its fixes are the ones the tracker gives in process, frame for frame, and when the
+two ever disagree it continues in process. A frame that raises an error is logged with its traceback and passed over
+(the status counts them: `failed_frames`, `first_error`); only 90 failures in a row stop the analysis. When it ends, it
+builds the video's possession analysis from the camera and ball of every frame it recorded, so **Watch** works for
+any video analysed ahead (below).
+
+**Made or missed comes from the video.** The scorebug's scores no longer confirm, veto or invent shots in the Studio:
+the event engine calls each shot, and 2.5 s later the shot judge looks again at the rim (where the detector saw the
+ball about it: above the ring, in the net, off to the side; and, when it has a rim model, the rim's own frames) and
+keeps or overturns the call (`courtvision/nba/live_judge.py`, docs/research/made_shots_at_the_rim.md). Its model is
+`runs/studio/models/shot-judge.json` (`tools/nba_live_judge.py`); without one the engine's own call stands. The
+score panel still shows the broadcast's score when the scorebug is read; the box score is the video's.
 
 Each analysis ahead is kept in `runs/studio/<video id>/replays/<run>/`: `status.json`, the recording in minutes
 (`chunks/NNNN.jsonl`: each analysed frame's boxes and every message the live view got, with its video time),

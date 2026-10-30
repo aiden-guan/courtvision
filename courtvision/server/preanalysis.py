@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 
 from courtvision.config import AppConfig
 from courtvision.pipeline import VideoFileSource, _collect, write_run_dir
@@ -128,25 +129,73 @@ class RecordingHub(Hub):
         super()._ingest(p, fanout=fanout)
 
 
-class PreanalysisGame(StudioGame):
-    """The Studio's game, recording each analysed frame's boxes."""
+MAX_FAILED_FRAMES = 90  # consecutive frames that fail before an analysis ahead gives up (3 s at 30 fps)
 
-    def __init__(self, *args: Any, recorder: Recorder, **kwargs: Any) -> None:
+
+class PreanalysisGame(StudioGame):
+    """The Studio's game, recording each analysed frame's boxes. Unpaced, the live pipeline raises a frame's error
+    (``LiveGame.process``); here one bad frame is logged with its traceback, counted and passed over, so a rare error
+    does not end the analysis of a whole game, and only ``MAX_FAILED_FRAMES`` failures in a row stop it."""
+
+    def __init__(self, *args: Any, recorder: Recorder, possession: Any = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.recorder = recorder
+        self.possession = possession  # nba/auto_analysis.Recorder: the camera and ball of each frame, or None
+        self.failed_frames = 0
+        self.first_error: str | None = None
+        self._failed_in_a_row = 0
+
+    async def process(self, item: Any) -> None:
+        try:
+            await super().process(item)
+            self._failed_in_a_row = 0
+        except Exception as exc:
+            self.failed_frames += 1
+            self._failed_in_a_row += 1
+            if self.first_error is None:
+                self.first_error = f"frame {item.frame_idx} at {item.t:.2f} s: {type(exc).__name__}: {exc}"
+            log.exception("Analysis ahead: frame %d (%.2f s) failed; continuing", item.frame_idx, item.t)
+            if self._failed_in_a_row >= MAX_FAILED_FRAMES:
+                self.failure = f"The analysis failed on {self._failed_in_a_row} frames in a row ({self.first_error})."
+                self.request_stop(drain=False)
 
     def _perceive(self, image: Any, frame_idx: int, t: float) -> Any:
         result = super()._perceive(image, frame_idx, t)
         if self.visual is not None:
             self.recorder.frame(t, self.visual[1])
+        if self.possession is not None:
+            self._record_court(frame_idx, t, result)
         return result
+
+    def _record_court(self, frame_idx: int, t: float, result: Any) -> None:
+        """The frame's camera (while the broadcast court tracker has one) and ball candidates, for the possession
+        analysis built when the analysis ends (``nba/auto_analysis.py``)."""
+        pipe = getattr(self, "perception", None)
+        auto = getattr(pipe, "auto", None)
+        if auto is None or result is None:
+            return
+        gate = getattr(pipe, "last_gate", None)
+        params = auto.params if gate is not None and gate.live else None
+        status = (getattr(auto, "status", None) or "tracking") if params is not None else "lost"
+        self.possession.frame(frame_idx, t, auto.center, pipe.base.image_size, self.source.fps,
+                              getattr(self.source, "stride", 1), status, params, result[0].balls)
+
+
+def rate_stride(fps: float | None, base_fps: float = 29.97) -> int:
+    """Frames of a ``fps`` video per analysed frame so that about ``base_fps`` frames a second are analysed: 1 up to
+    44 fps, 2 at 50 / 59.94 / 60 fps, 4 at 119.88 (1 for an unknown rate). The detector, the tracker and the event
+    engine are set up for 29.97 fps; a 60 fps video read at every frame costs twice as much and gives the same
+    analysis."""
+    if not fps or not np.isfinite(fps) or fps <= 0:
+        return 1
+    return max(1, int(np.floor(fps / base_fps + 0.5)))
 
 
 class StridedVideoSource(VideoFileSource):
     """A video read every ``stride``-th frame (the others are skipped without decoding)."""
 
-    def __init__(self, path: str | Path, stride: int = 1, **kwargs: Any) -> None:
-        super().__init__(path, realtime=False, **kwargs)
+    def __init__(self, path: str | Path, stride: int = 1, realtime: bool = False, **kwargs: Any) -> None:
+        super().__init__(path, realtime=realtime, **kwargs)
         self.stride = max(1, int(stride))
         self.fps = self.fps / self.stride
 
@@ -164,15 +213,18 @@ class Preanalysis:
     """One background analysis of a whole video (see the module docstring)."""
 
     def __init__(self, *, video_id: str, video: Path, out: Path, config_for: Callable[[Any], AppConfig],
-                 detector_factory: Callable[[], Any], duration_s: float | None = None, stride: int = 1) -> None:
+                 detector_factory: Callable[[], Any], duration_s: float | None = None, stride: int = 1,
+                 shot_models: Path | None = None, title: str | None = None) -> None:
         self.video_id, self.video, self.out, self.config_for = video_id, video, out, config_for
         self.detector_factory, self.duration_s, self.stride = detector_factory, duration_s, max(1, int(stride))
+        self.shot_models, self.title = shot_models, title  # the possession analysis's shot models (auto_analysis)
         self.state = "queued"
         self.error: str | None = None
         self.started: float | None = None  # wall time it started analysing frames
         self.finished: float | None = None
         self.game: PreanalysisGame | None = None
         self.recorder: Recorder | None = None
+        self.analysed_fps: float | None = None  # frames analysed per video second (the video's rate / stride)
         self._stop = False
         self._finished = asyncio.Event()
 
@@ -185,10 +237,13 @@ class Preanalysis:
         speed = video_s / spent if spent > 0 and video_s > 0 else None  # video seconds per wall second
         left = max(0.0, (self.duration_s or 0.0) - t_done)
         return {"run": self.out.name, "video_id": self.video_id, "state": self.state, "stride": self.stride,
+                "fps": None if self.analysed_fps is None else round(self.analysed_fps, 2),
                 "frames": frames, "t_done": round(t_done, 3), "duration_s": self.duration_s,
                 "speed": None if speed is None else round(speed, 4),
                 "eta_s": round(left / speed) if speed and self.state == "running" else None,
-                "started": self.started, "finished": self.finished, "error": self.error}
+                "started": self.started, "finished": self.finished, "error": self.error,
+                "failed_frames": self.game.failed_frames if self.game is not None else 0,
+                "first_error": self.game.first_error if self.game is not None else None}
 
     def write_status(self) -> None:
         self.out.mkdir(parents=True, exist_ok=True)
@@ -215,11 +270,17 @@ class Preanalysis:
                 return
             cfg = self.config_for(detector)  # the live view's settings for this video and detector
             source = await asyncio.to_thread(StridedVideoSource, self.video, self.stride)
+            self.analysed_fps = source.fps
             self.recorder = Recorder(self.out)
             hub = RecordingHub(cfg.hub, self.recorder)
             # No keys: Jev, Claude and spoken narration stay off however the Studio is set up.
+            possession = None
+            if cfg.perception.broadcast == "on":  # the court is tracked: the possession analysis can be built after
+                from courtvision.nba.auto_analysis import Recorder as CourtRecorder
+
+                possession = CourtRecorder(self.out / "possession")
             self.game = PreanalysisGame(cfg, source, hub, realtime=False, detector=detector, env={},
-                                        recorder=self.recorder)
+                                        recorder=self.recorder, possession=possession)
             self.state, self.started = "running", time.time()
             self.write_status()
             ticker = asyncio.create_task(self._tick(), name="preanalysis-status")
@@ -233,6 +294,7 @@ class Preanalysis:
                 await asyncio.to_thread(write_run_dir, _collect(self.game), self.out / "analysis")
             except Exception:
                 log.exception("Could not write the pre-analysis's events")
+            await self._possession()
         except asyncio.CancelledError:
             self.state = "stopped"
             raise
@@ -249,6 +311,23 @@ class Preanalysis:
                     self.write_status()
                 finally:
                     self._finished.set()
+
+    async def _possession(self) -> None:
+        """The possession analysis from the recorded camera, ball and events (``nba/auto_analysis.py``), for Watch."""
+        game = self.game
+        rec = game.possession if game is not None else None
+        if rec is None:
+            return
+        rec.close()
+        if not rec.usable or self._stop:
+            return
+        from courtvision.nba import auto_analysis
+
+        try:  # the replay is ready meanwhile; Watch finds the analysis when it is written
+            await asyncio.to_thread(auto_analysis.build, rec.folder, game.engine.events, rec.balls, str(self.video),
+                                    self.shot_models, self.title)
+        except Exception:
+            log.exception("Could not build the possession analysis of %s", self.video_id)
 
     async def _tick(self) -> None:
         while True:

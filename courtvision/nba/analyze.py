@@ -925,6 +925,7 @@ class PerceiveConfig:
     rectify_boxes: bool = True  # person boxes re-drawn as a standing player at their centre (``rectify_box``)
     home_color_bgr: tuple[int, int, int] | None = None
     away_color_bgr: tuple[int, int, int] | None = None
+    team_refit_at: tuple[int, ...] = ()  # TeamConfig.refit_at (nba_analyze.py events --team-refit)
     league: str = "nba"
     # ByteTrack thresholds for the student detector, whose person scores sit lower than RF-DETR's (a centre
     # heatmap peak, not a classification score); tuned on Lakers @ Warriors frames
@@ -948,6 +949,8 @@ def perceive(video: Path, camera: CameraTrack, cache: DetectionCache, ball: Ball
         team["home_color_bgr"] = cfg.home_color_bgr
     if cfg.away_color_bgr is not None:
         team["away_color_bgr"] = cfg.away_color_bgr
+    if cfg.team_refit_at:
+        team["refit_at"] = tuple(cfg.team_refit_at)
     rate = perception_rate_overrides(camera.fps)
     pcfg = PerceptionConfig(team=team, foot_direct=True, court_margin_ft=4.0, compute_embeddings=True,
                             tracker={**rate.pop("tracker", {}), **cfg.tracker}, identity=rate.pop("identity", {}),

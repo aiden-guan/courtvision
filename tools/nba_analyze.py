@@ -46,6 +46,7 @@ from courtvision.training.align_pbp import AlignConfig, ClockTimeline, align_pbp
 # ESPN's scorebug shows a basket about 2 s after the play-by-play clock time of the make (median over the made
 # field goals of Lakers @ Warriors 2024-12-25); its play-by-play clock is the event's own time (no entry lag)
 ESPN_ALIGN = AlignConfig(score_update_lag_s=2.0, lag_s={"nba": 0.0}, estimate_lag=False)
+TEAM_REFIT = (150, 600, 1500, 3000)  # TeamConfig.refit_at for broadcasts (--team-refit; the Studio too)
 from courtvision.types import Event, Team  # noqa: E402
 
 
@@ -111,7 +112,8 @@ def cmd_events(root: Path, args: argparse.Namespace) -> None:
     ball = BallTrack.load(root / "ball_track.json")
     reads = load_scorebug(root / "scorebug.jsonl")
     cfg = PerceiveConfig(use_3d_flights=args.use_3d, home_color_bgr=tuple(game["home_color_bgr"]) if game.get("home_color_bgr") else None,
-                         away_color_bgr=tuple(game["away_color_bgr"]) if game.get("away_color_bgr") else None)
+                         away_color_bgr=tuple(game["away_color_bgr"]) if game.get("away_color_bgr") else None,
+                         team_refit_at=TEAM_REFIT if getattr(args, "team_refit", False) else ())
     start = frame_bound(camera, args.start) if args.start else 0
     end = frame_bound(camera, args.end) if args.end else None
     t0 = time.time()
@@ -128,10 +130,19 @@ def cmd_events(root: Path, args: argparse.Namespace) -> None:
 
 
 def truth(root: Path):  # noqa: ANN201
+    """The ESPN play-by-play placed on video time through the scorebug clock. A broadcast whose bug shows a basket
+    sooner or later than ESPN's 2024 bug sets ``"score_update_lag_s"`` in game.json (the median of the play-by-play
+    clock time minus the score change over the made shots, plus the lag used)."""
     summary = espn.load_summary(root / "espn_summary.json")
     reads = load_scorebug(root / "scorebug.jsonl")
     tl = ClockTimeline.fit(reads)
-    return summary, align_pbp(espn.pbp_actions(summary), tl, score_changes=score_changes(reads), config=ESPN_ALIGN)
+    cfg = ESPN_ALIGN
+    lag = json.loads((root / "game.json").read_text()).get("score_update_lag_s")
+    if lag is not None:
+        from dataclasses import replace
+
+        cfg = replace(cfg, score_update_lag_s=float(lag))
+    return summary, align_pbp(espn.pbp_actions(summary), tl, score_changes=score_changes(reads), config=cfg)
 
 
 def cmd_fuse(root: Path, args: argparse.Namespace) -> None:
@@ -248,6 +259,7 @@ def decide_shots(events: list[Event], timeline, attack, aligned, split: float, a
 
     from courtvision.nba import makes as mk
 
+    rim_spec, zones_on = getattr(args, "rim", None), getattr(args, "zones", False)
     loaded = None
     if args.shots != "cross":
         if not args.shot_models:
@@ -256,7 +268,15 @@ def decide_shots(events: list[Event], timeline, attack, aligned, split: float, a
         if loaded.uses_jev != args.jev:
             raise SystemExit(f"--shot-models were fitted with{'' if loaded.uses_jev else 'out'} Jev's answers: run "
                              f"with{'' if loaded.uses_jev else 'out'} --jev")
+        if loaded.uses_zones != bool(zones_on):
+            raise SystemExit(f"--shot-models were fitted with{'' if loaded.uses_zones else 'out'} the ball-zone "
+                             f"features: run with{'' if loaded.uses_zones else 'out'} --zones")
+        if loaded.uses_rim != bool(rim_spec):
+            raise SystemExit(f"--shot-models were fitted with{'' if loaded.uses_rim else 'out'} the rim model: run "
+                             f"with{'' if loaded.uses_rim else 'out'} --rim")
     judge = rim_judge(game, camera, court, ball, out) if args.jev else None
+    rim_read = rim_reader(out.parent.parent, rim_spec) if rim_spec else None
+    zone_read = zone_reader(out.parent.parent, camera, court, ball, args.det_dir) if zones_on else None
 
     def jev_read(c: mk.Candidate) -> dict | None:  # the visit's rim, else the one the shooting team attacks
         assert judge is not None
@@ -265,9 +285,9 @@ def decide_shots(events: list[Event], timeline, attack, aligned, split: float, a
         return judge.judge(c.key, c.t, side)
 
     visits = mk.rim_visits(ball.path, camera, court) if ball is not None else []
-    rows = mk.candidate_rows(events, timeline, visits, jev_read if judge is not None else None)
+    rows = mk.candidate_rows(events, timeline, visits, jev_read if judge is not None else None, rim_read, zone_read)
     shots: dict = {"candidates": len(rows), "from_rim_visits": sum(c.result is None for c, _ in rows),
-                   "jev": judge is not None}
+                   "jev": judge is not None, "rim": rim_spec, "zones": bool(zones_on)}
     if args.shots == "cross":
         truth_shots = [(float(al.t), bool(al.action.is_free_throw), bool(al.action.made)) for al in aligned.aligned
                        if al.t is not None and al.action.is_shot and not al.action.synthetic and al.action.made is not None]
@@ -278,7 +298,8 @@ def decide_shots(events: list[Event], timeline, attack, aligned, split: float, a
         for in_first in (True, False):
             train = [(c, f) for c, f in rows if (c.t < split) != in_first]
             fits[in_first] = mk.fit_shot_models([f for _, f in train], [labels[c.key] for c, _ in train],
-                                                jev=judge is not None)
+                                                jev=judge is not None, rim=rim_read is not None,
+                                                zones=zone_read is not None)
             m = fits[in_first]
             for c, f in ((c, f) for c, f in rows if (c.t < split) == in_first):
                 lab = labels[c.key]
@@ -288,8 +309,13 @@ def decide_shots(events: list[Event], timeline, attack, aligned, split: float, a
                     ft = m.ft.p(f) >= 0.5
                     right["ft"] += ft == lab.startswith("ft")
                     right["made"] += (m.made.p({**f, "is_ft": float(ft)}) >= 0.5) == lab.endswith("made")
-        whole = mk.fit_shot_models([f for _, f in rows], [labels[c.key] for c, _ in rows], jev=judge is not None)
+        whole = mk.fit_shot_models([f for _, f in rows], [labels[c.key] for c, _ in rows], jev=judge is not None,
+                                   rim=rim_read is not None, zones=zone_read is not None)
         (out / "shot_models.json").write_text(json.dumps(whole.to_dict(), indent=1))
+        with (out / "shot_rows.jsonl").open("w") as fh:  # for fits across games (tools/nba_shot_models.py)
+            for c, f in rows:
+                fh.write(json.dumps({"key": c.key, "t": round(c.t, 3), "label": labels[c.key],
+                                     "features": {k: round(float(v), 6) for k, v in f.items()}}) + "\n")
         shots.update(labels=dict(Counter(labels.values())), real_accuracy=round(right["real"] / max(1, len(rows)), 4),
                      ft_accuracy=round(right["ft"] / max(1, n_real), 4),
                      made_accuracy=round(right["made"] / max(1, n_real), 4),
@@ -299,7 +325,8 @@ def decide_shots(events: list[Event], timeline, attack, aligned, split: float, a
             return fits[c.t < split]
     else:
         models = loaded  # type: ignore[assignment]
-    decided = mk.decide(events, timeline, models, visits, jev=jev_read if judge is not None else None)
+    decided = mk.decide(events, timeline, models, visits, jev=jev_read if judge is not None else None, rim=rim_read,
+                        zones=zone_read)
     kept = [e for e in decided if e.kind.value in ("shot_made", "shot_missed") and e.attrs.get("makes")]
     shots.update(kept=len(kept), made=sum(e.kind.value == "shot_made" for e in kept),
                  free_throws=sum(e.value == 1 for e in kept),
@@ -310,6 +337,35 @@ def decide_shots(events: list[Event], timeline, attack, aligned, split: float, a
             shots["jev_stopped"] = judge.stopped
     report["shots"] = shots
     return decided
+
+
+def zone_reader(root: Path, camera: CameraTrack, court, ball, det_dir: str):  # noqa: ANN001, ANN201
+    """Each candidate's ball-zone series (``rim_clips.ball_zone_series``): the detector's ball candidates about the rim
+    around the moment the linked ball passes nearest it (``rim_jev.rim_centre``)."""
+    from courtvision.nba.rim_clips import ball_zone_series
+    from courtvision.nba.rim_jev import rim_centre
+
+    cache = load_cache(root, det_dir)
+    path = {f: (p[0], p[1]) for f, p in ball.path.items()} if ball is not None else {}
+
+    def read(c):  # noqa: ANN001, ANN202
+        found = rim_centre(c.t, camera, court, path, side=c.side)
+        return None if found is None else ball_zone_series(cache.balls, camera, court, found[0], found[1])
+
+    return read
+
+
+def rim_reader(root: Path, spec: str):  # noqa: ANN201
+    """The rim model's probabilities per candidate key: ``spec`` names the held-out predictions
+    ``<game>/rim_clips/oof_<spec>.jsonl`` of tools/nba_rim_model.py (or is a path to such a file)."""
+    path = Path(spec) if spec.endswith(".jsonl") else root / "rim_clips" / f"oof_{spec}.jsonl"
+    probs = {}
+    for line in path.open():
+        r = json.loads(line)
+        if r.get("source") == "candidate":
+            probs[r["key"]] = {k: float(r[k]) for k in ("p_made", "p_missed", "p_none")}
+    print(f"rim model: {len(probs)} candidates' probabilities from {path}")
+    return lambda c: probs.get(c.key)
 
 
 def rim_judge(game: dict, camera: CameraTrack, court, ball, out: Path):  # noqa: ANN001, ANN201
@@ -404,6 +460,9 @@ def main() -> int:
     ap.add_argument("--start", type=float, default=0.0)
     ap.add_argument("--end", type=float, default=0.0)
     ap.add_argument("--engine", default=None, help="EventEngineConfig overrides (JSON)")
+    ap.add_argument("--team-refit", action="store_true",
+                    help="events: refit the two team clusters as player crops accumulate (TeamConfig.refit_at), so a "
+                         "first fit on a few frames does not hold for the whole game")
     ap.add_argument("--tol", type=float, default=2.5)
     ap.add_argument("--file", default="events.jsonl", help="eval: events file of the run (events.jsonl / fused.jsonl)")
     ap.add_argument("--fusion", default=None, help="fuse: FusionConfig overrides (JSON)")
@@ -420,6 +479,12 @@ def main() -> int:
                          "(needs the play-by-play), none = the models of --shot-models, off = keep the engine's labels "
                          "(they lean on the scorebug); default: cross with --fit cross, else none")
     ap.add_argument("--shot-models", default=None, help="timeline: shot_models.json of a run fitted with --shots cross")
+    ap.add_argument("--zones", action="store_true",
+                    help="timeline: add where the detector sees the ball about the rim around each candidate "
+                         "(rim_clips.ball_zone_series on the --det-dir detections)")
+    ap.add_argument("--rim", default=None,
+                    help="timeline: add the rim model's read of each candidate's rim clip: the name of held-out "
+                         "predictions <game>/rim_clips/oof_<name>.jsonl (tools/nba_rim_model.py) or a path to one")
     ap.add_argument("--jev", action="store_true",
                     help="timeline: add Jev's read of each shot's rim crops (frames go to TypeSafe's API; answers kept in "
                          "runs/<tag>/jev_rim.jsonl)")
