@@ -311,3 +311,34 @@ def test_saved_results_of_the_demo_and_old_runs_are_deleted_together(app):
         assert lib["other_runs"] == 2 and lib["other_bytes"] == 6
         assert client.delete("/api/studio/analyses", headers=AUTH).json() == {"deleted_runs": 2, "freed_bytes": 6}
         assert list((root / "analyses").glob("*/")) == []
+
+
+def test_public_demo_is_watch_only_and_never_uses_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-be-used")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-should-not-be-used")
+    cfg = load_config(None, ["narration.tts=none"])
+    app = create_studio_app(cfg, root=tmp_path / "workspace", lab_runs=tmp_path / "runs", public_demo=True)
+    with TestClient(app) as client:
+        state = client.get("/api/studio").json()
+        assert state["public_demo"] and state["capabilities"] == {"jev": False, "claude": False}
+        assert client.post("/api/studio/upload", content=b"x" * 1024).status_code == 403
+        assert client.post("/api/studio/prepare").status_code == 403
+        assert client.post("/api/control", json={"action": "pause"}).status_code == 403
+        assert client.post("/api/scoreboard", json={"home_score": 1, "away_score": 0}).status_code == 403
+        assert client.post("/api/studio/start", json={"video_id": "0" * 32}).status_code == 403
+        # the write endpoints added since: the video library, replays, the model lab, Ask
+        for path in ("/api/studio/find", f"/api/studio/video/{'0' * 32}/rename", f"/api/studio/replay/{'0' * 32}/start",
+                     "/api/lab/run", "/api/lab/promote", "/api/ask"):
+            assert client.post(path, json={}).status_code == 403, path
+        for path in (f"/api/studio/video/{'0' * 32}", f"/api/studio/replay/{'0' * 32}", "/api/studio/analyses"):
+            assert client.delete(path).status_code == 403, path
+        first = client.post("/api/studio/start", json={"demo": True})
+        assert first.status_code == 200, first.text
+        status = first.json()["status"]
+        assert status["llm"] is False and status["jev"] in (None, "off")
+        run_id = first.json()["active"]["run_id"]
+        game = app.state.workspace.game
+        assert not set(studio.CREDENTIAL_ENV) & set(game.env)  # no keys at all: the local engine only
+        assert not game.config.narration.llm_enabled and game.config.jev.mode == "off"
+        # A second viewer joins the running demo instead of restarting it for everyone.
+        assert client.post("/api/studio/start", json={"demo": True}).json()["active"]["run_id"] == run_id

@@ -40,6 +40,11 @@ from courtvision.server.studio_game import StudioGame
 
 log = logging.getLogger(__name__)
 UPLOAD_LIMIT = 8 * 1024**3
+# Public demo: anonymous viewers may read everything and start the simulated demo, nothing else.
+PUBLIC_DEMO_WRITES = {"/api/studio/start"}
+# The API credentials a public demo drops from its process and its games: it runs the local engine only.
+CREDENTIAL_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_IDENTITY_TOKEN", "ANTHROPIC_IDENTITY_TOKEN_FILE",
+                  "TYPESAFE_API_KEY")
 VIDEO_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
                ".mkv": "video/x-matroska", ".avi": "video/x-msvideo"}
 ANALYSIS_RECHECK_S = 10.0  # how often the open video's analysis is looked for again (a run may finish meanwhile)
@@ -112,8 +117,10 @@ class PreanalyseIn(BaseModel):
 
 class Workspace:
     def __init__(self, cfg: AppConfig, root: Path, detector: Any = None, nba_root: Path | None = None,
-                 repo: Path = REPO, detector_factory: Callable[[], Any] | None = None, auto_preanalyze: bool = True):
+                 repo: Path = REPO, detector_factory: Callable[[], Any] | None = None, auto_preanalyze: bool = True,
+                 public_demo: bool = False):
         self.cfg, self.root = cfg, root.resolve()
+        self.public_demo = public_demo
         # analysing videos ahead (server/preanalysis.py): one at a time, each with its own detector
         self.detector_factory, self.auto_preanalyze = detector_factory, auto_preanalyze
         self.preanalysis: Preanalysis | None = None
@@ -292,8 +299,9 @@ class Workspace:
                 "frame": self.hub.latest("frame"),
                 "vision": getattr(game, "vision", None),
                 "error": getattr(game, "failure", None),
-                "capabilities": {"jev": bool(runtime_env().get("TYPESAFE_API_KEY")),
-                                 "claude": anthropic_credential_source() is not None},
+                "public_demo": self.public_demo,
+                "capabilities": {"jev": not self.public_demo and bool(runtime_env().get("TYPESAFE_API_KEY")),
+                                 "claude": not self.public_demo and anthropic_credential_source() is not None},
                 "analysis": {"game": run[0].name, "tag": run[1], "version": run[2]} if run else None,
                 "replay": self.replay_status(self.active["id"]) if self.active and not self.active.get("demo") else None}
 
@@ -523,8 +531,16 @@ class Workspace:
 
     async def start(self, body: StartIn) -> dict[str, Any]:
         async with self.lock:
+            if self.public_demo:
+                if not body.demo:
+                    raise HTTPException(403, "This public demo only runs the simulated game.")
+                if self.task is not None and not self.task.done():
+                    return self.state()  # viewers share one game: join the running demo, never restart it
             if body.demo:
                 cfg = copy.deepcopy(self.cfg)
+                if self.public_demo:
+                    # No billed calls from anonymous traffic, whatever the environment holds.
+                    cfg.narration.llm_enabled, cfg.jev.mode = False, "off"
                 cfg.narration.tts = "none"
                 cfg.source.drop_late_s = None
                 cfg.game.home_name, cfg.game.away_name = body.home_name.strip(), body.away_name.strip()
@@ -552,8 +568,11 @@ class Workspace:
                 self.detector.reset()
             await self.hub.reset()
             self.active = {**active, "run_id": uuid.uuid4().hex}
+            env = runtime_env()
+            if self.public_demo:  # a saved .env key too: nothing in a public demo's game can spend credits
+                env = {k: v for k, v in env.items() if k not in CREDENTIAL_ENV}
             self.game = StudioGame(cfg, source, self.hub, realtime=True,
-                                   detector=None if body.demo else self.detector, env=runtime_env())
+                                   detector=None if body.demo else self.detector, env=env)
             self.task = asyncio.create_task(self.run(self.game, dict(self.active)), name="studio-analysis")
             return self.state()
 
@@ -608,12 +627,21 @@ class Workspace:
 
 def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "runs/studio",
                       auth_token: str | None = None, detector: Any = None, lab_runs: Path | None = None,
-                      detector_factory: Callable[[], Any] | None = None, auto_preanalyze: bool = True) -> Any:
+                      detector_factory: Callable[[], Any] | None = None, auto_preanalyze: bool = True,
+                      public_demo: bool = False) -> Any:
     lab = Lab(lab_runs)
     workspace = Workspace(config or load_config(), Path(root), detector, nba_root=lab.runs / "nba", repo=lab.repo,
-                          detector_factory=detector_factory, auto_preanalyze=auto_preanalyze)
-    app = create_app(workspace.hub, workspace, auth_token, workspace.cfg.server, upload_max_body=UPLOAD_LIMIT)
+                          detector_factory=detector_factory, auto_preanalyze=auto_preanalyze and not public_demo,
+                          public_demo=public_demo)
+    app = create_app(workspace.hub, workspace, auth_token, workspace.cfg.server,
+                     upload_max_body=None if public_demo else UPLOAD_LIMIT)
     app.state.workspace = workspace
+    if public_demo:
+        @app.middleware("http")
+        async def read_only(request: Request, call_next: Any) -> Any:
+            if request.method not in ("GET", "HEAD") and request.url.path not in PUBLIC_DEMO_WRITES:
+                return HubJSONResponse({"detail": "This public demo is watch-only."}, status_code=403)
+            return await call_next(request)
     inner = app.router.lifespan_context
 
     @contextlib.asynccontextmanager

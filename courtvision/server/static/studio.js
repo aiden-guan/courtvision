@@ -298,6 +298,13 @@
     const claude = !!data.capabilities?.claude;
     text("studio-cloud", jevMode === "live" ? "Jev live · local vision" : data.capabilities?.jev ? (claude ? "Jev and Claude keys set" : "Jev key set · next session") : claude ? "Claude key set" : "Local only · no cloud keys");
     $("sys-cloud").dataset.tone = jevMode === "live" || claude || data.capabilities?.jev ? "good" : "idle";
+    if (data.public_demo) {
+      // Watch-only showcase: only the simulated demo can run, so hide footage, control and other write entry points.
+      for (const id of ["studio-open", "studio-empty-open", "studio-manage", "studio-export", "studio-play", "studio-speed",
+                        "studio-calibrate", "pre-stride", "pre-action", "poss-watch"]) if ($(id)) $(id).hidden = true;
+      for (const id of ["tab-operator", "tab-calibration", "tab-roi", "tab-lab", "btn-add-event", "ask-open", "board-ask"]) if ($(id)) $(id).hidden = true;
+      text("studio-cloud", "Public demo · Simulated game · Template commentary");
+    }
   }
   function renderRecent(data) {
     const key = JSON.stringify((data.videos || []).map(v => [v.id, titleOf(v), replayText(v.replay, v.duration_s).text]));
