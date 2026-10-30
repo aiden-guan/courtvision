@@ -11,8 +11,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from courtvision.config import load_config
+from courtvision.server import studio
 from courtvision.server.studio import create_studio_app
-from courtvision.types import BBox, Detection, FrameDetections, ObjClass
+from courtvision.types import BBox, Detection, Event, EventKind, FrameDetections, ObjClass, Team
 
 
 class PeopleDetector:
@@ -41,7 +42,8 @@ def app(tmp_path, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     cfg = load_config(None, ["narration.llm_enabled=false", "narration.tts=none", "jev.mode=off"])
-    return create_studio_app(cfg, root=tmp_path / "workspace", auth_token="local-test", detector=PeopleDetector())
+    return create_studio_app(cfg, root=tmp_path / "workspace", auth_token="local-test", detector=PeopleDetector(),
+                             lab_runs=tmp_path / "runs")
 
 
 AUTH = {"Authorization": "Bearer local-test"}
@@ -159,3 +161,153 @@ def test_hub_reset_removes_pending_and_replay_from_previous_game():
         assert all('99' not in text for _, text in client._queue)
         hub.close_clients()
     asyncio.run(check())
+
+
+def test_monitor_focus_uses_same_frame_and_never_changes_clean_footage(app):
+    from courtvision.server.studio import StudioGame
+    game = StudioGame.__new__(StudioGame)
+    image = np.full((180, 320, 3), 40, np.uint8)
+    game.visual = (image, [
+        {"box":(40, 30, 100, 150), "label":"Track 1", "team":None, "confidence":.94},
+        {"box":(180, 25, 245, 155), "label":"Track 2", "team":None, "confidence":.81},
+    ], 1.25)
+    game._jpeg_cache = {}
+    app.state.workspace.game = game
+    with TestClient(app) as client:
+        clean = client.get("/api/studio/frame.jpg?overlay=false", headers=AUTH)
+        all_tracks = client.get("/api/studio/frame.jpg", headers=AUTH)
+        focused = client.get("/api/studio/frame.jpg?focus=Track%201", headers=AUTH)
+        clean_focused = client.get("/api/studio/frame.jpg?overlay=false&focus=Track%201", headers=AUTH)
+        assert clean.content == clean_focused.content
+        assert all_tracks.content != focused.content != clean.content
+        assert focused.headers["x-video-time"] == "1.25"
+        # The backing source image is never drawn on.
+        assert np.all(image == 40)
+    app.state.workspace.game = None
+
+
+def test_studio_reads_saved_key_for_next_session_without_exposing_it(app, tmp_path, monkeypatch):
+    from courtvision.credentials import save_jev_key
+    monkeypatch.chdir(tmp_path)
+    with TestClient(app) as client:
+        assert not client.get("/api/studio", headers=AUTH).json()["capabilities"]["jev"]
+        save_jev_key("test-only-saved-key", tmp_path / ".env")
+        state = client.get("/api/studio", headers=AUTH)
+        assert state.json()["capabilities"]["jev"]
+        assert "test-only-saved-key" not in state.text
+        assert client.post("/api/studio/start", json={"demo":True}, headers=AUTH).status_code == 200
+        assert app.state.workspace.game.env["TYPESAFE_API_KEY"] == "test-only-saved-key"
+
+
+def test_an_analysed_video_serves_its_possession_timeline_and_shots(app, video_bytes, monkeypatch):
+    monkeypatch.setattr(studio, "ANALYSIS_RECHECK_S", 0.0)
+    with TestClient(app) as client:
+        video = client.post("/api/studio/upload", content=video_bytes, headers=AUTH).json()
+        assert client.post("/api/studio/start", json={"video_id": video["id"], "home_name": "Warriors",
+                                                      "broadcast": False}, headers=AUTH).status_code == 200
+        assert wait_for(client, lambda s: s["status"] is not None)["analysis"] is None
+        assert client.get("/api/studio/analysis", headers=AUTH).status_code == 404
+        # tools/nba_analyze.py <game> timeline, on this video
+        ws = app.state.workspace
+        run = ws.nba_root / "2025-01-01-AAA-BBB" / "runs" / "full"
+        run.mkdir(parents=True)
+        (run.parents[1] / "game.json").write_text(json.dumps({"video": str(ws.root / video["id"] / "source.video")}))
+        (run / "timeline.json").write_text(json.dumps({"dt_s": .25, "segments": [[0, 1, "home"], [1.25, 2, "away"]],
+                                                       "back_court": [[1.25, 1.5]]}))
+        made = Event("e1", EventKind.SHOT_MADE, 1.0, 30, team=Team.HOME, value=2, attrs={"makes": {"p_made": .9}})
+        (run / "timeline.jsonl").write_text(json.dumps(made.to_dict()) + "\n")
+        state = client.get("/api/studio", headers=AUTH).json()
+        assert state["analysis"]["game"] == "2025-01-01-AAA-BBB" and state["analysis"]["tag"] == "full"
+        doc = client.get("/api/studio/analysis", headers=AUTH).json()
+        assert doc["segments"] == [[0, 1, "home"], [1.25, 2, "away"]] and doc["back_court"] == [[1.25, 1.5]]
+        assert [(e["kind"], e["team"], e["value"], e["p_made"]) for e in doc["events"]] == [("shot_made", "home", 2, .9)]
+        assert doc["teams"]["home"]["name"] == "Warriors"  # no ESPN summary: the names given when opening it
+        assert client.get("/api/studio/analysis").status_code == 401
+        demo = client.post("/api/studio/start", json={"demo": True}, headers=AUTH)
+        assert demo.status_code == 200 and demo.json()["analysis"] is None
+
+
+def test_the_recording_streams_in_ranges_for_watching_with_the_token_in_the_query(app, video_bytes):
+    with TestClient(app) as client:
+        video = client.post("/api/studio/upload?name=Game.avi", content=video_bytes, headers=AUTH).json()
+        url = f"/api/studio/video/{video['id']}"
+        assert client.get(url).status_code == 401 and client.get(url + "?token=wrong").status_code == 401
+        part = client.get(url + "?token=local-test", headers={"Range": "bytes=0-99"})  # a <video> sends no header
+        assert part.status_code == 206 and part.content == video_bytes[:100]
+        assert part.headers["content-type"] == "video/x-msvideo"
+        full = client.get(url, headers=AUTH)
+        assert full.status_code == 200 and full.content == video_bytes
+        for missing in ("0" * 32, "g" * 32, "workspace"):
+            assert client.get(f"/api/studio/video/{missing}", headers=AUTH).status_code == 404
+
+
+def test_video_titles_read_like_names():
+    assert studio.video_title("YTDown.com_YouTube_Media_5U9k1U6nN-g_Lakers-vs-Warriors-WILD-Christmas-Day-Ending-"
+                              "NBA-Classic-Game_001_1080p.mp4") == "Lakers vs Warriors WILD Christmas Day Ending NBA Classic Game"
+    assert studio.video_title("2024-12-25 LAL-GSW.mp4") == "2024-12-25 LAL GSW"
+    assert studio.video_title("basketball-sample.mp4") == "Basketball sample"
+    assert studio.video_title(".mp4") == ".mp4" or studio.video_title(".mp4")  # never empty
+
+
+def test_library_keeps_one_copy_renames_and_deletes(app, video_bytes, tmp_path):
+    from courtvision.nba.results import fingerprint
+
+    with TestClient(app) as client:
+        first = client.post("/api/studio/upload?name=YTDown.com_YouTube_Media_abcdefghijk_Big-Game_001_720p.avi",
+                            content=video_bytes, headers=AUTH).json()
+        assert first["title"] == "Big Game" and not first.get("duplicate")
+        again = client.post("/api/studio/upload?name=copy.avi", content=video_bytes, headers=AUTH).json()
+        assert again["duplicate"] and again["id"] == first["id"]  # the same video is kept once
+        root = app.state.workspace.root
+        assert len(list(root.glob("*/video.json"))) == 1
+        size, digest = fingerprint(root / first["id"] / "source.video")
+        found = client.post("/api/studio/find", json={"bytes": size, "digest": digest}, headers=AUTH).json()
+        assert found["video"]["id"] == first["id"]
+        assert client.post("/api/studio/find", json={"bytes": size, "digest": "0" * 40}, headers=AUTH).json() == {"video": None}
+
+        renamed = client.post(f"/api/studio/video/{first['id']}/rename", json={"title": "  Finals   game 7 "}, headers=AUTH)
+        assert renamed.status_code == 200 and renamed.json()["title"] == "Finals game 7"
+        assert client.get("/api/studio", headers=AUTH).json()["videos"][0]["title"] == "Finals game 7"
+
+        # a live analysis of it, finished: its saved results belong to the video
+        client.post("/api/studio/start", headers=AUTH, json={"video_id": first["id"], "broadcast": False})
+        wait_for(client, lambda s: (s["status"] or {}).get("finished"), seconds=10)
+        time.sleep(0.3)
+        (root / first["id"] / "replays" / "run1" / "chunks").mkdir(parents=True)
+        (root / first["id"] / "replays" / "run1" / "status.json").write_text('{"state": "done"}')
+        lib = client.get("/api/studio/library", headers=AUTH).json()
+        (video,) = lib["videos"]
+        assert video["open"] and video["saved_runs"] == 1 and video["replay_bytes"] > 0
+        assert video["disk_bytes"] >= len(video_bytes) and video["used_by"] == [] and video["copies"] == []
+
+        assert client.delete(f"/api/studio/replay/{first['id']}", headers=AUTH).json()["freed_bytes"] > 0
+        assert not (root / first["id"] / "replays").exists()
+
+        # a game folder that names this file keeps it
+        game = tmp_path / "runs" / "nba" / "2024-01-01-AAA-BBB"
+        game.mkdir(parents=True)
+        (game / "game.json").write_text(json.dumps({"video": str(root / first["id"] / "source.video")}))
+        refused = client.delete(f"/api/studio/video/{first['id']}", headers=AUTH)
+        assert refused.status_code == 409 and "2024-01-01-AAA-BBB" in refused.json()["detail"]
+        (game / "game.json").unlink()
+
+        gone = client.delete(f"/api/studio/video/{first['id']}", headers=AUTH)
+        assert gone.status_code == 200 and gone.json()["freed_bytes"] >= len(video_bytes)
+        state = client.get("/api/studio", headers=AUTH).json()
+        assert state["active"] is None and state["videos"] == []  # the open video was closed first
+        assert not (root / first["id"]).exists() and list((root / "analyses").glob("*/")) == []
+        assert client.delete(f"/api/studio/video/{first['id']}", headers=AUTH).status_code == 404
+        assert client.delete("/api/studio/video/..%2F..", headers=AUTH).status_code in (404, 405)
+        assert client.delete(f"/api/studio/video/{first['id']}").status_code == 401
+
+
+def test_saved_results_of_the_demo_and_old_runs_are_deleted_together(app):
+    with TestClient(app) as client:
+        root = app.state.workspace.root
+        for run in ("a" * 32, "b" * 32):
+            (root / "analyses" / run).mkdir(parents=True)
+            (root / "analyses" / run / "events.jsonl").write_text("{}\n")
+        lib = client.get("/api/studio/library", headers=AUTH).json()
+        assert lib["other_runs"] == 2 and lib["other_bytes"] == 6
+        assert client.delete("/api/studio/analyses", headers=AUTH).json() == {"deleted_runs": 2, "freed_bytes": 6}
+        assert list((root / "analyses").glob("*/")) == []

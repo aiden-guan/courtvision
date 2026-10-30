@@ -433,8 +433,14 @@ perception:
     cut_threshold: 0.35  # Bhattacharyya distance of consecutive HSV histograms; tuned on sim renders
     live_requires_scorebug: true  # a replay hides the scorebug
     scoreboard_hz: 5.0  # D14
+    rectify_boxes: false  # Re-draw person boxes as a standing player at the box centre through the tracked camera (automatic court tra...
   scorebug_layout_path: null  # ScorebugLayout JSON (broadcast scorebug fields)
   glyph_bank_path: null  # GlyphBank JSON (learned scorebug glyphs); None = bootstrap from a font
+  auto_court: true  # Broadcast footage without a calibration: find the game camera from the court lines (perception/broadcast_co...
+  auto_court_frames: 6
+  auto_court_every_s: 1.0
+  auto_court_tries: 20
+  scorebug_ocr: true  # real broadcasts on macOS: read an ESPN-style scorebug with Apple Vision text recognition
 
 # events: event engine thresholds
 events:

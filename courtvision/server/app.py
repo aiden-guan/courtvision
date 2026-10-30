@@ -7,7 +7,8 @@ to the pipeline through the :class:`Controller` protocol (503 when none is attac
 Security model (local, in-gym server):
 * With ``auth_token`` set, every ``/api/*`` request needs ``Authorization: Bearer <token>``
   (POSTs always; GETs too unless ``ServerConfig.protect_reads=False``, because responses carry
-  rosters of minors) and ``/ws`` needs ``?token=<token>``. Compared in constant time.
+  rosters of minors) and ``/ws`` needs ``?token=<token>``; so may a media read a ``<video>`` element makes
+  (``app.state.require_media``), which cannot send a header. Compared in constant time.
 * Browser requests with a foreign ``Origin`` are refused on unsafe methods and on ``/ws``
   (cross-site WebSocket hijacking / CSRF against a localhost server).
 * Requests whose ``Host`` is a public DNS name are refused unless listed in
@@ -534,11 +535,21 @@ def create_app(
         if cfg.protect_reads:
             require_write(request)
 
+    def require_media(request: Request) -> None:
+        # a <video> element cannot send a header: as for the websocket, the token may come in the query
+        if cfg.protect_reads and not _token_ok(token, _bearer(request) or request.query_params.get("token")):
+            raise HTTPException(401, "missing or invalid bearer token", headers={"WWW-Authenticate": "Bearer"})
+
     app.state.require_read = require_read
     app.state.require_write = require_write
+    app.state.require_media = require_media
 
     _register_reads(app, hub, cfg, controller, Depends(require_read))
     _register_writes(app, hub, cfg, controller, Depends(require_write))
+    from courtvision.server.ask import Asker, register_ask
+
+    app.state.asker = Asker(hub)
+    register_ask(app, app.state.asker, Depends(require_read), Depends(require_write))
     _register_ws(app, hub, cfg, token)
     _register_static(app, static_dir)
     return app

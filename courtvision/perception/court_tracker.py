@@ -30,6 +30,7 @@ needs a check on gold frames.
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 from dataclasses import dataclass
@@ -96,7 +97,13 @@ def line_response(img_bgr: np.ndarray, tophat_px: int = 9, sat_max: int = 70) ->
 
 
 def court_samples(court: CourtSpec, step_ft: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
-    """Points every ``step_ft`` along all court lines and their unit directions (court ft), (N, 2) each."""
+    """Points every ``step_ft`` along all court lines and their unit directions (court ft), (N, 2) each. Cached per
+    (court, step): callers must not modify the arrays."""
+    return _court_samples(court, float(step_ft))
+
+
+@functools.lru_cache(maxsize=32)
+def _court_samples(court: CourtSpec, step_ft: float) -> tuple[np.ndarray, np.ndarray]:
     pts, dirs = [], []
     for line in court.line_segments():
         for (x0, y0), (x1, y1) in zip(line[:-1], line[1:], strict=True):
@@ -109,7 +116,10 @@ def court_samples(court: CourtSpec, step_ft: float = 1.0) -> tuple[np.ndarray, n
                 s = (k + 0.5) / n
                 pts.append((x0 + s * (x1 - x0), y0 + s * (y1 - y0)))
                 dirs.append(u)
-    return np.asarray(pts, dtype=float), np.asarray(dirs, dtype=float)
+    p, d = np.asarray(pts, dtype=float), np.asarray(dirs, dtype=float)
+    p.setflags(write=False)
+    d.setflags(write=False)
+    return p, d
 
 
 def _project(G: np.ndarray, pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

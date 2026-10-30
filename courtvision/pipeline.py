@@ -1121,6 +1121,12 @@ class LiveGame:
         self.perception: Any = None
         self._detector = detector  # a ready Detector (e.g. the CLI's R&D adapter); None = perception.detector
         self._calibration: Calibration | None = None
+        self._auto_center: np.ndarray | None = None  # broadcast camera centre (automatic court registration)
+        self._auto_params: Any = None
+        self._auto_frames: list[tuple[float, np.ndarray]] = []
+        self._auto_tries = 0
+        self._auto_probes = 0  # failed probes at a saved camera centre
+        self._auto_probe_t: float | None = None
         self._pending_roi: dict[str, Any] | None = None
         self._needs_calibration = False
         self._calib_hold = False  # real-time file playback paused until a calibration arrives
@@ -1429,6 +1435,12 @@ class LiveGame:
         if self._executor is not None:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
+        close_perception = getattr(self.perception, "close", None)
+        if callable(close_perception):
+            try:
+                await asyncio.to_thread(close_perception)
+            except Exception:  # noqa: BLE001 - the video source must still be closed
+                log.exception("closing perception failed")
         try:
             self.source.close()
         except Exception:  # noqa: BLE001
@@ -1436,7 +1448,7 @@ class LiveGame:
 
     # ------------------------------------------------------------------ perception
 
-    def _ensure_perception(self) -> Any:
+    def _ensure_perception(self, image: np.ndarray | None = None, t: float = 0.0) -> Any:
         if self.perception is not None:
             return self.perception
         from courtvision.perception.jersey import TemplateJerseyReader
@@ -1450,6 +1462,8 @@ class LiveGame:
             calib = Calibration.load(pc.calibration_path)
         if calib is None and hints:
             calib = self.source.calibration()
+        if calib is None and image is not None and self._auto_court_wanted():
+            calib = self._auto_court(image, t)
         if calib is None:
             if not self._needs_calibration:
                 log.warning("no calibration for %s; POST /api/calibration to start perception", self.source.kind)
@@ -1517,13 +1531,91 @@ class LiveGame:
                 bank = GlyphBank.from_font(lay.fields["game_clock"][3], scale=0.9 * scale,
                                            thickness=max(1, int(round(2 * scale))))
             reader = ScorebugReader(lay, bank)
-        log.info("broadcast perception: court tracking, cut / replay gate, scorebug %s",
+        if reader is None and pc.scorebug_ocr and not self.source.synthetic:
+            from courtvision.perception import vision_ocr
+
+            if vision_ocr.available():
+                from courtvision.perception.scorebug_layout import load_saved_profile
+                from courtvision.perception.scorebug_ocr import ESPN_2024, OCRScorebugReader
+
+                # the layout tools/nba_scan_scorebug.py discovered for this video (next to it or in its game
+                # folder), else the hand-measured ESPN bug
+                reader = OCRScorebugReader(load_saved_profile(self.config.source.path, pc.calibration_path)
+                                           or ESPN_2024)
+        tracker = None
+        if self._auto_center is not None:
+            from courtvision.perception.broadcast_court import BroadcastCourtTracker
+
+            tracker = BroadcastCourtTracker(self.court, calib.image_size, self._auto_center)
+            if self._auto_params is not None:
+                tracker.reset(self._auto_params)
+        log.info("broadcast perception: court tracking (%s), cut / replay gate, scorebug %s",
+                 "automatic" if tracker is not None else "from the operator calibration",
                  "on" if reader is not None else "off (no layout)")
-        return BroadcastPerception(inner, calib, reader, pc.broadcast_config)
+        return BroadcastPerception(inner, calib, reader, pc.broadcast_config, court_tracker=tracker)
+
+    def _auto_court_wanted(self) -> bool:
+        pc = self.config.perception
+        return bool(pc.auto_court and pc.broadcast == "on" and not self.source.synthetic and self._auto_tries < pc.auto_court_tries)
+
+    def _auto_court(self, image: np.ndarray, t: float) -> Calibration | None:
+        """Automatic court registration of a broadcast game camera (``perception/broadcast_court.py``): frames are
+        collected every ``auto_court_every_s``; with ``auto_court_frames`` of them the camera centre is estimated
+        (a few seconds, once). A centre saved next to the calibration file is reused."""
+        from courtvision.perception.broadcast_court import estimate_center
+        from courtvision.perception.court_search import CameraParams
+
+        pc = self.config.perception
+        saved = Path(pc.calibration_path).with_name("broadcast_camera.json") if pc.calibration_path else None
+        size = (int(image.shape[1]), int(image.shape[0]))
+        if self._auto_center is None and saved is not None and saved.is_file():
+            try:
+                d = json.loads(saved.read_text())
+                self._auto_center = np.asarray(d["center"], float)
+            except (ValueError, KeyError, OSError):
+                log.warning("could not read %s", saved)
+        if self._auto_center is not None:
+            from courtvision.perception.broadcast_court import BroadcastCourtTracker
+
+            # one probe (a full search at the known centre) per auto_court_every_s; every auto_court_frames failed
+            # probes count as one try, the time budget of a centre estimate
+            if self._auto_probe_t is not None and t - self._auto_probe_t < pc.auto_court_every_s:
+                return None
+            self._auto_probe_t = t
+            probe = BroadcastCourtTracker(self.court, size, self._auto_center)
+            fix = probe.update(image, cut=True)
+            if fix.params is None:
+                self._auto_probes += 1
+                if self._auto_probes % max(1, pc.auto_court_frames) == 0:
+                    self._auto_tries += 1
+                return None
+            self._auto_params = fix.params
+            return Calibration(homography=fix.homography(size), image_size=size, league=self.court.league)
+        if self._auto_frames and t - self._auto_frames[-1][0] < pc.auto_court_every_s:
+            return None
+        self._auto_frames.append((t, image.copy()))
+        if len(self._auto_frames) < pc.auto_court_frames:
+            return None
+        self._auto_tries += 1
+        log.info("estimating the broadcast camera from %d frames", len(self._auto_frames))
+        center, cams = estimate_center([f for _, f in self._auto_frames], self.court)
+        last = next((c for c in reversed(cams) if c is not None), None)
+        self._auto_frames = self._auto_frames[-max(1, pc.auto_court_frames // 2):]
+        if center is None or last is None:
+            log.info("no game camera found yet")
+            return None
+        self._auto_center = center
+        if saved is not None:
+            saved.write_text(json.dumps({"center": [float(v) for v in center]}))
+        fix_params = CameraParams(center, last.pan, last.tilt, last.roll, last.f)
+        self._auto_params = fix_params
+        log.info("broadcast camera centre %s", np.round(center, 1))
+        return Calibration(homography=Homography(np.linalg.inv(fix_params.G(size))), image_size=size,
+                           league=self.court.league)
 
     def _perceive(self, image: np.ndarray, frame_idx: int, t: float) -> tuple[FrameState, dict[str, float]] | None:
         with self._perc_lock:
-            pipe = self._ensure_perception()
+            pipe = self._ensure_perception(image, t)
             if pipe is None:
                 return None
             a = time.perf_counter()

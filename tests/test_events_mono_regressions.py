@@ -658,3 +658,56 @@ def test_ball_out_after_an_uncorroborated_change_of_control_is_no_turnover() -> 
     ev = live(run_engine(s.frames_mono()).events)
     assert not live(ev, EventKind.TURNOVER) and not live(ev, EventKind.STEAL)
     assert all(e.team is Team.HOME for e in live(ev, EventKind.POSSESSION))
+
+
+# ---------------------------------------------------------------------------- broadcast: steals and turnovers
+# (NBA broadcast Q1, LAL @ GSW 2024-12-25: 9 steals called, none true)
+
+
+@pytest.mark.parametrize("stolen", [True, False])
+def test_make_recredited_after_play_went_on_makes_the_other_teams_gain_its_inbound(stolen: bool) -> None:
+    """Defect (broadcast Q1: 6 of 9 steal FPs, 344.1-720.4 s): a make was called missed until the lagging
+    scorebug showed it, the ball dropping through the net was the scoring team's rebound, and the other team's
+    inbound then read as a steal. When the scoreboard re-credits the make while play seems to go on, the other
+    team's steal since the make is retracted (its POSSESSION is the one after a score), or, none yet, its next
+    gain is the inbound."""
+    from courtvision.events.reconcile import ShotEntry
+
+    eng = EventEngine(court_for("nba"))
+    eng._mono = True
+    eng._set_possession(Team.HOME, 9.0, 270, "home-1", "other")
+    entry = ShotEntry("s1", Team.HOME, "home-1", 2, "e-att", 10.0, result_t=11.0)
+    if stolen:  # the other team's "steal" 1.5 s after the make, before the scoreboard showed it
+        ids = [eng._emit(EventKind.STEAL, 12.5, 375, team=Team.AWAY, player_id="away-1", other="home-2").event_id,
+               eng._emit(EventKind.TURNOVER, 12.5, 375, team=Team.HOME, player_id="home-2").event_id,
+               eng._set_possession(Team.AWAY, 12.5, 375, "away-1", "steal").event_id]
+        eng._steal_log.append((12.5, Team.AWAY, ids))
+    eng._inbound_not_steal(entry)
+    ev = live(eng.events)
+    assert not live(ev, EventKind.STEAL) and not live(ev, EventKind.TURNOVER)
+    if stolen:
+        assert [e.attrs["cause"] for e in live(ev, EventKind.POSSESSION) if e.team is Team.AWAY] == ["made_shot"]
+        assert eng._inbound_after is None
+    else:
+        assert eng._inbound_after == (Team.HOME, 11.0)
+
+
+def test_unseen_make_drops_the_turnover_inferred_from_the_inbound_after_it() -> None:
+    """Defect (broadcast Q1, 586.5 s): the ball went out, the other team threw it in and an out-of-bounds turnover
+    was inferred from that throw-in; the scoreboard then showed a make nobody saw just after the ball went out.
+    Its POSSESSION was re-read as the one after a score but the turnover inferred from it stayed. The turnover goes
+    with the inbound it was inferred from."""
+    from courtvision.events.engine import _Dead
+    from courtvision.events.reconcile import ShotEntry
+
+    eng = EventEngine(court_for("nba"))
+    eng._mono = True
+    eng._set_possession(Team.AWAY, 1.0, 30, "away-1", "defensive_rebound")
+    d = _Dead(cause="oob", since_t=2.5, since_frame=75, entered_t=2.5)
+    d.last_team, d.last_holder, d.out_t, d.out_frame = Team.AWAY, "away-1", 2.5, 75
+    eng._inferred_turnover(d, Team.HOME, 3.6, 108, "home-1")
+    assert one(live(eng.events), EventKind.TURNOVER).team is Team.AWAY
+    eng._after_unseen_make(Team.AWAY, 2.9, ShotEntry("s1", Team.AWAY, "away-1", 2, "e-att", 2.5, result_t=2.9))
+    ev = live(eng.events)
+    assert not live(ev, EventKind.TURNOVER)
+    assert [e.attrs["cause"] for e in live(ev, EventKind.POSSESSION) if e.team is Team.HOME] == ["made_shot"]
