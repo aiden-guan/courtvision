@@ -239,3 +239,75 @@ def test_the_recording_streams_in_ranges_for_watching_with_the_token_in_the_quer
         assert full.status_code == 200 and full.content == video_bytes
         for missing in ("0" * 32, "g" * 32, "workspace"):
             assert client.get(f"/api/studio/video/{missing}", headers=AUTH).status_code == 404
+
+
+def test_video_titles_read_like_names():
+    assert studio.video_title("YTDown.com_YouTube_Media_5U9k1U6nN-g_Lakers-vs-Warriors-WILD-Christmas-Day-Ending-"
+                              "NBA-Classic-Game_001_1080p.mp4") == "Lakers vs Warriors WILD Christmas Day Ending NBA Classic Game"
+    assert studio.video_title("2024-12-25 LAL-GSW.mp4") == "2024-12-25 LAL GSW"
+    assert studio.video_title("basketball-sample.mp4") == "Basketball sample"
+    assert studio.video_title(".mp4") == ".mp4" or studio.video_title(".mp4")  # never empty
+
+
+def test_library_keeps_one_copy_renames_and_deletes(app, video_bytes, tmp_path):
+    from courtvision.nba.results import fingerprint
+
+    with TestClient(app) as client:
+        first = client.post("/api/studio/upload?name=YTDown.com_YouTube_Media_abcdefghijk_Big-Game_001_720p.avi",
+                            content=video_bytes, headers=AUTH).json()
+        assert first["title"] == "Big Game" and not first.get("duplicate")
+        again = client.post("/api/studio/upload?name=copy.avi", content=video_bytes, headers=AUTH).json()
+        assert again["duplicate"] and again["id"] == first["id"]  # the same video is kept once
+        root = app.state.workspace.root
+        assert len(list(root.glob("*/video.json"))) == 1
+        size, digest = fingerprint(root / first["id"] / "source.video")
+        found = client.post("/api/studio/find", json={"bytes": size, "digest": digest}, headers=AUTH).json()
+        assert found["video"]["id"] == first["id"]
+        assert client.post("/api/studio/find", json={"bytes": size, "digest": "0" * 40}, headers=AUTH).json() == {"video": None}
+
+        renamed = client.post(f"/api/studio/video/{first['id']}/rename", json={"title": "  Finals   game 7 "}, headers=AUTH)
+        assert renamed.status_code == 200 and renamed.json()["title"] == "Finals game 7"
+        assert client.get("/api/studio", headers=AUTH).json()["videos"][0]["title"] == "Finals game 7"
+
+        # a live analysis of it, finished: its saved results belong to the video
+        client.post("/api/studio/start", headers=AUTH, json={"video_id": first["id"], "broadcast": False})
+        wait_for(client, lambda s: (s["status"] or {}).get("finished"), seconds=10)
+        time.sleep(0.3)
+        (root / first["id"] / "replays" / "run1" / "chunks").mkdir(parents=True)
+        (root / first["id"] / "replays" / "run1" / "status.json").write_text('{"state": "done"}')
+        lib = client.get("/api/studio/library", headers=AUTH).json()
+        (video,) = lib["videos"]
+        assert video["open"] and video["saved_runs"] == 1 and video["replay_bytes"] > 0
+        assert video["disk_bytes"] >= len(video_bytes) and video["used_by"] == [] and video["copies"] == []
+
+        assert client.delete(f"/api/studio/replay/{first['id']}", headers=AUTH).json()["freed_bytes"] > 0
+        assert not (root / first["id"] / "replays").exists()
+
+        # a game folder that names this file keeps it
+        game = tmp_path / "runs" / "nba" / "2024-01-01-AAA-BBB"
+        game.mkdir(parents=True)
+        (game / "game.json").write_text(json.dumps({"video": str(root / first["id"] / "source.video")}))
+        refused = client.delete(f"/api/studio/video/{first['id']}", headers=AUTH)
+        assert refused.status_code == 409 and "2024-01-01-AAA-BBB" in refused.json()["detail"]
+        (game / "game.json").unlink()
+
+        gone = client.delete(f"/api/studio/video/{first['id']}", headers=AUTH)
+        assert gone.status_code == 200 and gone.json()["freed_bytes"] >= len(video_bytes)
+        state = client.get("/api/studio", headers=AUTH).json()
+        assert state["active"] is None and state["videos"] == []  # the open video was closed first
+        assert not (root / first["id"]).exists() and list((root / "analyses").glob("*/")) == []
+        assert client.delete(f"/api/studio/video/{first['id']}", headers=AUTH).status_code == 404
+        assert client.delete("/api/studio/video/..%2F..", headers=AUTH).status_code in (404, 405)
+        assert client.delete(f"/api/studio/video/{first['id']}").status_code == 401
+
+
+def test_saved_results_of_the_demo_and_old_runs_are_deleted_together(app):
+    with TestClient(app) as client:
+        root = app.state.workspace.root
+        for run in ("a" * 32, "b" * 32):
+            (root / "analyses" / run).mkdir(parents=True)
+            (root / "analyses" / run / "events.jsonl").write_text("{}\n")
+        lib = client.get("/api/studio/library", headers=AUTH).json()
+        assert lib["other_runs"] == 2 and lib["other_bytes"] == 6
+        assert client.delete("/api/studio/analyses", headers=AUTH).json() == {"deleted_runs": 2, "freed_bytes": 6}
+        assert list((root / "analyses").glob("*/")) == []

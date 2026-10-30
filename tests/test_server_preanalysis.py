@@ -165,9 +165,10 @@ def test_an_upload_is_analysed_ahead_and_replayed_from_any_moment(app, tmp_path)
 
 def test_a_queued_analysis_can_be_cancelled_and_a_running_one_stopped(app, tmp_path):
     data = write_video(tmp_path / "clip.avi", 600).read_bytes()  # 20 s: still running when stopped
+    other = write_video(tmp_path / "clip2.avi", 601).read_bytes()  # another video (a copy would be kept once)
     with TestClient(app) as client:
         first = client.post("/api/studio/upload?name=One.avi", content=data, headers=AUTH).json()
-        second = client.post("/api/studio/upload?name=Two.avi", content=data, headers=AUTH).json()
+        second = client.post("/api/studio/upload?name=Two.avi", content=other, headers=AUTH).json()
         assert second["replay"]["state"] == "queued"  # one at a time
         assert client.post(f"/api/studio/replay/{second['id']}/stop", headers=AUTH).json()["state"] != "queued"
         wait_replay(client, first["id"], ("running",))

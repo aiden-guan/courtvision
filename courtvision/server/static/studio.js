@@ -27,9 +27,10 @@
     return `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
   };
   const changed = () => window.dispatchEvent(new CustomEvent("cv-studio"));
-  async function api(path, data) {
+  async function api(path, data, method) {
     const response = await fetch(path, {
-      method: data === undefined ? "GET" : "POST", headers: headers(data === undefined ? {} : { "Content-Type": "application/json" }),
+      method: method || (data === undefined ? "GET" : "POST"),
+      headers: headers(data === undefined ? {} : { "Content-Type": "application/json" }),
       ...(data === undefined ? {} : { body: JSON.stringify(data) }), cache: "no-store",
     });
     let result;
@@ -53,13 +54,145 @@
   function openDialog() {
     if (!isStudio) { notify("Open the video workspace with: courtvision studio --open"); return; }
     if (!$("studio-dialog").open) $("studio-dialog").showModal();
+    loadLibrary();
+  }
+  const titleOf = video => video?.title || (video?.name || "Game video").replace(/\.[^.]+$/, "");
+  const size = bytes => !Number.isFinite(bytes) ? "" : bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` :
+    bytes >= 1024 ** 2 ? `${Math.round(bytes / 1024 ** 2)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  function replayText(replay, duration) {
+    const st = replay?.state;
+    if (st === "done") return { text: "Replay ready", tone: "good" };
+    if (st === "running" || st === "loading") {
+      const pct = duration ? Math.floor(Math.min(100, (replay.t_done || 0) / duration * 100)) : 0;
+      return { text: `Preparing replay · ${pct}%`, tone: "busy" };
+    }
+    if (st === "queued") return { text: "Replay queued", tone: "busy" };
+    if ((st === "stopped" || st === "failed") && replay.t_done > 0) return { text: `Replay up to ${clock(replay.t_done)}`, tone: "idle" };
+    return { text: "No replay yet", tone: "idle" };
+  }
+
+  // ------------------------------------------------------------------ the video library (the Videos dialog)
+  let library = null, confirming = "", renaming = "";
+  async function loadLibrary() {
+    try { library = await api("api/studio/library"); renderLibrary(); }
+    catch (error) { uploadStatus(error.message, true); }
+  }
+  function button(label, cls, onClick, title = "") {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = cls; b.textContent = label; if (title) b.title = title;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+  function renderLibrary() {
+    const videos = library?.videos || [];
+    $("library").hidden = !videos.length;
+    $("library-add-title").hidden = !videos.length;
+    text("library-total", videos.length ? `${videos.length} video${videos.length === 1 ? "" : "s"} · ${size(library.total_bytes)} on this Mac` : "");
+    const byId = new Map(videos.map(v => [v.id, v]));
+    const rows = videos.map(video => {
+      const li = document.createElement("li"), main = document.createElement("div"), meta = document.createElement("p");
+      const actions = document.createElement("div");
+      li.className = "library-row"; li.dataset.video = video.id;
+      main.className = "library-main"; actions.className = "library-actions";
+      if (renaming === video.id) {
+        const input = document.createElement("input");
+        input.type = "text"; input.maxLength = 120; input.value = titleOf(video); input.className = "library-rename";
+        input.setAttribute("aria-label", "Video name");
+        const save = async () => {
+          const value = input.value.trim(); renaming = "";
+          if (value && value !== titleOf(video)) {
+            try { await api(`api/studio/video/${video.id}/rename`, { title: value }); }
+            catch (error) { window.CV?.toast(error.message, "error"); }
+          }
+          await loadLibrary(); poll(false);
+        };
+        input.addEventListener("keydown", e => {
+          if (e.key === "Enter") { e.preventDefault(); save(); }
+          if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); renaming = ""; renderLibrary(); }
+        });
+        input.addEventListener("blur", save);
+        main.append(input); setTimeout(() => { input.focus(); input.select(); });
+      } else {
+        const name = document.createElement("strong");
+        name.textContent = titleOf(video); name.title = video.name || "";
+        main.append(name);
+      }
+      const replay = replayText(video.replay, video.duration_s);
+      const status = document.createElement("span");
+      status.className = "library-tag"; status.dataset.tone = replay.tone; status.textContent = replay.text;
+      const bits = [clock(video.duration_s), size(video.disk_bytes)];
+      meta.className = "library-meta"; meta.textContent = bits.filter(Boolean).join(" · ") + " · ";
+      meta.append(status);
+      if (video.open) { const t = document.createElement("span"); t.className = "library-tag"; t.dataset.tone = "good"; t.textContent = "Open now"; meta.append(" ", t); }
+      if (video.copies?.length) {
+        const older = video.copies.map(id => byId.get(id)).filter(Boolean).filter(w => (w.created || 0) < (video.created || 0));
+        if (older.length) {
+          const t = document.createElement("span"); t.className = "library-tag"; t.dataset.tone = "warn";
+          t.textContent = "Duplicate"; t.title = "The same video file was added more than once. Deleting a duplicate frees its space.";
+          meta.append(" ", t);
+        }
+      }
+      if (video.used_by?.length) {
+        const t = document.createElement("span"); t.className = "library-tag"; t.dataset.tone = "idle";
+        t.textContent = "Kept for research"; t.title = `The game folder ${video.used_by.join(", ")} (runs/nba) uses this file, so it cannot be deleted here.`;
+        meta.append(" ", t);
+      }
+      main.append(meta);
+      if (confirming === video.id) {
+        const ask = document.createElement("p");
+        ask.className = "library-confirm";
+        ask.textContent = `Delete this video and everything made from it (${size(video.disk_bytes + (video.saved_bytes || 0))})? This cannot be undone.`;
+        main.append(ask);
+        actions.append(button("Keep", "btn btn-sm", () => { confirming = ""; renderLibrary(); }),
+          button("Delete", "btn btn-sm btn-danger", () => deleteVideo(video)));
+      } else {
+        actions.append(button(video.open ? "Showing" : "Open", "btn btn-sm btn-primary", () => openVideo(video.id)));
+        actions.lastChild.disabled = !!video.open;
+        const more = document.createElement("div");
+        more.className = "library-more";
+        more.append(button("Rename", "link-btn", () => { renaming = video.id; confirming = ""; renderLibrary(); }));
+        if (video.replay_bytes > 0 && !["running", "loading", "queued"].includes(video.replay?.state)) {
+          more.append(button("Delete replay", "link-btn", () => deleteReplay(video),
+            `Frees ${size(video.replay_bytes)}. The video stays; you can prepare the replay again.`));
+        }
+        const del = button("Delete", "link-btn danger", () => { confirming = video.id; renaming = ""; renderLibrary(); });
+        if (video.used_by?.length) { del.disabled = true; del.title = "Kept: a research game folder uses this file."; }
+        more.append(del);
+        actions.append(more);
+      }
+      li.append(main, actions);
+      return li;
+    });
+    $("library-list").replaceChildren(...rows);
+    const extra = library?.other_runs || 0;
+    $("library-extra").hidden = !extra;
+    text("library-extra-text", extra ? `Saved results of ${extra} earlier live analys${extra === 1 ? "is" : "es"} (demo or older runs) · ${size(library.other_bytes)}` : "");
+  }
+  async function openVideo(id) {
+    if ($("studio-dialog").open) $("studio-dialog").close();
+    await queueStart(id);
+  }
+  async function deleteVideo(video) {
+    confirming = "";
+    try {
+      const result = await api(`api/studio/video/${video.id}`, undefined, "DELETE");
+      window.CV?.toast(`Deleted “${titleOf(video)}” · ${size(result.freed_bytes)} freed`);
+    } catch (error) { window.CV?.toast(error.message, "error"); }
+    await loadLibrary(); poll(false);
+  }
+  async function deleteReplay(video) {
+    try {
+      const result = await api(`api/studio/replay/${video.id}`, undefined, "DELETE");
+      window.CV?.toast(`Replay deleted · ${size(result.freed_bytes)} freed`);
+    } catch (error) { window.CV?.toast(error.message, "error"); }
+    await loadLibrary(); poll(false);
   }
   function chooseFile(file) {
     if (!file || busy) return;
     if (file.size > 8 * 1024 ** 3) { uploadStatus("This video is over 8 GB. Trim it into shorter clips.", true); return; }
     selected = file;
     text("studio-filename", file.name);
-    text("studio-file-detail", `${(file.size / 1024 ** 2).toFixed(1)} MB · ready to analyse`);
+    text("studio-file-detail", `${size(file.size)} · ready to add`);
     $("studio-start").disabled = false;
     uploadStatus("");
   }
@@ -99,7 +232,10 @@
     if (!vision.calibrated) setVision("vision-court", "Needs setup", "warn");
     else if (vision.gate && vision.gate !== "live") setVision("vision-court", "Out of view", "warn");
     else setVision("vision-court", "Mapped", "good");
-    text("studio-throughput", Number.isFinite(vision.fps) ? `${vision.fps.toFixed(1)} fps · ${Math.round(vision.inference_ms)} ms` : "Analysing");
+    const fps = workspace?.active?.fps;
+    text("studio-throughput", !Number.isFinite(vision.fps) ? "Analysing" : fps > 0 ?
+      `Analysing at ${(vision.fps / fps).toFixed(2)}× real time` : `Analysing ${vision.fps.toFixed(1)} frames a second`);
+    $("studio-throughput").title = Number.isFinite(vision.fps) ? `${vision.fps.toFixed(1)} frames a second · ${Math.round(vision.inference_ms)} ms a frame` : "";
     renderTracks(vision.tracks || []);
   }
   function setFocus(id) {
@@ -149,27 +285,33 @@
     const model = data.model;
     const ready = model.state === "ready", loading = model.state === "loading", failed = model.state === "error";
     $("sys-detector").dataset.tone = ready ? "good" : loading ? "busy" : failed ? "bad" : "idle";
-    text("sys-detector-label", ready ? (model.name || "Detector ready") : loading ? "Preparing detector…" : failed ? "Detector setup failed" : "Detector not prepared");
+    const nba = (model.name || "").startsWith("NBA"), coco = (model.name || "").includes("COCO");
+    text("sys-detector-label", ready ? (model.name || "Detector ready") : loading ? "Loading the detector…" : failed ? "Detector setup failed" :
+      nba ? "NBA detector · loads when needed" : "Detector not prepared");
     $("sys-detector").title = model.error || model.name || "";
-    text("studio-model-note", ready ? (model.name.includes("COCO") ? "Local detector ready. Generic person and ball detections: review results before using them as statistics." : "Configured local detector ready. Review its detections on this footage.") :
-      loading ? "Preparing the local detector. The first download is about 350 MB." :
-      model.error || "First use prepares a local detector (about 350 MB). Generic player and ball detections need review.");
+    text("studio-model-note", ready ? (coco ? "Generic detector: person and ball detections need checking before you use them as statistics." :
+      nba ? "NBA detector ready. Plays are estimates: check the flagged ones." : "Configured detector ready. Check its detections on this footage.") :
+      loading ? (coco ? "Getting the detector ready. The first download is about 350 MB." : "Loading the detector: a few seconds.") :
+      model.error || (nba ? "The NBA detector loads when you open a video: a few seconds, nothing to download." :
+        "The first video downloads a generic detector (about 350 MB). Its player and ball detections need checking."));
     const jevMode = data.status?.jev;
     const claude = !!data.capabilities?.claude;
     text("studio-cloud", jevMode === "live" ? "Jev live · local vision" : data.capabilities?.jev ? (claude ? "Jev and Claude keys set" : "Jev key set · next session") : claude ? "Claude key set" : "Local only · no cloud keys");
     $("sys-cloud").dataset.tone = jevMode === "live" || claude || data.capabilities?.jev ? "good" : "idle";
   }
   function renderRecent(data) {
-    const key = JSON.stringify((data.videos || []).map(v => v.id));
+    const key = JSON.stringify((data.videos || []).map(v => [v.id, titleOf(v), replayText(v.replay, v.duration_s).text]));
     if (key === lastVideoKey) return;
     lastVideoKey = key;
     $("studio-video-list").replaceChildren();
     for (const video of (data.videos || []).slice(0, 6)) {
       const button = document.createElement("button");
-      button.type = "button"; button.className = "recent-video"; button.title = `Open ${video.name}`;
+      const replay = replayText(video.replay, video.duration_s);
+      button.type = "button"; button.className = "recent-video"; button.title = `Open ${titleOf(video)} · ${replay.text}`;
+      button.dataset.replay = replay.tone;
       const thumb = document.createElement("span"), name = document.createElement("span"), duration = document.createElement("span");
       thumb.className = "rv-thumb"; thumb.setAttribute("aria-hidden", "true");
-      name.className = "rv-name"; name.textContent = video.name.replace(/\.[^.]+$/, "");
+      name.className = "rv-name"; name.textContent = titleOf(video);
       duration.className = "rv-dur"; duration.textContent = clock(video.duration_s);
       button.append(thumb, name, duration); button.addEventListener("click", () => queueStart(video.id));
       $("studio-video-list").append(button);
@@ -196,11 +338,11 @@
     $("studio-calibrate").disabled = !active;
     document.body.classList.toggle("has-session", !!active);
     if (active) {
-      text("studio-title", active.name.replace(/\.[^.]+$/, ""));
+      text("studio-title", titleOf(active));
       text("monitor-source", active.demo ? "Simulator demo" : `${active.width}×${active.height} · ${Number(active.fps).toFixed(0)} fps`);
       text("studio-duration", clock(active.duration_s));
       $("monitor-badge").hidden = false;
-      text("monitor-badge", active.demo ? "SIMULATOR DEMO" : "COMPUTER VISION · ESTIMATED");
+      text("monitor-badge", active.demo ? "SIMULATOR DEMO" : "ESTIMATED FROM VIDEO");
       if (active.run_id !== activeId) {
         activeId = active.run_id; processedT = 0;
         focusedTrack = ""; $("studio-clear-focus").hidden = true; renderTracks([]);
@@ -263,7 +405,7 @@
     text("sys-clock", time);
     text("feed-clock", `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${time}`);
   }
-  async function poll() {
+  async function poll(again = true) {
     try {
       const data = await api("api/studio");
       renderWorkspace(data);
@@ -281,7 +423,7 @@
         $("studio-empty").hidden = true;
         changed();
       }
-    } finally { if (!stopped && isStudio) setTimeout(poll, 1500); }
+    } finally { if (again && !stopped && isStudio) setTimeout(poll, 1500); }
   }
   async function monitor() {
     try {
@@ -314,6 +456,16 @@
       lastMonitorKey = monitorKey;
     } catch { /* Keep the last frame during reconnect. */ }
     finally { frameBusy = false; if (!stopped) setTimeout(monitor, document.hidden ? 2000 : lastStatus?.finished || lastStatus?.paused ? 500 : 125); }
+  }
+  // A video already in the library (same size, first and last MiB: nba/results.fingerprint), before copying it again.
+  async function findCopy(file) {
+    try {
+      if (!crypto?.subtle) return null;
+      const probe = 1 << 20, head = file.slice(0, probe), tail = file.slice(Math.max(0, file.size - probe), file.size);
+      const bytes = await new Blob([head, tail]).arrayBuffer();
+      const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-1", bytes)), b => b.toString(16).padStart(2, "0")).join("");
+      return (await api("api/studio/find", { bytes: file.size, digest })).video || null;
+    } catch { return null; }
   }
   function upload(file) {
     return new Promise((resolve, reject) => {
@@ -405,6 +557,14 @@
   };
 
   $("studio-open").addEventListener("click", openDialog);
+  $("studio-manage").addEventListener("click", openDialog);
+  $("library-extra-delete").addEventListener("click", async () => {
+    try {
+      const result = await api("api/studio/analyses", undefined, "DELETE");
+      window.CV?.toast(`Deleted ${result.deleted_runs} saved result${result.deleted_runs === 1 ? "" : "s"} · ${size(result.freed_bytes)} freed`);
+    } catch (error) { window.CV?.toast(error.message, "error"); }
+    await loadLibrary();
+  });
   $("studio-clear-focus").addEventListener("click", () => setFocus(focusedTrack));
   $("studio-empty-open").addEventListener("click", openDialog);
   $("studio-close").addEventListener("click", () => $("studio-dialog").close());
@@ -416,8 +576,11 @@
     busy = true; $("studio-start").disabled = true;
     try {
       if (workspace?.model.state !== "ready") await api("api/studio/prepare", {});
-      const video = await upload(selected);
-      busy = false;
+      const known = await findCopy(selected);
+      if (known) uploadStatus(`“${titleOf(known)}” is already in your videos. Opening it…`);
+      const video = known || await upload(selected);
+      if (video.duplicate) window.CV?.toast(`“${titleOf(video)}” was already in your videos: opened it, no second copy kept.`);
+      busy = false; selected = null;
       await queueStart(video.id);
     } catch (error) { busy = false; $("studio-start").disabled = false; uploadStatus(error.message, true); }
   });

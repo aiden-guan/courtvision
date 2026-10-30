@@ -121,7 +121,7 @@
   const TEAMS = new Set(["home", "away"]);
   const FILTERS = new Set(["key", "all", "review", "scoring"]);
   // commands a card may offer as buttons (static/shell.js runs them)
-  const COMMAND = /^(nav:(live|stats|board|operator|calibration|roi|lab)|footage:(load|demo|export)|court:map|plays:(review|add)|playback:(pause|resume)|lab:(refresh|run|copy-next)|player:[\w.:-]{1,64}|ask:[^\n]{1,200})$/;
+  const COMMAND = /^(nav:(live|stats|board|operator|calibration|roi|lab)|footage:(load|demo|export|open:[a-f0-9]{32})|court:map|view:replay|plays:(review|add)|playback:(pause|resume)|lab:(refresh|run|copy-next)|player:[\w.:-]{1,64}|ask:[^\n]{1,200})$/;
   const KINDS = new Set(["text", "note", "metrics", "duel", "leaders", "spark", "shots", "plays", "player", "kv", "steps", "actions", "code", "tracking", "decisions", "insights", "narration", "lab"]);
 
   function cleanBlock(b) {
@@ -624,12 +624,14 @@
     const st = window.CVStudio || {}, ws = st.workspace, status = st.status || {}, vision = st.vision || {};
     const active = ws && ws.active, out = [];
     const err = (status && status.error) || (ws && ws.error);
-    if (err) out.push(["error", spec("Analysis stopped", err, [{ type: "actions", items: [{ label: "Load footage", command: "footage:load", primary: true }] }], { icon: "alert", tone: "bad" })]);
+    if (err) out.push(["error", spec("Analysis stopped", err, [{ type: "actions", items: [{ label: "Open a video", command: "footage:load", primary: true }] }], { icon: "alert", tone: "bad" })]);
     if (ws && ws.model && ws.model.state === "loading") out.push(["model", spec("Preparing the detector", "The first run downloads about 350 MB. Your video opens when it is ready.", [], { icon: "bolt", tone: "ember" })]);
     if (st.isStudio !== false && ws && !active) {
-      out.push(["welcome", spec("Start with footage", "Everything runs on this Mac. The demo game shows the whole workspace in a few seconds.", [
-        { type: "steps", items: [{ title: "Load footage", text: "MP4, MOV, MKV or AVI, up to 8 GB.", state: "now" }, { title: "Track people and the ball", state: "todo" }, { title: "Map the court", text: "Unlocks plays, the shot chart and the box score.", state: "todo" }] },
-        { type: "actions", items: [{ label: "Load footage", command: "footage:load", primary: true }, { label: "Run the demo game", command: "footage:demo" }] }], { icon: "film", tone: "ember" })]);
+      const last = (ws.videos || [])[0];
+      out.push(["welcome", spec(last ? "Pick up where you left off" : "Start with a game video", "Everything runs on this Mac. Broadcast games find the court by themselves; other footage needs four court points marked once.", [
+        { type: "steps", items: [{ title: "Add or open a video", text: "MP4, MOV, MKV or AVI, up to 8 GB.", state: "now" }, { title: "Players, the ball and plays are tracked", state: "todo" }, { title: "Prepare a replay to watch it all at full speed", state: "todo" }] },
+        { type: "actions", items: last ? [{ label: `Open ${last.title || last.name}`, command: `footage:open:${last.id}`, primary: true }, { label: "All videos", command: "footage:load" }]
+          : [{ label: "Add a video", command: "footage:load", primary: true }, { label: "Run the demo game", command: "footage:demo" }] }], { icon: "film", tone: "ember" })]);
     }
     if (active && active.demo) out.push(["demo", spec("Simulator demo", "Synthetic tracking and plays that exercise every view. Nothing here is camera evidence.", [], { icon: "info", tone: "info" })]);
     else if (active && status.needs_calibration) {
@@ -662,7 +664,9 @@
     }
     const fps = vision.fps, src = active && Number(active.fps);
     if (active && !active.demo && isNum(fps) && src && fps < src * 0.5 && !status.paused && !status.finished) {
-      out.push(["slow", spec("Running behind real time", `Analysis runs at ${fps.toFixed(1)} fps against a ${src.toFixed(0)} fps source, so it falls behind the clock. Every frame is still processed.`, [], { icon: "clock", tone: "warn" })]);
+      const ready = ws && (ws.replay || {}).state === "done";
+      out.push(["slow", spec("Slower than the video", `The live analysis runs at ${(fps / src).toFixed(2)}× real time, so the feed plays slowly; every frame is still analysed. ${ready ? "The replay is ready: it plays the whole game at full speed." : "A replay, prepared under the feed, plays the whole game at full speed."}`,
+        ready ? [{ type: "actions", items: [{ label: "Play the replay", command: "view:replay", primary: true }] }] : [], { icon: "clock", tone: "warn" })]);
     }
     return out.slice(0, 4);
   }

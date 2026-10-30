@@ -143,7 +143,7 @@
     if (t > k * CHUNK_S + CHUNK_S - 20) load(k + 1);
     if (!done() && t > frontier() - 0.5 && !$("watch-video").paused) {  // past what has been analysed so far
       $("watch-video").pause();
-      if (!held) { held = true; window.CV?.toast?.(`Analysed up to ${clock(frontier())} so far. It carries on in the background.`); }
+      if (!held) { held = true; window.CV?.toast?.(`The replay is ready up to ${clock(frontier())} so far. It carries on in the background.`); }
     } else if (t < frontier() - 5) held = false;
     if (!pending) {
       if (!Number.isFinite(lastT) || t < lastT - 0.05 || t > lastT + JUMP_S) resync(t);
@@ -182,40 +182,43 @@
     const pctDone = dur ? Math.min(100, frontier() / dur * 100) : 0;
     const every = st && st.stride > 1 ? `every ${st.stride === 2 ? "2nd" : "3rd"} frame` : "every frame";
     let title, detail, action = "", tone = "idle";
+    const left = dur ? ` · about ${span(dur / 0.65)} for this video` : "";
     if (state === "running" || state === "loading") {
       tone = "busy";
-      title = state === "loading" ? "Preparing to analyse ahead" : `Analysing ahead · ${Math.floor(pctDone)}%`;
+      title = state === "loading" ? "Getting the replay ready" : `Preparing the replay · ${Math.floor(pctDone)}%`;
       detail = state === "loading" ? "Loading the detector for the background analysis." :
-        `Replay is ready up to ${clock(frontier())}${st.eta_s ? ` · about ${span(st.eta_s)} left` : ""} · ${every}`;
-      action = "Stop";
+        `Replay works up to ${clock(frontier())}${st.eta_s ? ` · about ${span(st.eta_s)} left` : ""} · ${every}`;
+      action = "stop";
     } else if (state === "queued") {
-      tone = "busy"; title = "Waiting to analyse ahead"; detail = "Another video is being analysed first."; action = "Cancel";
+      tone = "busy"; title = "Replay waiting its turn"; detail = "Another video is being prepared first."; action = "cancel";
     } else if (state === "done") {
-      tone = "good"; title = "Analysed ahead"; detail = `Replay plays the whole video at full speed with the analysis · ${every}`;
-      action = window.CVPlayback?.mode === "replay" ? "" : "Replay";
+      tone = "good"; title = "Replay ready"; detail = `The whole video plays at full speed with the analysis · ${every}`;
+      action = window.CVPlayback?.mode === "replay" ? "" : "play";
     } else if (state === "stopped" || state === "failed") {
       tone = state === "failed" ? "bad" : "idle";
-      title = `${state === "failed" ? "Analysis ahead failed" : "Analysis ahead stopped"} at ${clock(frontier())}`;
-      detail = `${st.error ? `${st.error} ` : ""}Replay works up to there.`; action = "Analyse again";
+      title = `${state === "failed" ? "Replay preparation failed" : "Replay ready up to"} ${clock(frontier())}`;
+      detail = `${st.error ? `${st.error} ` : ""}Prepare it again to cover the whole video${left}.`; action = "start";
     } else {
-      title = "Not analysed ahead";
-      detail = "Analyse the whole video in the background, then replay it at full speed with the analysis. This takes a while: it runs at the analysis's own pace.";
-      action = "Analyse ahead";
+      title = "No replay yet";
+      detail = `Prepare a replay: the video is analysed in the background, then plays at full speed with every play and stat${left}.`;
+      action = "start";
     }
+    const labels = { stop: "Stop", cancel: "Cancel", play: "Play replay", start: state === "none" || !st ? "Prepare replay" : "Prepare again" };
     text("pre-title", title); text("pre-detail", detail);
     $("pre-title").dataset.tone = tone;
     $("pre-bar").hidden = !(state === "running" || ((state === "stopped" || state === "failed") && frontier() > 0));
     $("pre-fill").style.width = `${pctDone}%`;
-    $("pre-stride").hidden = !(action === "Analyse ahead" || action === "Analyse again");
+    $("pre-stride").hidden = action !== "start";
     $("pre-action").hidden = !action;
-    text("pre-action", action);
+    $("pre-action").dataset.action = action;
+    text("pre-action", action ? labels[action] : "");
   }
 
   async function act() {
-    const action = $("pre-action").textContent, ws = window.CVStudio?.workspace, id = ws?.active?.id;
-    if (!id) return;
-    if (action === "Replay") { window.CVPlayback?.setMode("replay"); return; }
-    const stop = action === "Stop" || action === "Cancel";
+    const action = $("pre-action").dataset.action, ws = window.CVStudio?.workspace, id = ws?.active?.id;
+    if (!id || !action) return;
+    if (action === "play") { window.CVPlayback?.setMode("replay"); return; }
+    const stop = action === "stop" || action === "cancel";
     $("pre-action").disabled = true;
     try {
       const response = await fetch(`api/studio/replay/${id}/${stop ? "stop" : "start"}`, {
@@ -226,7 +229,7 @@
       if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : `Request failed (${response.status}).`);
       status = body.state ? body : status;
       row(); window.CVPlayback?.render();
-      window.CV?.toast?.(stop ? "Stopped. Replay works up to where it got." : "Analysing ahead in the background.");
+      window.CV?.toast?.(stop ? "Stopped. The replay works up to where it got." : "Preparing the replay in the background.");
     } catch (error) { window.CV?.toast?.(error.message, "error"); } finally { $("pre-action").disabled = false; }
   }
 

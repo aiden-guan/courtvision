@@ -10,8 +10,8 @@
     live: { key: "", on: "Analyse the video as it plays: every frame, at the analysis's own pace" },
     watch: { key: "W", on: "The recording at full speed with the game's possession analysis",
       off: "No possession analysis for this video: it has to be analysed as an NBA game first (docs/NBA.md)" },
-    replay: { key: "R", on: "The recording at full speed with the live analysis done ahead of time",
-      off: "Not analysed ahead yet: start it under the feed" },
+    replay: { key: "R", on: "The recording at full speed with the analysis prepared ahead of time",
+      off: "No replay yet: prepare one under the feed" },
   };
   let mode = "live", resumeLive = false, raf = 0, beat = 0, lastTick = 0;
   const token = () => { try { return sessionStorage.getItem("cv-token") || ""; } catch { return ""; } };

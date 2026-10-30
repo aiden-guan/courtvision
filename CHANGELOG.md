@@ -5,6 +5,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Your videos: open, rename and delete them; plainer wording
+
+- **Videos** (the Studio's **Add or open a video**, or **Manage** in the sidebar) lists the games you added with their
+  length, the space each takes and whether its replay is ready, beside the drop zone for a new one. **Rename**,
+  **Delete replay** and **Delete** (a video with its mapping, replays and saved live results, after asking and saying
+  the space it frees; an open video is closed first, one being prepared for replay is stopped) work from there, and
+  the saved results no video owns any more (the demo, older runs) can be deleted together. A video a research game
+  folder uses (`runs/nba/<game>/game.json`) is kept. New endpoints: `GET /api/studio/library`, `POST
+  /api/studio/video/<id>/rename`, `DELETE /api/studio/video/<id>`, `DELETE /api/studio/replay/<id>`, `DELETE
+  /api/studio/analyses`, `POST /api/studio/find`.
+- A video added again (the same file: its size and first and last MiB) is kept once: the browser checks before
+  copying it and opens the one you have; the server drops a second copy too. Live analyses now record which video
+  they were of (`analyses/<run>/source.json`).
+- Readable titles from file names (`YTDown.com_YouTube_Media_<id>_Lakers-vs-Warriors_001_1080p.mp4` becomes "Lakers
+  vs Warriors"), in the sidebar, the title bar and Ask's commands.
+- Plainer wording: the welcome card offers to open your last video; the analysis speed reads "0.70× real time"
+  instead of fps and ms; **Analyse ahead** is now **Prepare replay** ("Replay ready", "Replay works up to 38:45");
+  the feed badge reads "Estimated from video"; the detector note no longer promises a 350 MB download when the NBA
+  detector is installed; the slow-analysis card offers the replay.
+
+---
+
 ## [Unreleased] — Faster analysis, the same results
 
 Measured on an M3 Pro, Lakers @ Warriors, before and after on the same frames

@@ -30,7 +30,7 @@
     const list = [];
     for (const [id, , label, key] of VIEWS) list.push({ id: `nav:${id}`, group: "Go to", label, icon: "arrow", keys: ["G", key] });
     list.push(
-      { id: "footage:load", group: "Footage", label: "Load footage", icon: "film", when: () => st.isStudio !== false },
+      { id: "footage:load", group: "Footage", label: "Add or open a video (manage, rename, delete)", icon: "film", when: () => st.isStudio !== false },
       { id: "footage:demo", group: "Footage", label: "Run the demo game", icon: "spark", when: () => st.isStudio !== false },
       { id: "footage:export", group: "Footage", label: "Export the analysis as JSON", icon: "copy", when: () => active && st.isStudio !== false },
       { id: "court:map", group: "Footage", label: "Map the court", icon: "court", when: () => active },
@@ -55,7 +55,7 @@
       { id: "lab:run", group: "Model lab", label: "Run the next training step", icon: "lab", when: () => !!(window.CVLab && window.CVLab.canRun()) },
       { id: "lab:copy-next", group: "Model lab", label: "Copy the next step's command", icon: "copy", when: () => !!(window.CVLab && window.CVLab.data && window.CVLab.data.next) },
     );
-    for (const v of ((ws && ws.videos) || []).slice(0, 6)) list.push({ id: `footage:open:${v.id}`, group: "Recent footage", label: `Open ${v.name}`, icon: "film" });
+    for (const v of ((ws && ws.videos) || []).slice(0, 6)) list.push({ id: `footage:open:${v.id}`, group: "Videos", label: `Open ${v.title || v.name}`, icon: "film" });
     return list.filter((c) => !c.when || c.when());
   }
 

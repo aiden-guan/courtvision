@@ -2,12 +2,27 @@
 
 Run `.venv/bin/python -m courtvision studio --open`, or double-click `Start CourtVision.command`.
 The default address is `http://127.0.0.1:8000`. The server binds localhost; a non-loopback bind requires
-`--auth-token`. Enter the token in dashboard settings. Detector setup is an explicit action from Start analysis.
+`--auth-token`. Enter the token in dashboard settings. Detector setup is an explicit action from opening a video.
 
 Select a person under **People** in the Live side panel to highlight their brackets and dim other person tracks.
 **Show all tracks** restores the full overlay; the **Tracking overlay** switch shows clean footage. The labels show
 detector confidence, not identity confidence. The bottom marker is the bounding-box base, not a measured joint.
 Simulator players are labelled separately and cannot be selected as camera detections.
+
+## Your videos
+
+**Add or open a video** (also **Manage** beside the sidebar's video list) opens **Videos**: the games you added, each
+with its length, the space it takes on this Mac and whether its replay is ready, and below them a drop zone to add a
+new one. Titles are made readable from the file name (a downloader's prefix and tags like `_001_1080p` are dropped);
+**Rename** changes one. Adding a video that is already there (the same file, found by its size and its first and
+last MiB) opens the one you have instead of copying it again; earlier copies show **Duplicate**.
+
+**Delete** removes a video with everything made from it: its file, court mapping, replays and the saved results of
+its live analyses. It asks first and says how much space it frees; a video that is open is closed first, and one
+being prepared for replay is stopped. A video a research game folder uses (`runs/nba/<game>/game.json` names its file)
+shows **Kept for research** and cannot be deleted here; delete one of its copies instead. **Delete replay** frees a
+replay's space and keeps the video. The saved results of earlier live analyses that no video owns any more (the demo,
+older runs) can be deleted together at the bottom of the list.
 
 ## Finding your way around
 
@@ -73,9 +88,9 @@ The switch at the top of the feed picks how it plays:
 - **Replay** (`R`) plays the recording at full speed with the live analysis done ahead of time: the tracking boxes,
   the plays, the box score, the court lens and the narration follow the video, and it seeks.
 
-Replay needs the video analysed ahead. An upload starts that in the background when a detector is installed
-(the NBA detector or a downloaded checkpoint; the first download of the starter detector still needs **Start
-analysis**); any other video starts with **Analyse ahead** in the row under the status cells. The row shows how far
+Replay needs a replay prepared: the video analysed ahead. An upload starts that in the background when a detector
+is installed (the NBA detector or a downloaded checkpoint; the first download of the starter detector still needs a
+video opened); any other video starts with **Prepare replay** in the row under the status cells. The row shows how far
 it has got and about how long is left; **Stop** ends it, and Replay works up to where it got. It runs the same pipeline
 and settings as Live, unpaced, one video at a time, with Jev, Claude and spoken narration off: no cloud calls. It
 takes a while, at the analysis's own pace: about 2 hours at every frame for a 79-minute game on an M3 Pro. **Every

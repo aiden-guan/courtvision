@@ -10,16 +10,16 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308090a'/%3E%3Cpath d='M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5' fill='none' stroke='%23edeef0' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3.8' fill='%23ff7a2f'/%3E%3C/svg%3E">
   <link rel="preload" href="static/archivo.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="static/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="static/styles.css?v=20261029-replay2">
-  <script src="static/lens.js?v=20261029-replay2" defer></script>
-  <script src="static/app.js?v=20261029-replay2" defer></script>
-  <script src="static/studio.js?v=20261029-replay2" defer></script>
-  <script src="static/playback.js?v=20261029-replay2" defer></script>
-  <script src="static/possession.js?v=20261029-replay2" defer></script>
-  <script src="static/replay.js?v=20261029-replay2" defer></script>
-  <script src="static/genui.js?v=20261029-replay2" defer></script>
-  <script src="static/lab.js?v=20261029-replay2" defer></script>
-  <script src="static/shell.js?v=20261029-replay2" defer></script>
+  <link rel="stylesheet" href="static/styles.css?v=20261029-library5">
+  <script src="static/lens.js?v=20261029-library5" defer></script>
+  <script src="static/app.js?v=20261029-library5" defer></script>
+  <script src="static/studio.js?v=20261029-library5" defer></script>
+  <script src="static/playback.js?v=20261029-library5" defer></script>
+  <script src="static/possession.js?v=20261029-library5" defer></script>
+  <script src="static/replay.js?v=20261029-library5" defer></script>
+  <script src="static/genui.js?v=20261029-library5" defer></script>
+  <script src="static/lab.js?v=20261029-library5" defer></script>
+  <script src="static/shell.js?v=20261029-library5" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -74,13 +74,13 @@
       </button>
     </nav>
 
-    <section class="side-footage" id="studio-recent" aria-label="Recent footage" hidden>
-      <p class="nav-group">Recent footage</p>
+    <section class="side-footage" id="studio-recent" aria-label="Videos" hidden>
+      <p class="nav-group side-footage-head">Videos<button type="button" class="link-btn" id="studio-manage">Manage</button></p>
       <div id="studio-video-list"></div>
     </section>
 
     <div class="side-bottom">
-      <button type="button" class="btn btn-primary btn-block" id="studio-open"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Load footage</button>
+      <button type="button" class="btn btn-primary btn-block" id="studio-open"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Add or open a video</button>
       <div class="sys-card" role="group" aria-label="System status">
         <div class="sys-row" id="sys-detector" data-tone="idle"><span class="dot" aria-hidden="true"></span><span id="sys-detector-label">Detector not prepared</span></div>
         <div class="sys-row conn" id="conn-status" role="status" data-state="connecting"><span class="dot" aria-hidden="true"></span><span id="conn-label">Connecting</span></div>
@@ -158,7 +158,7 @@
                     <h1 class="hero-title">Every possession, <em>mapped.</em></h1>
                     <p class="hero-lede">Load a game. CourtVision tracks the players and the ball, places them on the floor and logs each play. Footage never leaves this Mac.</p>
                     <div class="hero-actions">
-                      <button type="button" class="btn btn-primary btn-lg" id="studio-empty-open"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Load footage</button>
+                      <button type="button" class="btn btn-primary btn-lg" id="studio-empty-open"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Add or open a video</button>
                       <button type="button" class="btn btn-lg" id="studio-demo">Run the demo game</button>
                     </div>
                     <p class="hero-meta">MP4 · MOV · MKV · AVI, up to 8 GB</p>
@@ -171,7 +171,7 @@
                   <span class="feed-clock" id="feed-clock"></span>
                 </div>
                 <div class="monitor-loading" id="studio-loading" hidden><span class="orbit" aria-hidden="true"></span><p id="studio-loading-label">Opening game feed</p></div>
-                <div class="monitor-badge glass" id="monitor-badge" hidden>COMPUTER VISION · ESTIMATED</div>
+                <div class="monitor-badge glass" id="monitor-badge" hidden title="Players, the ball and plays are estimated by the computer from the video: check them before using them as statistics">ESTIMATED FROM VIDEO</div>
                 <div class="poss-hud glass" id="poss-hud" hidden>
                   <p class="poss-now"><span class="poss-chip" id="poss-team" data-team="">No team</span><span class="poss-phase" id="poss-phase"></span></p>
                   <p class="poss-line"><span class="poss-key">From the video</span><span id="poss-score"></span></p>
@@ -232,11 +232,11 @@
               </div>
               <div class="pre-row" id="pre-row" hidden>
                 <span class="vision-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v9h-11z"/><path d="M6.5 6v4l3.5-2z"/></svg></span>
-                <span class="pre-text"><strong id="pre-title" data-tone="idle">Not analysed ahead</strong><span id="pre-detail"></span></span>
+                <span class="pre-text"><strong id="pre-title" data-tone="idle">No replay yet</strong><span id="pre-detail"></span></span>
                 <span class="pre-bar" id="pre-bar" hidden><i id="pre-fill"></i></span>
                 <label class="sr-only" for="pre-stride">Frames to analyse</label>
                 <select id="pre-stride" hidden><option value="1">Every frame</option><option value="2">Every 2nd frame · 2× sooner</option><option value="3">Every 3rd frame · 3× sooner</option></select>
-                <button type="button" id="pre-action" class="link-btn" hidden>Analyse ahead</button>
+                <button type="button" id="pre-action" class="link-btn" hidden>Prepare replay</button>
               </div>
             </div>
 
@@ -577,17 +577,23 @@
 </dialog>
 
 <!-- ============================================================ LOAD FOOTAGE -->
-<dialog id="studio-dialog" class="sheet" aria-labelledby="upload-title">
+<dialog id="studio-dialog" class="sheet library-sheet" aria-labelledby="upload-title">
+  <header class="sheet-head"><div><h2 id="upload-title">Videos</h2><p>Open a game you added before, or add a new one. Videos stay on this Mac.</p></div><button type="button" class="icon-btn" id="studio-close" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></header>
+  <section class="library" id="library" aria-labelledby="library-title" hidden>
+    <div class="library-head"><h3 id="library-title">Your videos</h3><span class="library-total" id="library-total"></span></div>
+    <ul class="library-list" id="library-list"></ul>
+    <p class="library-extra" id="library-extra" hidden><span id="library-extra-text"></span><button type="button" class="link-btn danger" id="library-extra-delete">Delete</button></p>
+  </section>
   <form id="studio-form">
-    <header class="sheet-head"><div><h2 id="upload-title">Load game footage</h2><p>The video is copied to a folder on this Mac and analysed here.</p></div><button type="button" class="icon-btn" id="studio-close" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></header>
     <div class="sheet-body">
+      <h3 class="library-add" id="library-add-title">Add a video</h3>
       <label class="upload-zone" id="studio-dropzone" for="studio-file"><span class="upload-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10.5V2.5M4.8 5.4 8 2.2l3.2 3.2M2.8 10.5v3h10.4v-3"/></svg></span><strong id="studio-filename">Drop a game video here</strong><span id="studio-file-detail">or choose a file from this Mac</span><span class="file-types">MP4 · MOV · MKV · AVI, up to 8 GB</span><input id="studio-file" type="file" accept="video/*,.mkv,.avi,.mov,.mp4"></label>
       <div class="upload-teams"><label>Away team<input id="studio-away" type="text" maxlength="48" value="Away" required autocomplete="off"></label><label>Home team<input id="studio-home" type="text" maxlength="48" value="Home" required autocomplete="off"></label></div>
       <label class="toggle-row switch"><span><strong>Broadcast footage</strong><small>Follow camera moves and pause spatial analysis on cutaways.</small></span><input id="studio-broadcast" type="checkbox" checked><span class="track" aria-hidden="true"></span></label>
       <p class="detector-note"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 7.2v3.6M8 5.1v.01"/></svg><span id="studio-model-note">First use prepares a local detector (about 350 MB). Generic player and ball detections need review.</span></p>
       <div class="upload-progress" id="studio-upload-wrap" hidden><progress id="studio-upload-progress" max="100" value="0" aria-label="Video upload progress"></progress></div>
       <p class="upload-status" id="studio-upload-status" role="status" aria-live="polite"></p>
-      <button type="submit" class="btn btn-primary btn-lg btn-block" id="studio-start" disabled>Start analysis</button>
+      <button type="submit" class="btn btn-primary btn-lg btn-block" id="studio-start" disabled>Add and open</button>
     </div>
   </form>
 </dialog>

@@ -320,7 +320,7 @@ courtvision studio --open
 On a Mac, double-click **`Start CourtVision.command`** instead. The workspace opens at
 [localhost:8000](http://127.0.0.1:8000/).
 
-1. Choose **Load footage**, select an MP4, MOV, MKV or AVI (up to 8 GB), and **Start analysis**.
+1. Choose **Add or open a video**, select an MP4, MOV, MKV or AVI (up to 8 GB), and **Add and open**.
    The first run prepares an RF-DETR Nano COCO starter checkpoint (about 350 MB). The footage stays local.
 2. Watch player/ball overlays on the actual processed frame and the court lens. Pause, resume, adjust speed, or
    expand the game feed.
@@ -330,12 +330,13 @@ On a Mac, double-click **`Start CourtVision.command`** instead. The workspace op
 4. Review the plays and the **Box score**. Use **Game controls** for score, lineup, and event corrections.
    **Export** downloads the current events, stats, transcript, and timing report as JSON.
 
-**Run the demo game** runs a clearly labelled simulated game without downloading a detector. Recent footage
-can be reopened; previous run outputs stay in separate `runs/studio/analyses/` folders. Press `⌘K` (or `/`) to
+**Run the demo game** runs a clearly labelled simulated game without downloading a detector. **Videos** lists the
+games you added, with the space each takes: open, rename or delete them there (a video added twice is kept once);
+previous run outputs stay in separate `runs/studio/analyses/` folders until deleted. Press `⌘K` (or `/`) to
 ask about the game or run any command; the [workspace guide](docs/STUDIO.md) covers the views, Ask and the model lab.
 A recording analysed as an NBA game ([NBA.md](docs/NBA.md)) also shows its possession analysis on the feed: the
 team with the ball and each shot decided from the video. **Watch** (`W`) plays it at full speed with seeking.
-Uploads are also analysed ahead in the background, and **Replay** (`R`) then plays the whole live analysis at full
+Uploads also get a replay prepared in the background, and **Replay** (`R`) then plays the whole live analysis at full
 speed with seeking.
 
 The starter model detects generic people and sports balls. It does not identify NBA players, distinguish every

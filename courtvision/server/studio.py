@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import re
+import shutil
 import time
 import uuid
 from collections.abc import Callable
@@ -61,6 +62,29 @@ def probe_video(path: Path) -> dict[str, Any]:
         cap.release()
 
 
+def video_title(name: str) -> str:
+    """A readable title from an uploaded file's name: no extension, underscores and joining hyphens as spaces, and
+    without a downloader's prefix ("YTDown.com_YouTube_Media_<video id>_") or trailing copy and resolution tags
+    ("_001_1080p")."""
+    s = re.sub(r"_+", " ", Path(name).stem)
+    s = re.sub(r"^\S+\.(?:com|net|org|io|app|to|cc)\b\s*", "", s, flags=re.I)
+    s = re.sub(r"^(?:(?:youtube|media|video|download)\s+)+[\w-]{11}\s+", "", s, flags=re.I)
+    s = re.sub(r"(?:\s+(?:\d{3,4}p|\d{1,3}|hd|4k|uhd|\d{2}fps))+$", "", s, flags=re.I)
+    s = re.sub(r"(?<=[^\W\d_])-(?=[^\W\d_])", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return (s[:1].upper() + s[1:])[:120] if s else (Path(name).stem or "Game video")
+
+
+def folder_bytes(path: Path) -> int:
+    """Bytes of the files under ``path`` (0 when it does not exist)."""
+    total = 0
+    for p in path.rglob("*") if path.is_dir() else ():
+        with contextlib.suppress(OSError):
+            if p.is_file() and not p.is_symlink():
+                total += p.stat().st_size
+    return total
+
+
 class StartIn(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     video_id: str | None = Field(None, pattern=r"^[a-f0-9]{32}$")
@@ -68,6 +92,17 @@ class StartIn(BaseModel):
     home_name: str = Field("Home", min_length=1, max_length=48)
     away_name: str = Field("Away", min_length=1, max_length=48)
     broadcast: bool = True
+
+
+class RenameIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(..., min_length=1, max_length=120)
+
+
+class FindIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    bytes: int = Field(..., ge=0)
+    digest: str = Field(..., pattern=r"^[a-f0-9]{40}$")  # SHA-1 of the first and last MiB (``results.fingerprint``)
 
 
 class PreanalyseIn(BaseModel):
@@ -107,10 +142,146 @@ class Workspace:
         videos = []
         for path in self.root.glob("*/video.json"):
             try:
-                videos.append({**json.loads(path.read_text()), "replay": self.replay_status(path.parent.name)})
+                record = json.loads(path.read_text())
+                videos.append({**record, "title": record.get("title") or video_title(str(record.get("name", ""))),
+                               "replay": self.replay_status(path.parent.name)})
             except (ValueError, OSError):
                 log.warning("Could not read video metadata %s", path)
         return sorted(videos, key=lambda x: x.get("created", 0), reverse=True)
+
+    # ------------------------------------------------------------------ the video library: sizes, renaming, deleting
+
+    def video_dir(self, video_id: str) -> Path:
+        """The folder of an uploaded video (404 for anything else)."""
+        if not re.fullmatch(r"[a-f0-9]{32}", video_id) or not (self.root / video_id / "video.json").is_file():
+            raise HTTPException(404, "Video not found.")
+        return self.root / video_id
+
+    def used_by(self, video_id: str) -> list[str]:
+        """Game folders under ``nba_root`` whose ``game.json`` names this upload's file: deleting it would break them
+        (a copy of the same video elsewhere is not this file)."""
+        source = (self.root / video_id / "source.video").resolve()
+        out = []
+        for meta in sorted(self.nba_root.glob("*/game.json")):
+            try:
+                named = Path(str(json.loads(meta.read_text())["video"]))
+                if (named if named.is_absolute() else self.repo / named).resolve() == source:
+                    out.append(meta.parent.name)
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return out
+
+    def saved_runs(self) -> list[tuple[Path, str | None]]:
+        """The saved results of live analyses (``analyses/<run>``) and the video each was of (None: the demo, or
+        saved before runs recorded it)."""
+        out = []
+        for run in sorted((self.root / "analyses").glob("*/")):
+            try:
+                video = json.loads((run / "source.json").read_text()).get("video_id")
+            except (OSError, ValueError, AttributeError):
+                video = None
+            out.append((run, video))
+        return out
+
+    def library(self) -> dict[str, Any]:
+        """Every video with what it keeps on disk and whether it can be deleted, and the saved live results (blocking:
+        it reads the folders and each file's first and last MiB to find copies of the same video)."""
+        active = self.active.get("id") if self.active and not self.active.get("demo") else None
+        running = self.active_run_id()
+        saved = self.saved_runs()
+        videos, prints = [], {}
+        for v in self.videos():
+            folder = self.root / v["id"]
+            with contextlib.suppress(OSError):
+                prints[v["id"]] = game_results.fingerprint(folder / "source.video")
+            runs = [run for run, vid in saved if vid == v["id"] and run.name != running]
+            videos.append({**v, "disk_bytes": folder_bytes(folder), "replay_bytes": folder_bytes(folder / "replays"),
+                           "saved_runs": len(runs), "saved_bytes": sum(folder_bytes(r) for r in runs),
+                           "used_by": self.used_by(v["id"]), "open": v["id"] == active})
+        for v in videos:  # copies of the same file, oldest first: the later ones say which they repeat
+            same = [w for w in videos if w["id"] != v["id"] and prints.get(w["id"]) is not None
+                    and prints.get(w["id"]) == prints.get(v["id"])]
+            v["copies"] = [w["id"] for w in same]
+        other = [run for run, vid in saved if (vid is None or not (self.root / vid).is_dir()) and run.name != running]
+        return {"videos": videos, "other_runs": len(other), "other_bytes": sum(folder_bytes(r) for r in other),
+                "total_bytes": sum(v["disk_bytes"] for v in videos) + folder_bytes(self.root / "analyses")}
+
+    def active_run_id(self) -> str | None:
+        """The run a live analysis is still writing (its results are saved when it ends)."""
+        return self.active.get("run_id") if self.active and self.task is not None and not self.task.done() else None
+
+    def find_copy(self, size: int, digest: str) -> dict[str, Any] | None:
+        """An uploaded video with this size and first-and-last-MiB digest (``results.fingerprint``), if any."""
+        for v in self.videos():
+            source = self.root / v["id"] / "source.video"
+            with contextlib.suppress(OSError):
+                if source.stat().st_size == size and game_results.fingerprint(source) == (size, digest):
+                    return v
+        return None
+
+    def rename(self, video_id: str, title: str) -> dict[str, Any]:
+        path = self.video_dir(video_id) / "video.json"
+        record = {**json.loads(path.read_text()), "title": " ".join(title.split())[:120]}
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(record))
+        tmp.replace(path)
+        if self.active and self.active.get("id") == video_id:
+            self.active = {**self.active, "title": record["title"]}
+        return {**record, "replay": self.replay_status(video_id)}
+
+    async def _end_preanalysis(self, video_id: str) -> None:
+        """Take a video out of the queue and stop its running analysis ahead, waiting until it has stopped writing."""
+        self.preanalysis_queue = [(v, s) for v, s in self.preanalysis_queue if v != video_id]
+        job = self.preanalysis
+        if job is not None and job.video_id == video_id and job.finished is None:
+            job.stop()
+            for _ in range(600):  # its frame loop ends within a frame; the results are then written
+                if job.finished is not None:
+                    break
+                await asyncio.sleep(0.05)
+
+    async def delete_video(self, video_id: str) -> dict[str, Any]:
+        """Delete an upload: its file, calibration, analyses ahead and saved live results. A video that is open is
+        closed first and one being analysed ahead is stopped; one a game folder uses is refused."""
+        folder = self.video_dir(video_id)
+        users = self.used_by(video_id)
+        if users:
+            raise HTTPException(409, f"The game folder {', '.join(users)} (runs/nba) uses this video file, so it is "
+                                     "kept. Delete a copy of it instead, or point that game.json at another copy.")
+        await self._end_preanalysis(video_id)
+        if self.active and self.active.get("id") == video_id:
+            async with self.lock:
+                await self.stop()
+                if self.task is not None:
+                    with contextlib.suppress(Exception):
+                        await self.task
+                self.active, self.game, self.task = None, None, None
+                await self.hub.reset()
+        runs = [run for run, vid in self.saved_runs() if vid == video_id]
+        freed = folder_bytes(folder) + sum(folder_bytes(r) for r in runs)
+        await asyncio.to_thread(shutil.rmtree, folder)
+        for run in runs:
+            await asyncio.to_thread(shutil.rmtree, run, True)
+        return {"deleted": video_id, "freed_bytes": freed}
+
+    async def delete_replays(self, video_id: str) -> dict[str, Any]:
+        """Delete a video's analyses ahead (stopping a running one); the video itself stays."""
+        folder = self.video_dir(video_id) / "replays"
+        await self._end_preanalysis(video_id)
+        freed = folder_bytes(folder)
+        if folder.is_dir():
+            await asyncio.to_thread(shutil.rmtree, folder)
+        return {"video_id": video_id, "freed_bytes": freed}
+
+    async def delete_saved_runs(self, video_id: str | None = None) -> dict[str, Any]:
+        """Delete the saved results of past live analyses: of one video, or all of them (``video_id`` None). The run
+        a live analysis is still writing is kept."""
+        running = self.active_run_id()
+        runs = [run for run, vid in self.saved_runs() if run.name != running and (video_id is None or vid == video_id)]
+        freed = sum(folder_bytes(r) for r in runs)
+        for run in runs:
+            await asyncio.to_thread(shutil.rmtree, run, True)
+        return {"deleted_runs": len(runs), "freed_bytes": freed}
 
     def state(self) -> dict[str, Any]:
         game, run = self.game, self.analysis_run()
@@ -332,6 +503,7 @@ class Workspace:
                 if self.model_state != "ready" or self.detector is None:
                     raise HTTPException(409, "Prepare the detector before starting video analysis.")
                 active = json.loads(path.read_text())
+                active["title"] = active.get("title") or video_title(str(active.get("name", "")))
                 cfg = self.video_config(body.video_id, self.detector, broadcast=body.broadcast,
                                         home_name=body.home_name, away_name=body.away_name)
                 if type(self.detector).__name__ == "StudentDetector":
@@ -359,7 +531,11 @@ class Workspace:
             # Each run has its own folder. Reopening footage never overwrites previous analysis.
             try:
                 result = _collect(game)
-                await asyncio.to_thread(write_run_dir, result, self.root / "analyses" / active["run_id"])
+                out = self.root / "analyses" / active["run_id"]
+                await asyncio.to_thread(write_run_dir, result, out)
+                # which video it was of, so the library can count and delete it with the video
+                (out / "source.json").write_text(json.dumps({"video_id": None if active.get("demo") else active.get("id"),
+                                                             "title": active.get("title") or active.get("name")}))
             except Exception:
                 log.exception("Could not persist analysis output")
 
@@ -446,7 +622,12 @@ def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "ru
                             raise HTTPException(413, "Video exceeds the 8 GB upload limit.")
                         await asyncio.to_thread(f.write, chunk)
                 metadata = await asyncio.to_thread(probe_video, path)
-                record = {"id": video_id, "name": Path(name.replace("\\", "/")).name[:160] or "Game video",
+                same = await asyncio.to_thread(workspace.find_copy, size, game_results.fingerprint(path)[1])
+                if same is not None:  # this video is here already: keep one copy
+                    await asyncio.to_thread(shutil.rmtree, directory)
+                    return {**same, "duplicate": True}
+                filename = Path(name.replace("\\", "/")).name[:160] or "Game video"
+                record = {"id": video_id, "name": filename, "title": video_title(filename),
                           "bytes": size, "created": time.time(), **metadata}
                 (directory / "video.json").write_text(json.dumps(record))
                 if workspace.auto_preanalyze and workspace.preanalysis_ready():
@@ -464,6 +645,31 @@ def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "ru
     @app.post("/api/studio/start", dependencies=[write])
     async def start(body: StartIn) -> Any:
         return await workspace.start(body)
+
+    @app.get("/api/studio/library", dependencies=[read])
+    async def library() -> Any:
+        return await asyncio.to_thread(workspace.library)
+
+    @app.post("/api/studio/find", dependencies=[read])
+    async def find(body: FindIn) -> Any:
+        # a video the browser is about to upload that is here already (by size and first and last MiB)
+        return {"video": await asyncio.to_thread(workspace.find_copy, body.bytes, body.digest)}
+
+    @app.post("/api/studio/video/{video_id}/rename", dependencies=[write])
+    async def rename(video_id: str, body: RenameIn) -> Any:
+        return await asyncio.to_thread(workspace.rename, video_id, body.title)
+
+    @app.delete("/api/studio/video/{video_id}", dependencies=[write])
+    async def delete_video(video_id: str) -> Any:
+        return await workspace.delete_video(video_id)
+
+    @app.delete("/api/studio/replay/{video_id}", dependencies=[write])
+    async def delete_replays(video_id: str) -> Any:
+        return await workspace.delete_replays(video_id)
+
+    @app.delete("/api/studio/analyses", dependencies=[write])
+    async def delete_saved_runs(video_id: str | None = Query(None, pattern=r"^[a-f0-9]{32}$")) -> Any:
+        return await workspace.delete_saved_runs(video_id)
 
     @app.get("/api/studio/frame.jpg", dependencies=[read])
     async def monitor(overlay: bool = True, focus: str = Query("", max_length=128)) -> Response:
