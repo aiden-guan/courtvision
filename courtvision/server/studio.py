@@ -307,11 +307,24 @@ class Workspace:
         if self._analysis is None or self._analysis[0] != vid or now - self._analysis[1] > ANALYSIS_RECHECK_S:
             try:
                 run = game_results.find_run(self.root / vid / "source.video", self.nba_root, self.repo)
+                if run is None:  # the possession analysis its analysis ahead built (nba/auto_analysis.py)
+                    run = self.auto_analysis_run(vid)
             except OSError:
                 log.exception("Could not look for this video's analysis")
                 run = None
             self._analysis = (vid, now, run)
         return self._analysis[2]
+
+    def auto_analysis_run(self, video_id: str) -> tuple[Path, str, float] | None:
+        """(folder, tag, time) of the newest possession analysis built by an analysis ahead of ``video_id``."""
+        from courtvision.nba.auto_analysis import TAG
+
+        found = sorted(((p.stat().st_mtime, p) for p in (self.root / video_id / "replays").glob(
+            f"*/possession/runs/{TAG}/timeline.json") if p.with_suffix(".jsonl").is_file()), reverse=True)
+        if not found:
+            return None
+        mtime, doc = found[0]
+        return doc.parents[2], TAG, mtime
 
     def analysis(self) -> dict[str, Any]:
         """The open video's possession timeline and decided events, read once per run. Without the game's ESPN
@@ -394,8 +407,28 @@ class Workspace:
             # match, and boxes re-drawn from the tracked camera (perception/broadcast.py)
             cfg.perception.pipeline.tracker = {"high_thresh": 0.3, "low_thresh": 0.1, "new_track_thresh": 0.35,
                                                **cfg.perception.pipeline.tracker}
+            # the two team clusters refit as player crops accumulate: a first fit on a few frames can split on
+            # something other than the teams and would hold all game (perception/teams.py TeamConfig.refit_at)
+            cfg.perception.pipeline.team = {"refit_at": (150, 600, 1500, 3000), **cfg.perception.pipeline.team}
             cfg.perception.broadcast_config.rectify_boxes = True
+            # Made or missed from the video: the scorebug's scores no longer confirm, veto or invent shots, and the
+            # shot judge (models/shot-judge.json, tools/nba_live_judge.py) looks again at the rim after each call
+            cfg.events.score_reconcile = False
+            judge = self.shot_judge_model()
+            if judge is not None and not cfg.pipeline.shot_judge:
+                cfg.pipeline.shot_judge = str(judge)
         return cfg
+
+    def shot_models_file(self) -> Path | None:
+        """The shot models the possession analysis of a video analysed ahead decides its shots with
+        (``models/shot-models.json``, tools/nba_shot_models.py), when installed."""
+        p = self.root / "models" / "shot-models.json"
+        return p if p.is_file() else None
+
+    def shot_judge_model(self) -> Path | None:
+        """The shot judge's model (``models/shot-judge.json`` in the data folder), when one is installed."""
+        p = self.root / "models" / "shot-judge.json"
+        return p if p.is_file() else None
 
     # ------------------------------------------------------------------ analysing ahead (server/preanalysis.py)
 
@@ -451,12 +484,17 @@ class Workspace:
                 cfg = self.video_config(video_id, detector)
                 cfg.perception.save_calibration = False  # never replace a calibration the operator saved
                 cfg.jev.mode, cfg.narration.llm_enabled = "off", False
+                cfg.pipeline.court_worker = True  # the court tracked ahead in a process of its own: the same fixes
                 return cfg
 
             out = self.root / video_id / "replays" / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+            # "every frame" is every frame of a 30 fps video: a 60 fps video is read at every 2nd frame
+            stride *= preanalysis.rate_stride(meta.get("fps"))
             self.preanalysis = Preanalysis(video_id=video_id, video=self.root / video_id / "source.video", out=out,
                                            config_for=config_for, detector_factory=self.detector_factory or self.new_detector,
-                                           duration_s=meta.get("duration_s"), stride=stride)
+                                           duration_s=meta.get("duration_s"), stride=stride,
+                                           shot_models=self.shot_models_file(),
+                                           title=meta.get("title") or video_title(str(meta.get("name", ""))))
             await self.preanalysis.run()
 
     def stop_preanalysis(self, video_id: str) -> dict[str, Any]:
@@ -506,7 +544,9 @@ class Workspace:
                 active["title"] = active.get("title") or video_title(str(active.get("name", "")))
                 cfg = self.video_config(body.video_id, self.detector, broadcast=body.broadcast,
                                         home_name=body.home_name, away_name=body.away_name)
-                source = await asyncio.to_thread(VideoFileSource, cfg.source.path, realtime=True)
+                step = preanalysis.rate_stride(active.get("fps"))  # a 60 fps video is analysed at 30 frames a second
+                source = await asyncio.to_thread(preanalysis.StridedVideoSource, cfg.source.path, step, realtime=True) \
+                    if step > 1 else await asyncio.to_thread(VideoFileSource, cfg.source.path, realtime=True)
             await self.stop()
             if not body.demo and type(self.detector).__name__ == "StudentDetector":
                 self.detector.reset()

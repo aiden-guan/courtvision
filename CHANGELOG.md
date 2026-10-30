@@ -5,6 +5,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Made shots from the rim, a second game, a faster and sturdier analysis ahead
+
+- **The Studio decides made or missed from the video.** The scorebug's scores no longer confirm, veto or invent shots
+  in the Studio (`EventEngineConfig.score_reconcile = False`): in the Lakers @ Warriors replay the scorebug had turned
+  30 makes the camera saw into misses. Instead the **shot judge** (`courtvision/nba/live_judge.py`) looks again 2.5 s
+  after each of the engine's calls: where the detector saw the ball about the rim (above it, in the net, beside it:
+  `rim_clips.zone_scores`, `makes.zone_features`) and, with a rim model, the rim's own pixels over 2.4 s
+  (`rim_model.py`), weighed by a logistic model fitted on the play-by-play (`tools/nba_live_judge.py`), then keeps or
+  overturns the call (`EventEngine.judge_shot`). Installed as `runs/studio/models/shot-judge.json`. On a stretch of
+  Lakers @ Warriors it was not fitted on, the Studio's made-shot F1 went from 0.32 to 0.81 and made or missed from
+  44% to 93% right; across games (fitted on the other game only) it is right on 84.0% and 77.8% of the engine's shot
+  results against the engine's own 83.3% and 68.9% (docs/research/made_shots_at_the_rim.md).
+- **Rim clips and the rim model.** `tools/nba_rim_clips.py` cuts 2.4 s clips that follow the rim through pans and
+  zooms (the rim always the same size and place); `tools/nba_rim_model.py` trains a ResNet-18 on them (frame
+  differences as motion input) and scores it held out. `nba_analyze.py timeline --zones --rim NAME` adds both to the
+  shot models; `tools/nba_shot_models.py` fits them across games and scores each game with models fitted on the others.
+- **A second game.** Cavaliers @ Warriors, 2017 NBA Finals Game 5 (ABC, 720p at 59.94 fps), added with
+  `nba_new_game.py`; its scorebug layout was discovered automatically. A broadcast whose bug shows a basket sooner or
+  later than ESPN's sets `score_update_lag_s` in its `game.json`.
+- **Faster analysis ahead.** A 50-60 fps video is read at every 2nd frame (`preanalysis.rate_stride`): the detector,
+  tracker and engine are set up for 29.97 fps, and the Studio's detector used to see 60 fps frames 17 ms apart instead
+  of the 33 ms it was trained on. The court is tracked in a worker process that reads the video itself and works ahead
+  (`perception/court_worker.py`), with the same fixes frame for frame. The replay's frame-rate choices now say frames
+  a second.
+- **A failing frame no longer ends an analysis ahead.** Unpaced, one frame's error used to stop the whole analysis (the
+  Lakers @ Warriors replay stopped at 36 of 79 minutes); it is now logged with its traceback, counted in the status
+  (`failed_frames`, `first_error`) and passed over, and only 90 failures in a row stop it.
+- **Team clusters refitted as player crops accumulate** (`TeamConfig.refit_at`; `nba_analyze.py events --team-refit`;
+  always in the Studio). A first fit on the opening frames can split on something other than the teams and used to
+  hold for the whole game: on Cavaliers @ Warriors 83% of the events went to one team and the possession timeline
+  was right on 38.8% of settled play; with refits 75.8%.
+- **Watch for any video analysed ahead.** The analysis ahead records the camera and the ball of every frame, and when
+  it ends builds the possession analysis that research games get from `nba_analyze.py timeline`
+  (`courtvision/nba/auto_analysis.py`): the linked ball, the possession timeline and every shot decided by the shot
+  models (`runs/studio/models/shot-models.json`). **Watch** then works without a research game folder.
+
+---
+
 ## [Unreleased] — Replay and analysis reliability
 
 - Switching videos or preparing a new replay discards responses from the previous recording. Leaving and reopening

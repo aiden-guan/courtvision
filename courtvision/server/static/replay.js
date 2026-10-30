@@ -184,7 +184,9 @@
     if (!active) return;
     const st = status, state = st ? st.state : "none", dur = st?.duration_s || active.duration_s;
     const pctDone = dur ? Math.min(100, frontier() / dur * 100) : 0;
-    const every = st && st.stride > 1 ? `every ${st.stride === 2 ? "2nd" : "3rd"} frame` : "every frame";
+    const every = st && st.fps ? `${Math.round(st.fps)} frames a second`
+      : st && st.stride > 1 ? `every ${st.stride === 2 ? "2nd" : st.stride === 3 ? "3rd" : `${st.stride}th`} frame`
+      : "every frame";
     let title, detail, action = "", tone = "idle";
     const left = dur ? ` · about ${span(dur / 0.65)} for this video` : "";
     if (state === "running" || state === "loading") {

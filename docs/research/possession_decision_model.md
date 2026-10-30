@@ -298,3 +298,10 @@ What is left:
   stoppage, looks like a shot.
 - The engine's blocks (1 right of 11) went with the shots they hung on: blocks are 0.
 - One game.
+
+## 9. Evidence at the rim, the shot judge and a second game (2026-10-30)
+
+Continued in [made_shots_at_the_rim.md](made_shots_at_the_rim.md): where the detector sees the ball about the rim and
+a model of the rim's own frames added to the shot models; the shot judge that decides made or missed in the Studio
+instead of the scorebug; Cavaliers @ Warriors (2017 Finals Game 5) added, and every model scored across the two games.
+

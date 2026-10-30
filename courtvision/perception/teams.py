@@ -48,6 +48,11 @@ class TeamConfig:
     max_distance: float | None = None  # farther than this from both centroids => no team (coaches); tuned
     predict_from_anchors: bool = True  # before fit(), classify by the nearest colour anchor; design
     vote_momentum: float = 0.9  # per-track vote decay in TeamVoter (~10-frame memory); tuned
+    # Refit the two clusters when this many embeddings have been observed (after the first fit at min_fit_samples),
+    # in the order of the colour anchors, else of the clusters before: the first fit on a few frames can split on
+    # something other than the teams (one team only in view, the light) and would hold for the whole game. Empty: one
+    # fit. Broadcasts: (150, 600, 1500, 3000) (a 2017 Finals game went from 83% of its events on one team to balanced)
+    refit_at: tuple[int, ...] = ()
 
 
 def kmeans(
@@ -108,6 +113,7 @@ class TeamClassifier:
     ) -> None:
         self.config = config or TeamConfig()
         self._samples: deque[np.ndarray] = deque(maxlen=self.config.max_samples)
+        self._observed = 0  # embeddings observed so far (the samples kept are capped)
         self._centroids: np.ndarray | None = None  # rows ordered [HOME, AWAY] in the working space
         self._mean: np.ndarray | None = None
         self._basis: np.ndarray | None = None
@@ -133,6 +139,12 @@ class TeamClassifier:
         v = self._prep(embedding)
         if v is not None:
             self._samples.append(v)
+            self._observed += 1
+
+    @property
+    def refit_due(self) -> bool:
+        """A refit is scheduled at this many observed embeddings (``TeamConfig.refit_at``)."""
+        return self.is_fitted and self._observed in self.config.refit_at
 
     def fit(self) -> bool:
         """Cluster the buffered samples into two teams. Returns False when there are too few."""
@@ -145,9 +157,10 @@ class TeamClassifier:
             self._mean = X.mean(axis=0)
             _, _, vt = np.linalg.svd(X - self._mean, full_matrices=False)
             self._basis = vt[: cfg.reduce_dims].T
+        before = None if self._centroids is None or self._basis is not None else self._centroids
         Z = self._project(X)
         C, labels, inertia = kmeans(Z, 2, np.random.default_rng(cfg.seed), cfg.n_init, cfg.max_iter, cfg.tol)
-        self._centroids = C[self._cluster_order(C)]
+        self._centroids = C[self._cluster_order(C, before)]
         sizes = np.bincount(labels, minlength=2).tolist()
         log.info("team k-means fitted on %d samples (inertia %.4f, sizes %s)", len(X), inertia, sizes)
         return True
@@ -193,8 +206,13 @@ class TeamClassifier:
             return X
         return (X - self._mean) @ self._basis
 
-    def _cluster_order(self, C: np.ndarray) -> list[int]:
-        """Row order [HOME, AWAY]: by colour anchors when both exist, else cluster index."""
+    def _cluster_order(self, C: np.ndarray, before: np.ndarray | None = None) -> list[int]:
+        """Row order [HOME, AWAY]: by colour anchors when both exist, else (a refit) as the clusters ``before`` were,
+        else cluster index."""
+        if len(self._anchors) != 2 and before is not None:
+            straight = np.linalg.norm(C[0] - before[0]) + np.linalg.norm(C[1] - before[1])
+            swapped = np.linalg.norm(C[1] - before[0]) + np.linalg.norm(C[0] - before[1])
+            return [0, 1] if straight <= swapped else [1, 0]
         if len(self._anchors) != 2:
             if self._anchors:
                 team = next(iter(self._anchors))

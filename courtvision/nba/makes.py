@@ -43,7 +43,8 @@ from courtvision.types import Event, EventKind, EventStatus
 from .analyze import rim_boxes
 from .timeline import BACK, Timeline, from_scorebug
 
-__all__ = ["CUE_FEATURES", "FT_FEATURES", "JEV_FEATURES", "TIMELINE_FEATURES", "VISIT_FEATURES", "Candidate",
+__all__ = ["CUE_FEATURES", "FT_FEATURES", "JEV_FEATURES", "RIM_FEATURES", "TIMELINE_FEATURES", "VISIT_FEATURES",
+           "ZONE_FEATURES", "Candidate", "zone_features",
            "DecideConfig", "Logistic", "RimVisit", "ShotModels", "candidate_features", "candidate_rows", "candidates",
            "decide", "fit_shot_models", "label_candidates", "rim_visits"]
 
@@ -55,6 +56,9 @@ VISIT_FEATURES = ("engine", "visit", "visit_dmin", "visit_from_above", "visit_be
 TIMELINE_FEATURES = ("changed", "dt_change", "back_s")
 FT_FEATURES = ("cam_before", "activity", "engine_ft")
 JEV_FEATURES = ("jev_in_net", "jev_made", "jev_missing")
+RIM_FEATURES = ("rim_made", "rim_shot", "rim_missing")
+ZONE_FEATURES = ("zone_net", "zone_net_n", "zone_top_then_net", "zone_net_then_under", "zone_post_above",
+                 "zone_post_side", "zone_top_then_out", "zone_above", "zone_ring", "zone_valid")
 
 
 def _is_ft(e: Event) -> bool:
@@ -148,9 +152,12 @@ def candidates(events: Iterable[Event], visits: Sequence[RimVisit] = (), visit_m
 
 
 def candidate_features(c: Candidate, timeline: Timeline, activity: np.ndarray, jev: Mapping[str, Any] | None = None,
-                       change_window_s: tuple[float, float] = (-1.0, 8.0), max_back_s: float = 12.0) -> dict[str, float]:
+                       change_window_s: tuple[float, float] = (-1.0, 8.0), max_back_s: float = 12.0,
+                       rim: Mapping[str, float] | None = None, zones: np.ndarray | None = None) -> dict[str, float]:
     """Named evidence about one candidate (see the module docstring); every value is finite. ``activity``: the sorted
-    times of the engine's dribbles and passes."""
+    times of the engine's dribbles and passes; ``rim``: the rim model's probabilities for the candidate's rim clip
+    (``p_made``, ``p_missed``, ``p_none``; ``rim_model.py``), or None; ``zones``: the detector's ball about the rim
+    (``rim_clips.ball_zone_series``), or None."""
     r = c.result
     cues = (r.attrs.get("cues") if r is not None else None) or {}
     margin = cues.get("crossing_margin_px")
@@ -182,17 +189,60 @@ def candidate_features(c: Candidate, timeline: Timeline, activity: np.ndarray, j
                  jev_missing=0.0)
     else:
         f.update(jev_in_net=0.0, jev_made=0.5, jev_missing=1.0)
+    if rim is not None:
+        made, missed = float(rim.get("p_made", 0.0)), float(rim.get("p_missed", 0.0))
+        f.update(rim_made=made / (made + missed) if made + missed > 0 else 0.5,
+                 rim_shot=1.0 - float(rim.get("p_none", 0.0)), rim_missing=0.0)
+    else:
+        f.update(rim_made=0.5, rim_shot=0.5, rim_missing=1.0)
+    f.update(zone_features(zones))
     return f
+
+
+def zone_features(series: np.ndarray | None, centre: int = 30, gap: int = 24, seen: float = 0.3) -> dict[str, float]:
+    """``ZONE_FEATURES`` from a ball-zone series (``rim_clips.ball_zone_series``: per frame about the rim's arrival,
+    the detector's best ball score in each zone of ``rim_clips.ZONES``; -1 on frames without the rim): the ball in the
+    net after the arrival (best score, frames seen), above or at the ring and then in the net within ``gap`` frames,
+    in the net and then below it, above or beside the ring after the arrival (a miss), at the ring and then beside or
+    high (off the rim), and the share of frames with the rim in view. All 0 without a series."""
+    if series is None or not len(series):
+        return {n: 0.0 for n in ZONE_FEATURES}
+    from .rim_clips import ZONES
+
+    z = {name: i for i, (name, _, _) in enumerate(ZONES)}
+    v = np.clip(np.asarray(series, float), 0.0, None)
+    c = min(max(0, centre), len(v) - 1)
+
+    def then(a: np.ndarray, b: np.ndarray) -> float:  # max over t1 < t2 <= t1 + gap of min(a[t1], b[t2])
+        best = 0.0
+        for t1 in range(len(a) - 1):
+            if a[t1] > best:
+                best = max(best, min(float(a[t1]), float(b[t1 + 1:t1 + 1 + gap].max())))
+        return best
+
+    top = np.maximum(v[:, z["above"]], v[:, z["ring"]])
+    out = np.maximum(v[:, z["side"]], v[:, z["high"]])
+    return {"zone_net": float(v[c:, z["net"]].max()), "zone_net_n": float((v[:, z["net"]] > seen).sum()) / 10.0,
+            "zone_top_then_net": then(top, v[:, z["net"]]),
+            "zone_net_then_under": then(v[:, z["net"]], v[:, z["under"]]),
+            "zone_post_above": float(v[c:, z["above"]].max()), "zone_post_side": float(v[c:, z["side"]].max()),
+            "zone_top_then_out": then(top, out), "zone_above": float(v[:, z["above"]].max()),
+            "zone_ring": float(v[:, z["ring"]].max()), "zone_valid": float((np.asarray(series)[:, 0] >= 0).mean())}
 
 
 def candidate_rows(events: Iterable[Event], timeline: Timeline, visits: Sequence[RimVisit] = (),
                    jev: Callable[[Candidate], Mapping[str, Any] | None] | None = None,
+                   rim: Callable[[Candidate], Mapping[str, float] | None] | None = None,
+                   zones: Callable[[Candidate], np.ndarray | None] | None = None,
                    ) -> list[tuple[Candidate, dict[str, float]]]:
     """Each candidate with its features: what ``decide`` and fitting both read. ``jev(candidate)``: Jev's read of its
-    rim crops, or None."""
+    rim crops, or None; ``rim(candidate)``: the rim model's probabilities, or None; ``zones(candidate)``: its ball-zone
+    series (``rim_clips.ball_zone_series``), or None."""
     evs = [e for e in latest_revisions(events) if e.status is not EventStatus.RETRACTED]
     activity = np.array(sorted(e.t for e in evs if e.kind in (K.DRIBBLE, K.PASS) and not from_scorebug(e)), float)
-    return [(c, candidate_features(c, timeline, activity, jev(c) if jev is not None else None))
+    return [(c, candidate_features(c, timeline, activity, jev(c) if jev is not None else None,
+                                   rim=rim(c) if rim is not None else None,
+                                   zones=zones(c) if zones is not None else None))
             for c in candidates(evs, visits)]
 
 
@@ -259,6 +309,14 @@ class ShotModels:
     def uses_jev(self) -> bool:
         return any(n in JEV_FEATURES for n in self.real.names + self.made.names)
 
+    @property
+    def uses_rim(self) -> bool:
+        return any(n in RIM_FEATURES for n in self.real.names + self.made.names)
+
+    @property
+    def uses_zones(self) -> bool:
+        return any(n in ZONE_FEATURES for n in self.real.names + self.made.names)
+
 
 def label_candidates(cands: Sequence[Candidate], shots: Sequence[tuple[float, bool, bool]],
                      tol_s: float = 2.5) -> dict[str, str]:
@@ -279,12 +337,15 @@ def label_candidates(cands: Sequence[Candidate], shots: Sequence[tuple[float, bo
 
 
 def fit_shot_models(rows: Sequence[Mapping[str, float]], labels: Sequence[str], jev: bool = False,
-                    l2: float = 1.0) -> ShotModels:
-    """The three models from candidates' features and labels (``label_candidates``); ``jev``: the real-shot and made
-    models read Jev's features too."""
+                    l2: float = 1.0, rim: bool = False, zones: bool = False) -> ShotModels:
+    """The three models from candidates' features and labels (``label_candidates``); ``jev``, ``rim``, ``zones``: the
+    real-shot and made models read Jev's features, the rim model's, the ball-zone features too."""
     extra = JEV_FEATURES if jev else ()
     real = Logistic.fit(rows, [lab != "false" for lab in labels],
                         CUE_FEATURES + VISIT_FEATURES + TIMELINE_FEATURES + FT_FEATURES[:2] + extra, l2)
+    # made or missed only: the zones lowered the held-out real-shot accuracy, and a rim model may have been trained
+    # on real shots alone (its p_none then means nothing)
+    extra += (RIM_FEATURES[:1] + RIM_FEATURES[2:] if rim else ()) + (ZONE_FEATURES if zones else ())
     shots = [({**r, "is_ft": float(lab.startswith("ft"))}, lab) for r, lab in zip(rows, labels, strict=True)
              if lab != "false"]
     ft = Logistic.fit([r for r, _ in shots], [lab.startswith("ft") for _, lab in shots], FT_FEATURES, l2)
@@ -307,7 +368,9 @@ class DecideConfig:
 
 def decide(events: Iterable[Event], timeline: Timeline, models: ShotModels | Callable[[Candidate], ShotModels],
            visits: Sequence[RimVisit] = (), config: DecideConfig | None = None,
-           jev: Callable[[Candidate], Mapping[str, Any] | None] | None = None) -> list[Event]:
+           jev: Callable[[Candidate], Mapping[str, Any] | None] | None = None,
+           rim: Callable[[Candidate], Mapping[str, float] | None] | None = None,
+           zones: Callable[[Candidate], np.ndarray | None] | None = None) -> list[Event]:
     """The engine's events with every shot decided from the video (``attrs["makes"]``: the probabilities). An engine
     result that is no shot goes with its attempt, block and assist; the others become free throws (value 1) or field
     goals (the engine's value, else 2), made or missed, their attempts following. A rim visit that is a shot becomes
@@ -315,7 +378,7 @@ def decide(events: Iterable[Event], timeline: Timeline, models: ShotModels | Cal
     made field goal only, and a made field goal with none takes the last pass of a teammate (the timeline's team at
     the pass) within ``assist_window_s`` before the release. Results the engine inferred from the scorebug are dropped
     with their attempts. ``models``: the models, or the models for a candidate (e.g. fitted on the other half of the
-    game); ``visits``, ``jev``: as ``candidate_rows``."""
+    game); ``visits``, ``jev``, ``rim``, ``zones``: as ``candidate_rows``."""
     cfg = config or DecideConfig()
     evs = [e for e in latest_revisions(events) if e.status is not EventStatus.RETRACTED]
     attempts = {e.shot_id: e for e in evs if e.kind is K.SHOT_ATTEMPT and e.shot_id}
@@ -324,7 +387,7 @@ def decide(events: Iterable[Event], timeline: Timeline, models: ShotModels | Cal
     dropped: set[str] = set()
     no_assist: set[str] = set()
     made_fg: list[tuple[Event, float]] = []
-    for i, (c, f) in enumerate(candidate_rows(evs, timeline, visits, jev)):
+    for i, (c, f) in enumerate(candidate_rows(evs, timeline, visits, jev, rim, zones)):
         m = models(c) if callable(models) else models
         p_real = m.real.p(f)
         if p_real < cfg.real_min:

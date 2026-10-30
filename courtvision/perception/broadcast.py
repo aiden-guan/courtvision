@@ -57,6 +57,8 @@ class BroadcastPerceptionConfig:
     # Re-draw person boxes as a standing player at the box centre through the tracked camera (automatic court
     # tracking only): for detectors whose boxes are well centred but mis-sized (nba/analyze.rectify_box)
     rectify_boxes: bool = False
+    # Cut each rim in view out of the frame (FrameState.rim_crops) for the shot judge's rim model (nba/live_judge.py)
+    rim_crops: bool = False
 
 
 @dataclass(frozen=True)
@@ -151,10 +153,13 @@ class BroadcastPerception:
                     rims[side] = box
         return Calibration(homography=hom, image_size=self.base.image_size, league=self.base.league, rims=rims)
 
-    def gate(self, frame_bgr: np.ndarray) -> GateState:
+    def gate(self, frame_bgr: np.ndarray, frame_idx: int | None = None) -> GateState:
         cut = self.cuts.update(frame_bgr)
         if self.auto is not None:
-            fix = self.auto.update(frame_bgr, cut=cut)
+            if getattr(self.auto, "wants_frame_idx", False):  # a tracker working ahead (court_worker.py)
+                fix = self.auto.update(frame_bgr, cut=cut, frame_idx=frame_idx)
+            else:
+                fix = self.auto.update(frame_bgr, cut=cut)
             hom = fix.homography(self.base.image_size)
             track = TrackResult(hom, fix.status, fix.inliers, fix.inliers, fix.rmse_px)
             if cut and fix.status == "tracking":
@@ -173,7 +178,7 @@ class BroadcastPerception:
 
     def process(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> FrameState:
         h, w = frame_bgr.shape[:2]
-        g = self.gate(frame_bgr)
+        g = self.gate(frame_bgr, frame_idx)
         self.last_gate = g
         st = self.stats
         st["frames"] += 1
@@ -212,6 +217,10 @@ class BroadcastPerception:
             det.camera, det.size = params, self.base.image_size
         read = self._start_scoreboard_read(frame_bgr, t)  # the scorebug is read while the players are detected
         state = self.inner.process(frame_bgr, frame_idx, t)
+        if self.config.rim_crops and self.inner.calibration.rims:
+            from courtvision.nba.rim_clips import crop_rim
+
+            state.rim_crops = {side: crop_rim(frame_bgr, box) for side, box in self.inner.calibration.rims.items()}
         state.scoreboard = read.result() if read is not None else None
         center = self.auto.center if self.auto is not None else self.tracker.center
         if center is not None:
@@ -238,6 +247,9 @@ class BroadcastPerception:
             self._reader = None
         reader, self.scorebug = self.scorebug, None
         close = getattr(reader, "close", None)
+        if callable(close):
+            close()
+        close = getattr(self.auto, "close", None)  # a court tracker working in another process
         if callable(close):
             close()
 

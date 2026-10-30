@@ -1073,6 +1073,13 @@ class LiveGame:
         if self.is_sim and cfg.pipeline.sim_assume_calibrated and not ecfg.assume_calibrated:
             ecfg = dataclasses.replace(ecfg, assume_calibrated=True)
         self.engine = EventEngine(self.court, self.roster, ecfg, rules=self.rules)
+        self.shot_judge = None
+        if cfg.pipeline.shot_judge:
+            from courtvision.nba.live_judge import judge_from_config
+
+            self.shot_judge = judge_from_config(cfg.pipeline.shot_judge, source.fps)
+            if self.shot_judge is not None and self.shot_judge.wants_crops:  # its rim model reads the rim's pixels
+                cfg.perception.broadcast_config.rim_crops = True
         self.shot_model = self._make_shot_model()
         self.decision_model = (DecisionModel(self.court, self.shot_model, cfg.decision_model.config)
                                if cfg.decision_model.enabled and self.shot_model is not None else None)
@@ -1377,6 +1384,9 @@ class LiveGame:
         try:
             with self._lock:
                 batch = self._ingest(self.engine.flush())
+                if self.shot_judge is not None:
+                    self.shot_judge.on_events(batch)
+                    batch += self._verdicts(math.inf)
                 if batch:
                     self.stats.on_events(batch)
                     self._ins_pending.extend(batch)
@@ -1546,7 +1556,15 @@ class LiveGame:
         if self._auto_center is not None:
             from courtvision.perception.broadcast_court import BroadcastCourtTracker
 
-            tracker = BroadcastCourtTracker(self.court, calib.image_size, self._auto_center)
+            path = getattr(self.source, "path", None)
+            if self.config.pipeline.court_worker and isinstance(self.source, VideoFileSource) and path is not None:
+                from courtvision.perception.court_worker import CourtTrackerProcess
+
+                tracker = CourtTrackerProcess(self.court, calib.image_size, self._auto_center, video=str(path),
+                                              start_s=self.source.start_s, stride=getattr(self.source, "stride", 1),
+                                              cut_threshold=pc.broadcast_config.cut_threshold)
+            else:
+                tracker = BroadcastCourtTracker(self.court, calib.image_size, self._auto_center)
             if self._auto_params is not None:
                 tracker.reset(self._auto_params)
         log.info("broadcast perception: court tracking (%s), cut / replay gate, scorebug %s",
@@ -1679,6 +1697,8 @@ class LiveGame:
                 self._on_frame(frame)
             e0 = time.perf_counter()
             batch += self._ingest(self.engine.process(frame))
+            if self.shot_judge is not None:
+                batch += self._judge(frame, batch)
             e1 = time.perf_counter()
             self.stats.on_events(batch)
             self.stats.on_frame(frame, self.engine.holder_id, self.engine.possession_team, self.engine.attacking_side)
@@ -1753,6 +1773,21 @@ class LiveGame:
             for ins in insight_order(new):  # local dashboard: names rendered here, never sent to a cloud API
                 await self.hub.publish(dataclasses.replace(ins, text=self.insights.render(ins)))
         await self.narrator.on_insights(new, snap)
+
+    def _judge(self, frame: FrameState, batch: list[Event]) -> list[Event]:
+        """The shot judge sees the frame and the new events; its verdicts due by now go to the engine."""
+        assert self.shot_judge is not None
+        self.shot_judge.observe(frame)
+        self.shot_judge.on_events(batch)
+        return self._verdicts(frame.t)
+
+    def _verdicts(self, now: float) -> list[Event]:
+        assert self.shot_judge is not None
+        out: list[Event] = []
+        t = self._t if math.isinf(now) else now
+        for shot_id, made, p in self.shot_judge.due(now):
+            out += self._ingest(self.engine.judge_shot(shot_id, made, p, t))
+        return out
 
     def _ingest(self, events: Iterable[Event]) -> list[Event]:
         """Enrich and store new events / revisions (latest revision wins); returns the enriched batch."""

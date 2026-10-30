@@ -253,6 +253,11 @@ class FrameState:
     # Camera centre (court ft, z up) when perception knows it exactly (a broadcast game camera tracked about its
     # fixed centre); the event engine then uses it for monocular depth instead of estimating a fixed camera.
     camera_xyz: tuple[float, float, float] | None = None
+    # The detector's ball candidates this frame, (n, 3) image x, y, score (None: not kept). The engine tracks one ball;
+    # the shot judge (nba/live_judge.py) reads every candidate about the rims.
+    balls: Any = None
+    # Each rim in view cut out square about itself (nba/rim_clips.crop_rim; None: not cut), for the shot judge's rim model
+    rim_crops: Any = None
 
     def player(self, player_id: str) -> PlayerState | None:
         for p in self.players:

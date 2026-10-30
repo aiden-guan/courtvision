@@ -17,6 +17,7 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
 | Scorebug fusion | `nba/scorebug_events.py`, `nba/fusion.py` | Score changes are made baskets of a known team and value (a shot the camera saw goes before the engine's own guess); shot-clock resets to 24 mark rim touches (a reset that starts counting at once is a change of possession), and an engine miss the shot clock shows no sign of is dropped; a shot takes the team attacking the half the camera aims at when the ball reaches the rim; after a miss, a reset to 14 (the offence kept the ball) or a count from a fresh 24 (the defence got it) decides the rebound, and an engine rebound with no miss just before it (after a make, or after no shot) is dropped; a steal or turnover needs a reset to 24 that no shot or score explains, and such a reset in play with no shot before it (the camera then leaving the half) is a steal; assists follow the corrected makes and take the last pass in the scorer's possession (no shot-clock reset since it), whatever team the engine gave the pass. Each pass has a switch in `FusionConfig`; `tools/nba_fusion_ab.py` measures each one on a game in seconds, and `tools/nba_bug_study.py --split` checks the shot-clock rules on the part of a game they were not tuned on. |
 | Possession timeline | `nba/timeline.py` | Which team has the ball, decided once over the whole game (Viterbi) from where the camera aims, the engine's shot results, rebounds and steals, 3-D flights at the rim and the 8-second back-court rule. Nothing is read from the scorebug: which basket each team attacks, and the swap at half time, come from the video. The engine's steals, turnovers, rebounds and team labels are rebuilt from it (`nba_analyze.py timeline`); its settings are fitted on aligned play-by-play (docs/research/possession_decision_model.md §6). |
 | Shots | `nba/makes.py`, `nba/rim_jev.py` | Every shot decided from the video alone: the engine's shot results and the linked ball's visits to a rim it reported nothing at, each a shot or not, a free throw or a field goal (the camera off the court before it, a stoppage, and no dribbling around it), made or missed, from the engine's rim cues, the ball's path at the rim, what the timeline shows happens next and, with `--jev`, TypeSafe Jev's answers on rim crops. Three logistic models fitted on the play-by-play (docs/research/possession_decision_model.md §7-8); the engine's own labels lean on the scorebug. |
+| Rim | `nba/rim_clips.py`, `nba/rim_model.py`, `nba/live_judge.py` | What the camera saw at the rim: clips that follow each rim through pans and zooms (always the same size and place), where the detector's ball candidates are about it (above, in the net, beside), and a ResNet-18 on the rim's frames. `timeline --zones --rim NAME` adds them to the shot models; the **shot judge** uses them in the Studio to keep or overturn the engine's make or miss 2.5 s after it ([research note](research/made_shots_at_the_rim.md)). |
 | Truth | `nba/espn.py`, `nba/evaluate.py` | ESPN play-by-play and box score, placed on video time through the scorebug clock. |
 
 ### Court registration in more detail
@@ -69,8 +70,14 @@ What makes other games work without hand tuning:
   alike); pixel settings scale with the frame height (720p to 4K). Variable-frame-rate recordings use decoder
   timestamps; converting them first is faster (`ffmpeg -i in.mp4 -fps_mode cfr -r 30000/1001 out.mp4`). Interlaced
   sources may decode wrongly in OpenCV: check `probe_video`'s warnings (printed by the tracker and the teacher tool).
-* **Teams.** Without jersey colours in game.json the engine's home / away clusters are arbitrary; the fusion's
-  `team_map` swaps them when the scorebug's baskets say so.
+* **Teams.** Without jersey colours in game.json (`home_color_bgr`, `away_color_bgr`, BGR) the engine's home / away
+  clusters are arbitrary; the fusion's `team_map` swaps them when the scorebug's baskets say so. The clusters are
+  fitted on the first 30 player crops; `nba_analyze.py events --team-refit` refits them as crops accumulate, which a
+  game whose first fit splits on something else needs (Cavaliers @ Warriors 2017: the possession timeline went from
+  38.8% to 75.8%; the Studio always refits).
+* **Score lag.** The play-by-play's made shots are placed through the scorebug's score changes, which ESPN's 2024 bug
+  shows about 2 s after the basket. A bug that is faster or slower sets `"score_update_lag_s"` in game.json (ABC's
+  2017 Finals bug: 1.0); check it with the median of the made shots' residuals (`truth(...)[1].aligned`).
 
 ## Running it on a game
 
@@ -87,6 +94,22 @@ VIDEO=runs/studio/<video id>/source.video
 .venv/bin/python tools/nba_analyze.py $G eval --tag baseline --file timeline.jsonl
 .venv/bin/python tools/nba_diagnose.py $G --tag baseline
 ```
+
+The rim evidence and the shot judge (research note: [made_shots_at_the_rim.md](research/made_shots_at_the_rim.md)):
+
+```bash
+.venv/bin/python tools/nba_rim_clips.py $G --tag baseline                    # rim clips of every candidate and shot
+.venv/bin/python tools/nba_rim_model.py --games <g1>,<g2> --folds games --name rim-x --real-only \
+    --config '{"motion": true, "backbone_lr": 3e-5, "epochs": 30, "lr": 1e-3}' [--save runs/models/rim/rim.pt]
+.venv/bin/python tools/nba_analyze.py $G timeline --tag baseline --zones --rim rim-x
+.venv/bin/python tools/nba_shot_models.py --runs <g1>:<tag>,<g2>:<tag> --zones --out runs/models/shot_models.json
+.venv/bin/python tools/nba_live_judge.py --games <g1>,<g2> --tag baseline --rim rim-x --rim-model runs/models/rim/rim.pt
+```
+
+`nba_shot_models.py` and `nba_live_judge.py` score each game with models fitted on the others before fitting on all
+of them. The Studio reads `runs/studio/models/shot-judge.json` (the judge; a `rim_model` path in it is taken from the
+file's folder) and `runs/studio/models/shot-models.json` (the shot models of the possession analysis it builds after
+an analysis ahead).
 
 To watch the result, open the recording in the Studio ([STUDIO.md](STUDIO.md)): it finds the game folder whose
 `game.json` names the video and draws the newest timeline run on the feed, and **Watch** plays it at full speed. To

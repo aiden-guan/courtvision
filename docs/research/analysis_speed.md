@@ -89,3 +89,17 @@ The court tracker is now most of the Studio's time: its refinements are scipy le
 points, and a re-acquisition still refines the best search candidates one after another. A Gauss-Newton with
 analytic derivatives would be faster but would move the camera fits in their last digits, so the camera track would
 no longer be the one of before; it was left for a change that is measured on its own.
+
+## 5. The analysis ahead, 2026-10-30
+
+Measured on the same M3 Pro, Lakers @ Warriors 2400-2460 s (1,799 frames), back to back and twice, with another
+analysis (CPU and GPU) running meanwhile; research note: [made_shots_at_the_rim.md](made_shots_at_the_rim.md) §5.
+
+| Change | Where | Check | Speed |
+|---|---|---|---|
+| The court tracked in a worker process that reads the video itself (the same seek and stride) and works up to 48 frames ahead; each answer carries its frame's checksum and cut flag, and any disagreement sends the tracking back in process | `perception/court_worker.py`, `PipelineSettings.court_worker` (on for the analysis ahead) | Identical recordings in process and with the worker: 43 of 43 events, 1,799 of 1,799 frames' boxes and 1,218 of 1,218 messages (timing fields aside), both repetitions; also 600 frames at 1200 s; no fallback | 56.2 / 55.0 ms a frame to **37.7 / 38.3** (1.46 times as fast) |
+| A 50-60 fps video read at every 2nd frame (`preanalysis.rate_stride`; Live too) | `server/preanalysis.py`, `server/studio.py` | The analysis is of a 29.97 fps stream, as it is set up for; the detector's input frames are 33 ms apart again (it saw 17 ms at 60 fps) | half the frames |
+
+Where the court is often lost (replays, close-ups, an arena the tracker struggles with), the worker is the slower of
+the two and the analysis runs at its pace; where it tracks, the detector side is. Together, a 60 fps game's analysis
+ahead does about a third of the work it did.
