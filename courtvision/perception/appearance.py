@@ -103,7 +103,74 @@ def _torso_window(shape: tuple[int, int], bbox: BBox, cfg: AppearanceConfig) -> 
     return iy1, iy2, ix1, ix2
 
 
+_SUPPRESSED = 255  # bin-table entry of a suppressed colour (so at most 255 bins)
+_BIN_TABLES: dict[tuple, np.ndarray | None] = {}
+
+
+def _bin_table(cfg: AppearanceConfig) -> np.ndarray | None:
+    """The histogram bin of every BGR colour (uint8, at ``b << 16 | g << 8 | r``; ``_SUPPRESSED`` for a court colour),
+    from the per-pixel maths of ``_histogram_direct``, so that one lookup per pixel gives the same histogram (built
+    once per setting, under a second; 16 MB). None for settings it cannot hold (suppressed colours that are not
+    8-bit integers, 255 bins or more)."""
+    key = (cfg.h_bins, cfg.s_bins, cfg.v_bins, cfg.achromatic_s, tuple(tuple(c) for c in cfg.suppress_bgr),
+           cfg.suppress_tol)
+    table = _BIN_TABLES.get(key)
+    if table is not None or key in _BIN_TABLES:
+        return table
+    colours = [tuple(float(v) for v in c) for c in cfg.suppress_bgr]
+    if feature_size(cfg) >= _SUPPRESSED or any(len(c) != 3 or not all(v.is_integer() and 0 <= v <= 255 for v in c)
+                                                for c in colours):
+        _BIN_TABLES[key] = None  # type: ignore[assignment]
+        return None
+    # the float32 squares and sums of these integer differences are exact, so ``np.linalg.norm(px - c) > tol`` is the
+    # float32 square root of the integer squared distance against tol
+    far = np.sqrt(np.arange(3 * 255 ** 2 + 1, dtype=np.float32)) > cfg.suppress_tol
+    gr = np.arange(1 << 16, dtype=np.int32)
+    g, r = gr >> 8, gr & 255
+    bgr = np.empty((1 << 16, 1, 3), np.uint8)
+    bgr[:, 0, 1], bgr[:, 0, 2] = g, r
+    table = np.empty(1 << 24, np.uint8)
+    for b in range(256):
+        bgr[:, 0, 0] = b
+        keep = np.ones(1 << 16, dtype=bool)
+        for cb, cg, cr in colours:
+            keep &= far[(b - int(cb)) ** 2 + (g - int(cg)) ** 2 + (r - int(cr)) ** 2]
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+        table[b << 16:(b + 1) << 16] = np.where(keep, _bins(hsv, cfg), _SUPPRESSED)
+    _BIN_TABLES[key] = table
+    return table
+
+
+def _bins(hsv: np.ndarray, cfg: AppearanceConfig) -> np.ndarray:
+    """Each HSV pixel's bin: hue x saturation when chromatic, else value."""
+    h, s, v = hsv[:, 0].astype(int), hsv[:, 1].astype(int), hsv[:, 2].astype(int)
+    hb = np.minimum(h * cfg.h_bins // 180, cfg.h_bins - 1)
+    sb = np.minimum((s - cfg.achromatic_s) * cfg.s_bins // max(1, 256 - cfg.achromatic_s), cfg.s_bins - 1)
+    vb = np.minimum(v * cfg.v_bins // 256, cfg.v_bins - 1)
+    return np.where(s >= cfg.achromatic_s, hb * cfg.s_bins + sb, cfg.h_bins * cfg.s_bins + vb)
+
+
 def _histogram(
+    pixels_bgr: np.ndarray, cfg: AppearanceConfig, suppress: bool = True, min_pixels: int | None = None
+) -> np.ndarray:
+    """The feature of 8-bit BGR pixels (N, 3): one ``_bin_table`` lookup per pixel and a count, the same vector as
+    ``_histogram_direct`` (which other inputs and settings take)."""
+    table = _bin_table(cfg) if suppress and pixels_bgr.dtype == np.uint8 and pixels_bgr.ndim == 2 \
+        and pixels_bgr.shape[1] == 3 else None
+    if table is None:
+        return _histogram_direct(pixels_bgr, cfg, suppress, min_pixels)
+    px = pixels_bgr
+    idx = (px[:, 0].astype(np.int32) << 16) | (px[:, 1].astype(np.int32) << 8) | px[:, 2]
+    counts = np.bincount(table[idx], minlength=_SUPPRESSED + 1)
+    n = len(px) - int(counts[_SUPPRESSED])
+    if n < (cfg.min_pixels if min_pixels is None else min_pixels):
+        return np.zeros(feature_size(cfg), dtype=np.float32)
+    out = counts[:feature_size(cfg)].astype(np.float32)
+    total = float(out.sum())
+    return out / total if total > 0 else out
+
+
+def _histogram_direct(
     pixels_bgr: np.ndarray, cfg: AppearanceConfig, suppress: bool = True, min_pixels: int | None = None
 ) -> np.ndarray:
     out = np.zeros(feature_size(cfg), dtype=np.float32)

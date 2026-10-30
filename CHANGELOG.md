@@ -5,16 +5,237 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Made shots from the rim, a second game, a faster and sturdier analysis ahead
+
+- **The Studio decides made or missed from the video.** The scorebug's scores no longer confirm, veto or invent shots
+  in the Studio (`EventEngineConfig.score_reconcile = False`): in the Lakers @ Warriors replay the scorebug had turned
+  30 makes the camera saw into misses. Instead the **shot judge** (`courtvision/nba/live_judge.py`) looks again 2.5 s
+  after each of the engine's calls: where the detector saw the ball about the rim (above it, in the net, beside it:
+  `rim_clips.zone_scores`, `makes.zone_features`) and, with a rim model, the rim's own pixels over 2.4 s
+  (`rim_model.py`), weighed by a logistic model fitted on the play-by-play (`tools/nba_live_judge.py`), then keeps or
+  overturns the call (`EventEngine.judge_shot`). Installed as `runs/studio/models/shot-judge.json`. On a stretch of
+  Lakers @ Warriors it was not fitted on, the Studio's made-shot F1 went from 0.32 to 0.81 and made or missed from
+  44% to 93% right; across games (fitted on the other game only) it is right on 84.0% and 77.8% of the engine's shot
+  results against the engine's own 83.3% and 68.9% (docs/research/made_shots_at_the_rim.md).
+- **Rim clips and the rim model.** `tools/nba_rim_clips.py` cuts 2.4 s clips that follow the rim through pans and
+  zooms (the rim always the same size and place); `tools/nba_rim_model.py` trains a ResNet-18 on them (frame
+  differences as motion input) and scores it held out. `nba_analyze.py timeline --zones --rim NAME` adds both to the
+  shot models; `tools/nba_shot_models.py` fits them across games and scores each game with models fitted on the others.
+- **A second game.** Cavaliers @ Warriors, 2017 NBA Finals Game 5 (ABC, 720p at 59.94 fps), added with
+  `nba_new_game.py`; its scorebug layout was discovered automatically. A broadcast whose bug shows a basket sooner or
+  later than ESPN's sets `score_update_lag_s` in its `game.json`.
+- **Faster analysis ahead.** A 50-60 fps video is read at every 2nd frame (`preanalysis.rate_stride`): the detector,
+  tracker and engine are set up for 29.97 fps, and the Studio's detector used to see 60 fps frames 17 ms apart instead
+  of the 33 ms it was trained on. The court is tracked in a worker process that reads the video itself and works ahead
+  (`perception/court_worker.py`), with the same fixes frame for frame. The replay's frame-rate choices now say frames
+  a second.
+- **A failing frame no longer ends an analysis ahead.** Unpaced, one frame's error used to stop the whole analysis (the
+  Lakers @ Warriors replay stopped at 36 of 79 minutes); it is now logged with its traceback, counted in the status
+  (`failed_frames`, `first_error`) and passed over, and only 90 failures in a row stop it.
+- **Team clusters refitted as player crops accumulate** (`TeamConfig.refit_at`; `nba_analyze.py events --team-refit`;
+  always in the Studio). A first fit on the opening frames can split on something other than the teams and used to
+  hold for the whole game: on Cavaliers @ Warriors 83% of the events went to one team and the possession timeline
+  was right on 38.8% of settled play; with refits 75.8%.
+- **Watch for any video analysed ahead.** The analysis ahead records the camera and the ball of every frame, and when
+  it ends builds the possession analysis that research games get from `nba_analyze.py timeline`
+  (`courtvision/nba/auto_analysis.py`): the linked ball, the possession timeline and every shot decided by the shot
+  models (`runs/studio/models/shot-models.json`). **Watch** then works without a research game folder.
+
+---
+
+## [Unreleased] — Replay and analysis reliability
+
+- Switching videos or preparing a new replay discards responses from the previous recording. Leaving and reopening
+  Replay also discards an unfinished seek response.
+- Deleting a video or replay waits until its background worker has finished writing, and clears its replay status.
+  Reopening a live analysis stops the previous game before resetting the shared detector's frame history.
+- Finished games release their scorebug thread and OCR helper process. Two analyses can compile the helper on first
+  use concurrently, and wheel installs include its Swift source.
+- Possession direction and the offline analysis's clip boundaries use decoder timestamps on variable-rate video.
+
+---
+
+## [Unreleased] — Your videos: open, rename and delete them; plainer wording
+
+- **Videos** (the Studio's **Add or open a video**, or **Manage** in the sidebar) lists the games you added with their
+  length, the space each takes and whether its replay is ready, beside the drop zone for a new one. **Rename**,
+  **Delete replay** and **Delete** (a video with its mapping, replays and saved live results, after asking and saying
+  the space it frees; an open video is closed first, one being prepared for replay is stopped) work from there, and
+  the saved results no video owns any more (the demo, older runs) can be deleted together. A video a research game
+  folder uses (`runs/nba/<game>/game.json`) is kept. New endpoints: `GET /api/studio/library`, `POST
+  /api/studio/video/<id>/rename`, `DELETE /api/studio/video/<id>`, `DELETE /api/studio/replay/<id>`, `DELETE
+  /api/studio/analyses`, `POST /api/studio/find`.
+- A video added again (the same file: its size and first and last MiB) is kept once: the browser checks before
+  copying it and opens the one you have; the server drops a second copy too. Live analyses now record which video
+  they were of (`analyses/<run>/source.json`).
+- Readable titles from file names (`YTDown.com_YouTube_Media_<id>_Lakers-vs-Warriors_001_1080p.mp4` becomes "Lakers
+  vs Warriors"), in the sidebar, the title bar and Ask's commands.
+- Plainer wording: the welcome card offers to open your last video; the analysis speed reads "0.70× real time"
+  instead of fps and ms; **Analyse ahead** is now **Prepare replay** ("Replay ready", "Replay works up to 38:45");
+  the feed badge reads "Estimated from video"; the detector note no longer promises a 350 MB download when the NBA
+  detector is installed; the slow-analysis card offers the replay.
+
+---
+
+## [Unreleased] — Faster analysis, the same results
+
+Measured on an M3 Pro, Lakers @ Warriors, before and after on the same frames
+([docs/research/analysis_speed.md](docs/research/analysis_speed.md)).
+
+- The student detector runs on the Neural Engine through Core ML (`perception/student.py`): its weights are exported
+  once to an fp16 ML program, cached by their hash; 7.7 ms a frame where MPS took 28, and the GPU stays free. On the
+  held-out labels the ball F1 is unchanged (0.9608) and person recall moves from 0.8037 to 0.8039. `StudentConfig.
+  backend` ("auto", "coreml", "torch") and `nba_analyze.py detect --backend torch` keep the torch network, whose
+  detections are those of before bit for bit.
+- Each frame is normalised once for the detector, through lookup tables (it used to be normalised three times, once
+  for every stacked sample it was in): 63 ms to 27 ms a detection on torch, the same inputs bit for bit. `detect`
+  decodes and preprocesses on a background thread while the network runs (`nba/analyze.prefetch`).
+- The torso colour feature reads each pixel's bin from a table of every 8-bit colour (`perception/appearance.py`) and
+  the referee test takes its medians from value counts (`nba/analyze.is_referee`): the same features and decisions,
+  8 and 4 times faster.
+- The court search scores its candidate cameras on threads (`COURTVISION_THREADS`, by default up to 8), scores the
+  refining levels' grids in one call per centre, and builds its orientation maps and explained-lines masks faster
+  (`perception/court_search.py`): the same cameras, frame for frame; a re-acquisition 1.40 s to 0.54 s.
+- The Studio reads the scorebug on its own thread while the same frame's players are detected
+  (`perception/broadcast.py`).
+- Results: the Studio's analysis 164 to 47-55 ms a frame on a clip with replays, 118 to 46 ms in live play (0.20-0.28
+  to 0.6-0.72 times real time: a game in about 2 hours instead of 5 to 7); offline `events`
+  14.5 to 5.1 ms a frame with the same `events.jsonl`, `detect` 56.5 to 20.6 ms, court tracking 82.7 to 48 ms where
+  the camera is often lost. With the torch backend the Studio's recording of a clip is identical to before's in every
+  frame and message.
+
+---
+
+## [Unreleased] — Replay: the live analysis done ahead, played at full speed
+
+- The Studio analyses a video ahead of time, in the background (`courtvision/server/preanalysis.py`): the same
+  pipeline and settings as the live view, unpaced, with no cloud calls, one video at a time. It records each analysed
+  frame's boxes and every message the live view gets, with its video time, cut into minutes. An upload starts it when
+  a detector is installed; **Analyse ahead** starts it for any video, at every frame or every 2nd or 3rd frame (2 or 3
+  times sooner). On an M3 Pro it runs at about a quarter of real time.
+- A third way to play the feed, **Replay** (`R`), beside **Live** and **Watch**: the recording at full speed with the
+  tracking boxes drawn over it and the plays, box score, court lens and narration replayed in time with it. It
+  seeks, and plays up to what has been analysed so far. The switch sits at the top of the feed
+  (`static/playback.js`, `static/replay.js`).
+- `StudioGame` moved to `courtvision/server/studio_game.py` (still importable from `courtvision.server.studio`).
+
+---
+
+## [Unreleased] — Plays that need review say why, and what to do
+
+- Each flagged play in the Studio says why the engine flagged it, in plain words (for example "The ball changed
+  teams, but the engine didn't see how"), and has a **Check** button that is always visible. The check dialog asks
+  one question, with **It's right**, **Save changes** and **It didn't happen**. Badges read "Unconfirmed", "70%
+  sure" and "Needs review" instead of "provisional", "70%" and "Review". A change of possession says how the team
+  got the ball ("Home ball off a defensive rebound").
+- Fixed: a play confirmed or corrected in the Studio stayed in the review list and its count. Checking it now clears
+  its flag.
+
+---
+
+## [Unreleased] — The possession analysis in the Studio, and watching it at full speed
+
+- The Studio draws an analysed game on its feed (`courtvision/nba/results.py`, `static/possession.js`). Opening a
+  recording that a game folder under `runs/nba` analyses (the same file, or a copy of it) shows the team with the
+  ball, the score from the shots decided from the video, each decided shot (made or missed, its value, P(made),
+  whether it was found at a rim visit), rebounds, steals and turnovers, and a band of the whole game under the feed.
+  With a play-by-play, its team with the ball and latest line are shown beside them. **Watch** (`W`) plays the
+  recording itself at full speed with sound and seeking (`GET /api/studio/video/<id>`, served in ranges; the token
+  may come in the query, as for the websocket), with the live analysis paused meanwhile.
+- Added `tools/nba_overlay.py`, which renders the same onto a clip of the game with ffmpeg. `--auto SECONDS` picks the
+  stretch with the most going on.
+- `nba_analyze.py timeline` now keeps the play-by-play it was scored against in `timeline.json` (`reference`), and
+  the stretches the team with the ball spends in its back court (`back_court`).
+
+---
+
+## [Unreleased] — Possession timeline and shots from the video (no scorebug), and the Jev frame probe
+
+- Added the possession timeline (`courtvision/nba/timeline.py`, `tools/nba_analyze.py <game> timeline`): which team
+  has the ball is decided once over the whole game by Viterbi, from where the broadcast camera aims, the engine's
+  shot results, rebounds and steals, 3-D flights at the rim and the 8-second back-court rule, with nothing read from
+  the scorebug. Steals, turnovers, rebounds and team labels are rebuilt from it. On Lakers @ Warriors (fitted on one
+  half, scored on the other): the right team in 96.2% of settled live play (the engine alone 73.6%), turnovers F1
+  0.18 → 0.42, steals 0.06 → 0.29, rebounds 0.47 → 0.52, box-score error 0.314 → 0.292.
+- Added shots from the video (`courtvision/nba/makes.py`, part of `nba_analyze.py timeline`): the engine's shot
+  results and the linked ball's visits to a rim it reported nothing at are each a shot or not, a free throw or a
+  field goal (told apart by their setting: the camera off the court before, no dribbling), made or missed, from the
+  engine's rim cues, the ball's path at the rim and what the timeline shows happens next; `--jev` adds TypeSafe
+  Jev's answers on rim crops (`courtvision/nba/rim_jev.py`). The engine's own labels lean on the scorebug. A miss
+  followed by the same team's next attempt is a put-back after an offensive rebound. Made or missed right on 84.8%
+  of real shots (87.6% with Jev), free throw or field goal on 94.9%, points 119 / 95 for 115 / 113 (the engine alone
+  79 / 75), box-score error 0.314 → 0.203.
+- Added `tools/nba_jev_probe.py`: TypeSafe Jev's answers from frames (made shots, the team with the ball, the
+  engine's turnovers) scored against the play-by-play.
+- See [the design note](docs/research/possession_decision_model.md).
+
+---
+
+## [Unreleased] — Studio redesign: court lens, Ask and the model lab
+
+- Rebuilt the Studio dashboard as a keyboard-first workspace: a sidebar with seven views (Live, Box score, Board,
+  Game controls, Court mapping, Scoreboard, Model lab), a broadcast-style scorebug with a draining shot clock, and a
+  Live view with the camera monitor, a score-margin timeline, the court lens and a side panel for plays, people,
+  narration and insights. Graphite chrome; colour comes only from the teams, the ball and status. Light and dark.
+  Local Archivo and IBM Plex Mono type; `static/studio.css` is folded into `static/styles.css`.
+- Added the court lens (`static/lens.js`): the tracked floor in perspective as a lit night arena, players as pins with
+  trails, and the ball drawn at its tracked height with a shadow and flight trail. Drag to orbit; broadcast, overhead
+  and baseline cameras. The empty stage runs the same lens on a scripted possession.
+- Added generative cards (`static/genui.js`): ⌘K / `/` opens Ask, which runs commands or answers questions about the
+  game as live cards built from typed blocks (team duel, leaders, shot chart, plays, player card, momentum, tracking,
+  model lab). Answers are composed on the device; with Anthropic credentials, open questions can go to Claude
+  (`POST /api/ask`, structured output on `claude-opus-5-5` at low effort). Data blocks name live sources, never
+  numbers, so cards cannot show figures the game data does not hold. Cards pin to the Board and stay live. The Live
+  side panel opens with a briefing composed from the workspace state (setup steps, review queue, runs, leaders).
+- Added the model lab (`courtvision/server/lab.py`, `GET /api/lab`): the NBA learning loop's model versions, each
+  game's stages, the next step and its command, free memory, other jobs and the leaderboard. It can start
+  `tools/nba_loop.py run` (one step, or every ready step) with the loop's own memory guard and watchdog, stop it,
+  show its log, and promote a candidate that passes the held-out rule.
+- `G` then a letter switches views; `P`, `M`, `D`, `A`, `O`, `F`, `]` and `?` act anywhere outside text fields.
+- See [the workspace guide](docs/STUDIO.md).
+
+---
+
+## [Unreleased] — NBA broadcasts: analysis, evaluation and the learning loop
+
+- Added NBA broadcast analysis scored against the ESPN box score and play-by-play (research use;
+  [docs/NBA.md](docs/NBA.md)): scorebug reading with Apple Vision, click-free court registration and tracking, a
+  ResNet-18 CenterNet student detector trained on the footage, one ball path with 3-D ballistic fits, and scorebug
+  fusion of the event engine's output.
+- Added the learning loop (`tools/nba_loop.py`): every analysed game is scored and mined for training data, and a
+  model becomes current only when it does better on games it was not fitted on. `nba_mac_jobs.sh` takes
+  `DET_WORKERS` for parallel full-game detection.
+- Any NBA game recording joins with one command (`tools/nba_new_game.py`, or `--batch` for a CSV), from the ESPN
+  event found by date and teams. Scorebug layouts are discovered for any broadcaster (`scorebug_profile.json`, else
+  the ESPN 2024 layout); frame rates (29.97 / 59.94 / 50 fps, variable-rate video) and sizes (720p to 4K) are
+  converted.
+- Scorebug fusion rules: shot-clock resets mark rim touches (a reset that counts at once is a change of possession),
+  engine misses with no sign on the shot clock are dropped, a shot takes the team attacking the camera's half at the
+  rim, rebounds follow the reset to 14 or 24, steals and turnovers need a reset no shot explains, assists take the
+  last pass in the scorer's possession, and `team_map` swaps engine teams the scorebug contradicts. Team rebounds and
+  dead-ball turnovers are off by default: their triggers failed on Q2-Q4.
+- Court tracking masks the scorebug the scan found (`nba_track_court.py --scorebug-profile` names another), reads
+  line evidence only around the projected court, and re-acquires sooner after a loss in play. `tools/court_bench.py`
+  is a fixed-seed synthetic arena benchmark for it; those gains are synthetic only so far.
+- Measured on one game, Lakers @ Warriors (2024-12-25): box-score error 0.305 before the fusion work, **0.068**
+  after, on the first quarter (in-sample: the fusion rules were tuned on it); ball within 15 px on 95.7% of 256
+  held-out labelled frames. See [NBA broadcast accuracy](README.md#nba-broadcast-accuracy).
+
+---
+
 ## [Unreleased] — video studio and round 5
 
+- Made the Mac launcher self-installing: `Start CourtVision.command` now finds or installs Python, builds
+  `.venv`, stores optional API keys in the macOS Keychain and can add a CourtVision app to `~/Applications`
+  (`scripts/mac/courtvision.sh`).
 - Added `courtvision studio --open` and a Mac launcher: local video upload, actual processed-frame monitor,
   player/ball overlays, pause/speed/restart, saved court setup, recent footage and JSON export.
-- Reworked the dashboard around the footage, with local Manrope typography, a restrained neutral palette,
-  tracking status and a court-landmark guide. Existing operator/stats tools remain available.
+- Reworked the dashboard around the footage, with a restrained neutral palette, tracking status and a
+  court-landmark guide. Existing operator/stats tools remain available.
 - Added streamed uploads with decoder validation and existing auth/Origin/Host guards. Separate run folders
   preserve prior outputs; new analyses clear old hub snapshots, events and queued replay messages.
 - Integrated round 5, including pump fakes, transition-confirmed mono steals and reviewed truth3d fixes.
-  Held-out simulator F1: truth3d **0.991**, mono **0.815**, video **0.792**. NBA event accuracy is unmeasured.
+  Held-out simulator F1: truth3d **0.991**, mono **0.815**, video **0.792**. NBA broadcast accuracy is reported in the NBA broadcasts entry.
 - Re-pinned the rendered CLI fixture to a settled-possession window after the simulator flow changed;
   retained its original event assertion. Added workspace integration tests and refreshed timing documentation.
 - See [workspace validation and limitations](docs/STUDIO.md).

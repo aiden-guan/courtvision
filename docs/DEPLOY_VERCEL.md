@@ -10,14 +10,18 @@ watch-only showcase (`courtvision studio --public-demo`).
 - Read everything the dashboard shows (box score, shot chart, play-by-play, narration).
 
 Everything else is refused with 403: uploads, detector setup, game controls, manual events,
-calibration and scoreboard setup. Real footage analysis stays on your own machine.
+calibration, scoreboard setup, the video library, replays, the model lab and Ask. Real footage
+analysis stays on your own machine.
 
-## No API spend
+## No API keys: the local engine only
 
-`--public-demo` removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `TYPESAFE_API_KEY`
-from the process at startup and forces `narration.llm_enabled=false` and `jev.mode=off` for
-every run, so narration is template-only and nothing is billed even if the keys are still set
-in the Vercel project. Deleting them from the project is still the tidiest option.
+The demo runs on the local engine alone: the simulated game, the event engine and template
+narration, with no Claude and no Jev. `--public-demo` removes `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_IDENTITY_TOKEN(_FILE)` and `TYPESAFE_API_KEY` from the
+process at startup; every run forces `narration.llm_enabled=false` and `jev.mode=off` and is
+given no keys, not even a Jev key saved in a `.env`; and Ask, the other feature that calls
+Claude, is refused. Nothing is billed even if keys are still set in the Vercel project.
+Deleting them from the project is still the tidiest option.
 
 ## Host check
 

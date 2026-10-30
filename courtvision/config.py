@@ -166,6 +166,13 @@ class PerceptionSettings:
     broadcast_config: BroadcastPerceptionConfig = field(default_factory=BroadcastPerceptionConfig)
     scorebug_layout_path: str | None = None  # ScorebugLayout JSON (broadcast scorebug fields)
     glyph_bank_path: str | None = None  # GlyphBank JSON (learned scorebug glyphs); None = bootstrap from a font
+    # Broadcast footage without a calibration: find the game camera from the court lines (perception/broadcast_court.py)
+    # instead of waiting for operator clicks; the camera centre is estimated once from auto_court_frames frames.
+    auto_court: bool = True
+    auto_court_frames: int = 6
+    auto_court_every_s: float = 1.0
+    auto_court_tries: int = 20
+    scorebug_ocr: bool = True  # real broadcasts on macOS: read an ESPN-style scorebug with Apple Vision text recognition
 
 
 @dataclass
@@ -227,6 +234,13 @@ class PipelineSettings:
     webvtt_path: str | None = None  # also write an HLS WebVTT caption file
     status_hz: float = 1.0  # status messages (pause / speed / lag) to the hub
     hub_decisions: int = 40  # newest decision grades per hub stats message, slimmed (stats.json keeps all)
+    # The shot judge's model (nba/live_judge.py, fitted by tools/nba_live_judge.py): made or missed decided again from
+    # the detector's ball about the rim a moment after the engine's call. None, or a missing file: no judge
+    shot_judge: str | None = None
+    # Broadcast court tracking of a video file in a worker process that reads the video itself and works ahead of the
+    # detector (perception/court_worker.py; the same fixes, about half the time per frame). For analyses that read the
+    # video straight through (the Studio's analysis ahead)
+    court_worker: bool = False
 
 
 @dataclass

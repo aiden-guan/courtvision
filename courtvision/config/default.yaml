@@ -433,8 +433,15 @@ perception:
     cut_threshold: 0.35  # Bhattacharyya distance of consecutive HSV histograms; tuned on sim renders
     live_requires_scorebug: true  # a replay hides the scorebug
     scoreboard_hz: 5.0  # D14
+    rectify_boxes: false  # Re-draw person boxes as a standing player at the box centre through the tracked camera (automatic court tra...
+    rim_crops: false  # Cut each rim in view out of the frame (FrameState.rim_crops) for the shot judge's rim model (nba/live_judge...
   scorebug_layout_path: null  # ScorebugLayout JSON (broadcast scorebug fields)
   glyph_bank_path: null  # GlyphBank JSON (learned scorebug glyphs); None = bootstrap from a font
+  auto_court: true  # Broadcast footage without a calibration: find the game camera from the court lines (perception/broadcast_co...
+  auto_court_frames: 6
+  auto_court_every_s: 1.0
+  auto_court_tries: 20
+  scorebug_ocr: true  # real broadcasts on macOS: read an ESPN-style scorebug with Apple Vision text recognition
 
 # events: event engine thresholds
 events:
@@ -647,6 +654,7 @@ events:
   pass_conf: 0.9  # tuned
   dribble_conf: 0.8  # tuned
   default_attacking: {home: right, away: left}  # assumption until shots are seen
+  score_reconcile: true  # --- reconciliation (reconcile.py) Score changes decide shot results: confirm or veto makes, flip misses, in...
   make_confirm_wait_s: 3.0  # make-wait band (§7A.5 / narration §11.2); sourced (placeholder)
   make_to_miss_conf: 0.7  # max confidence of a make revised to a miss for lack of a delta (needs_review); tuned
   reconcile_match_back_s: 10.0  # delta may lag the make by up to this; unverified
@@ -995,6 +1003,8 @@ pipeline:
   webvtt_path: null  # also write an HLS WebVTT caption file
   status_hz: 1.0  # status messages (pause / speed / lag) to the hub
   hub_decisions: 40  # newest decision grades per hub stats message, slimmed (stats.json keeps all)
+  shot_judge: null  # The shot judge's model (nba/live_judge.py, fitted by tools/nba_live_judge.py): made or missed decided again...
+  court_worker: false  # Broadcast court tracking of a video file in a worker process that reads the video itself and works ahead of...
 
 # eval: truth comparison (sim sources)
 eval:

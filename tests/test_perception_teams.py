@@ -127,3 +127,34 @@ def test_siglip_embedder_with_injected_fakes() -> None:
     assert out.shape == (3, 3)
     assert out[0, 2] > 200 and out[1, 0] > 200  # RGB order: blue patch -> channel 2
     assert not out[2].any()  # crop outside the frame -> zero row
+
+
+def test_a_refit_mends_a_first_fit_on_one_team_and_keeps_the_order() -> None:
+    """The first fit sees one team only (two shades of it); refits as both teams come into view separate them, and
+    the clusters keep their names from one fit to the next (no colour anchors)."""
+    rng = np.random.default_rng(3)
+    white, white_shade, black = (235, 235, 235), (200, 205, 215), (35, 35, 35)
+    clf = TeamClassifier(TeamConfig(min_fit_samples=30, refit_at=(150, 600)))
+    for k in range(30):
+        clf.observe(patch_feature(white if k % 2 else white_shade, rng))
+    assert clf.fit() and not clf.refit_due
+    first = clf.predict(patch_feature(white, rng))[0]
+    for k in range(120):
+        clf.observe(patch_feature(white if k % 2 else black, rng))
+    assert clf.refit_due and clf.fit()
+    got = {name: {clf.predict(patch_feature(bgr, rng))[0] for _ in range(10)}
+           for name, bgr in (("white", white), ("shade", white_shade), ("black", black))}
+    assert got["white"] == got["shade"] == {first} and got["black"] == {Team.AWAY if first is Team.HOME else Team.HOME}
+    for k in range(450):  # the next refit names them as before
+        clf.observe(patch_feature(white if k % 2 else black, rng))
+    assert clf.refit_due and clf.fit() and clf.predict(patch_feature(white, rng))[0] is first
+
+
+def test_no_refit_by_default() -> None:
+    rng = np.random.default_rng(4)
+    clf = TeamClassifier(TeamConfig(min_fit_samples=10))
+    for k in range(200):
+        clf.observe(patch_feature((235, 235, 235) if k % 2 else (35, 35, 35), rng))
+        if clf.n_samples >= 10 and not clf.is_fitted:
+            clf.fit()
+        assert not clf.refit_due

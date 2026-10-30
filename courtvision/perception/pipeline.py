@@ -213,6 +213,7 @@ class PerceptionPipeline:
         ball = self.ball_tracker.update(fd.of(ObjClass.BALL), frame_idx, t, self._floor(),
                                         people=[tr.bbox for tr in tracks if tr.time_since_update == 0])
         self._forget_old(frame_idx, {tr.track_id for tr in tracks})
+        balls = fd.of(ObjClass.BALL)
         return FrameState(
             frame_idx=frame_idx,
             t=t,
@@ -221,6 +222,8 @@ class PerceptionPipeline:
             rims=self._rims(fd.of(ObjClass.RIM)),
             scoreboard=self._read_scoreboard(frame_bgr, t),
             image_size=(w, h),
+            balls=np.array([((b.bbox.x1 + b.bbox.x2) / 2.0, (b.bbox.y1 + b.bbox.y2) / 2.0, b.score) for b in balls],
+                           np.float32).reshape(-1, 3),
         )
 
     # ------------------------------------------------------------------ construction
@@ -268,7 +271,8 @@ class PerceptionPipeline:
                 self.teams.observe(tr.embedding)
             team, conf = self.teams.predict(tr.embedding)
             self.team_votes.add(tr.track_id, team, conf)
-        if not self.teams.is_fitted and self.teams.n_samples >= self.teams.config.min_fit_samples:
+        if (not self.teams.is_fitted and self.teams.n_samples >= self.teams.config.min_fit_samples) \
+                or self.teams.refit_due:
             self.teams.fit()
         return {tr.track_id: self.team_votes.get(tr.track_id) for tr in players}
 

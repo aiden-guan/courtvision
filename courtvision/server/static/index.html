@@ -2,413 +2,652 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <meta name="description" content="A local basketball video workspace. Follow the footage, player tracks, live events and box score in one view.">
-  <title>CourtVision — Game studio</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23eb6834'/%3E%3Cpath d='M3 16h26M16 3v26M7 7c5 4 5 14 0 18M25 7c-5 4-5 14 0 18' stroke='%230b0b0b' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="static/styles.css?v=20261026r5">
-  <link rel="stylesheet" href="static/studio.css?v=20261026r5">
-  <script src="static/app.js?v=20261026r5" defer></script>
-  <script src="static/studio.js?v=20261026r5" defer></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#08090a">
+  <meta name="description" content="A local basketball video workspace. Footage, player tracks, the court, live plays, the box score and the model lab in one view.">
+  <title>CourtVision Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308090a'/%3E%3Cpath d='M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5' fill='none' stroke='%23edeef0' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3.8' fill='%23ff7a2f'/%3E%3C/svg%3E">
+  <link rel="preload" href="static/archivo.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="static/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="static/styles.css?v=20261029-library5">
+  <script src="static/lens.js?v=20261029-library5" defer></script>
+  <script src="static/app.js?v=20261029-library5" defer></script>
+  <script src="static/studio.js?v=20261029-library5" defer></script>
+  <script src="static/playback.js?v=20261029-library5" defer></script>
+  <script src="static/possession.js?v=20261029-library5" defer></script>
+  <script src="static/replay.js?v=20261029-library5" defer></script>
+  <script src="static/genui.js?v=20261029-library5" defer></script>
+  <script src="static/lab.js?v=20261029-library5" defer></script>
+  <script src="static/shell.js?v=20261029-library5" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
 
-<header class="workspace-header">
-  <a class="studio-brand" href="/" aria-label="CourtVision home"><svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="8" fill="currentColor"/><path d="M23 10a9 9 0 1 0 0 12M16 7v18M7 16h10" fill="none" stroke="#fff" stroke-width="1.7"/><circle cx="23" cy="16" r="2" fill="#fff"/></svg><span>CourtVision<span class="brand-divider">/</span><span class="studio-word">Studio</span></span></a>
-  <div class="workspace-actions"><span class="local-indicator"><span></span>Local workspace</span><button type="button" class="btn" id="studio-export" disabled>Export analysis <span aria-hidden="true">↗</span></button><button type="button" class="btn btn-primary" id="studio-open"><span aria-hidden="true">＋</span> Open video</button></div>
-</header>
-
-<div class="workspace-heading"><div><p class="eyebrow">BASKETBALL INTELLIGENCE</p><h1 id="studio-title">See the whole game.</h1><p id="studio-subtitle">Your footage. Every movement. A clearer picture.</p></div><div class="session-label" id="studio-session-label"><span class="signal-mark" aria-hidden="true">▂ ▅ ▃ ▇</span><span>Ready when you are</span></div></div>
-
-<header class="scorebar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true"></span>
-    <span class="brand-name">CourtVision</span>
-  </div>
-
-  <div class="scoreline" role="group" aria-label="Score and clock">
-    <div class="team team-away">
-      <span class="team-bar" aria-hidden="true"></span>
-      <span class="team-name" id="away-name">Away</span>
-      <span class="team-abbr" id="away-abbr" aria-hidden="true">AWY</span>
-      <span class="poss" id="away-poss" aria-hidden="true"></span>
-      <span class="score" id="away-score">0</span>
+<div class="app">
+  <aside class="sidebar" id="sidebar" aria-label="Workspace">
+    <div class="side-top">
+      <a class="brand" href="/" aria-label="CourtVision Studio home">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path class="frame-path" d="M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5"/><circle class="glow" cx="16" cy="16" r="7.5"/><circle class="ball" cx="16" cy="16" r="3.8"/></svg>
+        <span class="brand-name">CourtVision</span><span class="brand-tag">Studio</span>
+      </a>
+      <button type="button" class="icon-btn side-close" id="side-close" aria-label="Close navigation"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
     </div>
-    <div class="clockbox">
-      <span class="period" id="period">&ndash;</span>
-      <span class="game-clock" id="game-clock">--:--</span>
-      <span class="shot-clock" id="shot-clock" title="Shot clock">--</span>
-    </div>
-    <div class="team team-home">
-      <span class="score" id="home-score">0</span>
-      <span class="poss" id="home-poss" aria-hidden="true"></span>
-      <span class="team-name" id="home-name">Home</span>
-      <span class="team-abbr" id="home-abbr" aria-hidden="true">HOM</span>
-      <span class="team-bar" aria-hidden="true"></span>
-    </div>
-    <span class="sr-only" id="poss-sr"></span>
-  </div>
 
-  <div class="bar-right">
-    <span id="score-source-label" class="score-source-label">Score unavailable</span>
-    <span class="flag" id="paused-flag" hidden>Paused</span>
-    <span class="flag flag-muted" id="muted-flag" hidden>Muted</span>
-    <div class="conn" id="conn-status" role="status" data-state="connecting">
-      <span class="conn-dot" aria-hidden="true"></span><span id="conn-label">Connecting</span>
-    </div>
-    <button type="button" class="icon-btn" id="btn-settings" aria-label="Settings" title="Settings">
-      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <button type="button" class="ask-trigger" id="ask-open" aria-keyshortcuts="Meta+K Control+K">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8l1.35 3.5 3.5 1.35-3.5 1.35L8 11.5 6.65 8 3.15 6.65 6.65 5.3z"/><path d="M12.6 10.6l.55 1.4 1.4.55-1.4.55-.55 1.4-.55-1.4-1.4-.55 1.4-.55z"/></svg>
+      <span>Ask or jump to…</span><span class="kbd-row"><kbd id="ask-mod">⌘</kbd><kbd>K</kbd></span>
     </button>
+
+    <nav class="side-nav" id="side-nav" role="tablist" aria-label="Views" aria-orientation="vertical">
+      <span class="nav-indicator" id="nav-indicator" aria-hidden="true"></span>
+      <p class="nav-group" aria-hidden="true">Game</p>
+      <button type="button" class="nav-item" role="tab" id="tab-live" aria-controls="view-live" aria-selected="true" data-keys="G L">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="1.6"/><path d="M5.2 5.2a4 4 0 0 0 0 5.6M10.8 5.2a4 4 0 0 1 0 5.6M3.1 3.1a6.9 6.9 0 0 0 0 9.8M12.9 3.1a6.9 6.9 0 0 1 0 9.8"/></svg>
+        <span class="nav-label">Live</span><span class="nav-live" aria-hidden="true"></span><span class="nav-keys" aria-hidden="true"><kbd>G</kbd><kbd>L</kbd></span>
+      </button>
+      <button type="button" class="nav-item" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false" tabindex="-1" data-keys="G S">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 13.5v-4M6.3 13.5v-7M9.7 13.5V8M13 13.5v-11"/></svg>
+        <span class="nav-label">Box score</span><span class="nav-keys" aria-hidden="true"><kbd>G</kbd><kbd>S</kbd></span>
+      </button>
+      <button type="button" class="nav-item" role="tab" id="tab-board" aria-controls="view-board" aria-selected="false" tabindex="-1" data-keys="G B">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><path d="M11.25 9.2v4.1M9.2 11.25h4.1"/></svg>
+        <span class="nav-label">Board</span><span class="nav-count" id="board-count"></span><span class="nav-keys" aria-hidden="true"><kbd>G</kbd><kbd>B</kbd></span>
+      </button>
+      <button type="button" class="nav-item" role="tab" id="tab-operator" aria-controls="view-operator" aria-selected="false" tabindex="-1" data-keys="G C">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 5h3M8.5 5h5M2.5 11h7M12.5 11h1"/><circle cx="7" cy="5" r="1.5"/><circle cx="11" cy="11" r="1.5"/></svg>
+        <span class="nav-label">Game controls</span><span class="nav-keys" aria-hidden="true"><kbd>G</kbd><kbd>C</kbd></span>
+      </button>
+      <p class="nav-group" aria-hidden="true">Setup</p>
+      <button type="button" class="nav-item" role="tab" id="tab-calibration" aria-controls="view-calibration" aria-selected="false" tabindex="-1" data-keys="G M">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="1"/><path d="M8 3.5v9"/><circle cx="8" cy="8" r="1.7"/><path d="M1.5 6h2.2v4H1.5M14.5 6h-2.2v4h2.2"/></svg>
+        <span class="nav-label">Court mapping</span><span class="nav-keys" aria-hidden="true"><kbd>G</kbd><kbd>M</kbd></span>
+      </button>
+      <button type="button" class="nav-item" role="tab" id="tab-roi" aria-controls="view-roi" aria-selected="false" tabindex="-1" data-keys="G R">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="4" width="13" height="8" rx="1.5"/><path d="M4.5 6.8v2.4M6.5 6.8v2.4M9.5 6.8h2v2.4h-2z"/></svg>
+        <span class="nav-label">Scoreboard</span><span class="nav-keys" aria-hidden="true"><kbd>G</kbd><kbd>R</kbd></span>
+      </button>
+      <p class="nav-group" aria-hidden="true">Training</p>
+      <button type="button" class="nav-item" role="tab" id="tab-lab" aria-controls="view-lab" aria-selected="false" tabindex="-1" data-keys="G T">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.2 2h3.6M6.7 2v4.2L3.1 12.4A1.1 1.1 0 0 0 4.1 14h7.8a1.1 1.1 0 0 0 1-1.6L9.3 6.2V2"/><path d="M4.6 10h6.8"/></svg>
+        <span class="nav-label">Model lab</span><span class="nav-badge" id="lab-badge" hidden></span><span class="nav-keys" aria-hidden="true"><kbd>G</kbd><kbd>T</kbd></span>
+      </button>
+    </nav>
+
+    <section class="side-footage" id="studio-recent" aria-label="Videos" hidden>
+      <p class="nav-group side-footage-head">Videos<button type="button" class="link-btn" id="studio-manage">Manage</button></p>
+      <div id="studio-video-list"></div>
+    </section>
+
+    <div class="side-bottom">
+      <button type="button" class="btn btn-primary btn-block" id="studio-open"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Add or open a video</button>
+      <div class="sys-card" role="group" aria-label="System status">
+        <div class="sys-row" id="sys-detector" data-tone="idle"><span class="dot" aria-hidden="true"></span><span id="sys-detector-label">Detector not prepared</span></div>
+        <div class="sys-row conn" id="conn-status" role="status" data-state="connecting"><span class="dot" aria-hidden="true"></span><span id="conn-label">Connecting</span></div>
+        <div class="sys-row" id="sys-cloud" data-tone="idle"><span class="dot" aria-hidden="true"></span><span id="studio-cloud">Local processing</span></div>
+      </div>
+      <div class="side-actions">
+        <button type="button" class="icon-btn" id="btn-settings" aria-label="Settings" title="Settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7 3.6 3.6"/></svg></button>
+        <button type="button" class="icon-btn" id="theme-toggle" aria-label="Switch theme" title="Switch theme"><svg class="i-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z"/></svg></button>
+        <button type="button" class="icon-btn" id="shortcuts-open" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4 7h.01M6.5 7h.01M9 7h.01M11.5 7h.01M5 10h6"/></svg></button>
+        <span class="sys-clock" id="sys-clock" aria-hidden="true">--:--:--</span>
+      </div>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim" aria-hidden="true"></div>
+
+  <div class="main-frame">
+    <main class="panel" id="main" tabindex="-1">
+      <header class="panel-head">
+        <div class="head-left">
+          <button type="button" class="icon-btn menu-btn" id="menu-open" aria-label="Open navigation"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></svg></button>
+          <div class="crumbs">
+            <span class="crumb-view" id="crumb-view">Live</span><span class="crumb-sep" aria-hidden="true">/</span>
+            <span class="crumb-title" id="studio-title">Game studio</span>
+          </div>
+          <span class="session-pill"><span class="dot" aria-hidden="true"></span><span id="studio-session-label">Ready for footage</span></span>
+        </div>
+
+        <section class="scorebug device" id="scorebug" aria-label="Score and clock">
+          <div class="sb-team sb-away">
+            <span class="sb-name"><span class="team-abbr" id="away-abbr" aria-hidden="true">AWY</span><span class="team-name" id="away-name">Away</span></span>
+            <span class="poss" id="away-poss" aria-hidden="true"></span>
+            <span class="score" id="away-score">0</span>
+          </div>
+          <div class="sb-clock">
+            <span class="period" id="period">&ndash;</span>
+            <span class="game-clock" id="game-clock">--:--</span>
+            <span class="shot-box" id="shot-box"><span class="shot-clock" id="shot-clock" title="Shot clock">--</span><i class="shot-fill" aria-hidden="true"></i></span>
+          </div>
+          <div class="sb-team sb-home">
+            <span class="sb-name"><span class="team-abbr" id="home-abbr" aria-hidden="true">HOM</span><span class="team-name" id="home-name">Home</span></span>
+            <span class="poss" id="home-poss" aria-hidden="true"></span>
+            <span class="score" id="home-score">0</span>
+          </div>
+          <span class="sr-only" id="poss-sr"></span>
+        </section>
+
+        <div class="head-actions">
+          <span class="head-meta" id="score-source-label">Score unavailable</span>
+          <span class="flag" id="paused-flag" hidden>Paused</span>
+          <span class="flag flag-muted" id="muted-flag" hidden>Muted</span>
+          <button type="button" class="btn btn-ghost btn-sm" id="studio-export" disabled title="Download the analysis as JSON"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5v8M4.8 7.6 8 10.8l3.2-3.2M2.8 13.5h10.4"/></svg><span class="btn-label">Export</span></button>
+          <button type="button" class="icon-btn" id="rail-toggle" aria-pressed="true" aria-label="Show side panel" title="Side panel (])"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1.8" y="2.5" width="12.4" height="11" rx="2"/><path d="M10 2.5v11"/></svg></button>
+        </div>
+      </header>
+
+      <div class="views">
+
+        <!-- ======================================================== LIVE -->
+        <section class="view view-live" id="view-live" role="tabpanel" aria-labelledby="tab-live">
+          <div class="live-main">
+            <article class="stage device" aria-label="Game feed">
+              <div class="monitor-screen" id="monitor-screen">
+                <img id="studio-frame" alt="Current processed game frame with player and ball tracking" hidden>
+                <video id="watch-video" playsinline preload="metadata" controls controlslist="nofullscreen noremoteplayback" disablepictureinpicture hidden></video>
+                <canvas id="replay-canvas" aria-hidden="true" hidden></canvas>
+                <div class="mode-switch glass" id="mode-switch" role="group" aria-label="How the feed plays" hidden>
+                  <button type="button" data-mode="live" aria-pressed="true">Live</button>
+                  <button type="button" data-mode="watch" aria-pressed="false">Watch</button>
+                  <button type="button" data-mode="replay" aria-pressed="false">Replay</button>
+                </div>
+                <div class="monitor-empty" id="studio-empty">
+                  <canvas class="hero-lens" id="hero-lens" aria-hidden="true"></canvas>
+                  <div class="hero-copy">
+                    <p class="hero-kicker"><span class="dot" aria-hidden="true"></span>On-device basketball vision</p>
+                    <h1 class="hero-title">Every possession, <em>mapped.</em></h1>
+                    <p class="hero-lede">Load a game. CourtVision tracks the players and the ball, places them on the floor and logs each play. Footage never leaves this Mac.</p>
+                    <div class="hero-actions">
+                      <button type="button" class="btn btn-primary btn-lg" id="studio-empty-open"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Add or open a video</button>
+                      <button type="button" class="btn btn-lg" id="studio-demo">Run the demo game</button>
+                    </div>
+                    <p class="hero-meta">MP4 · MOV · MKV · AVI, up to 8 GB</p>
+                  </div>
+                  <p class="hero-caption" aria-hidden="true"><i></i>Court lens · scripted possession</p>
+                </div>
+                <div class="feed-hud" aria-hidden="true">
+                  <i class="vf vf-tl"></i><i class="vf vf-tr"></i><i class="vf vf-bl"></i><i class="vf vf-br"></i>
+                  <span class="feed-rec">REC</span>
+                  <span class="feed-clock" id="feed-clock"></span>
+                </div>
+                <div class="monitor-loading" id="studio-loading" hidden><span class="orbit" aria-hidden="true"></span><p id="studio-loading-label">Opening game feed</p></div>
+                <div class="monitor-badge glass" id="monitor-badge" hidden title="Players, the ball and plays are estimated by the computer from the video: check them before using them as statistics">ESTIMATED FROM VIDEO</div>
+                <div class="poss-hud glass" id="poss-hud" hidden>
+                  <p class="poss-now"><span class="poss-chip" id="poss-team" data-team="">No team</span><span class="poss-phase" id="poss-phase"></span></p>
+                  <p class="poss-line"><span class="poss-key">From the video</span><span id="poss-score"></span></p>
+                  <p class="poss-line" id="poss-ref-line" hidden><span class="poss-key">Play-by-play</span><span id="poss-ref"></span></p>
+                  <p class="poss-play" id="poss-play" hidden></p>
+                  <p class="poss-measure" id="poss-measure"></p>
+                </div>
+                <div class="poss-feed" id="poss-feed" aria-live="polite" hidden></div>
+                <div class="monitor-tools">
+                  <button type="button" class="tool-pill glass" id="studio-clear-focus" hidden>Show all tracks</button>
+                  <label class="tool-pill glass overlay-switch" id="poss-switch" hidden title="Possession analysis (B)"><input type="checkbox" id="poss-toggle" checked><span class="track" aria-hidden="true"></span><span>Possession</span></label>
+                  <label class="tool-pill glass overlay-switch"><input type="checkbox" id="studio-overlay" checked><span class="track" aria-hidden="true"></span><span>Tracking overlay</span></label>
+                  <button type="button" class="tool-pill glass icon" id="studio-fullscreen" aria-label="Expand game feed" title="Expand game feed (F)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg></button>
+                </div>
+              </div>
+              <div class="transport">
+                <div class="poss-ribbon" id="poss-ribbon" hidden title="Who had the ball, from the video (upper band) and the play-by-play (lower band). Ticks are the decided shots: tall for made, short for missed. While watching, click to jump there.">
+                  <svg id="poss-ribbon-svg" viewBox="0 0 1000 13" preserveAspectRatio="none" aria-hidden="true"></svg>
+                  <span class="poss-head" id="poss-head" hidden></span>
+                </div>
+                <div class="scrub" id="monitor-progress">
+                  <svg class="momentum" id="momentum" viewBox="0 0 1000 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+                  <div class="scrub-track"><span class="scrub-fill"></span></div>
+                  <span class="scrub-head" aria-hidden="true"></span>
+                  <div class="timeline-marks" id="timeline-marks" aria-hidden="true"></div>
+                  <progress id="studio-progress" max="100" value="0" aria-label="Video analysis progress"></progress>
+                </div>
+                <div class="transport-row">
+                  <button type="button" id="studio-play" class="play-control" data-state="pause" aria-label="Pause analysis" disabled><svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="2.5" width="3" height="11" rx="1"/><rect x="9.5" y="2.5" width="3" height="11" rx="1"/></svg><svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.8v10.4a.6.6 0 0 0 .9.5l8.3-5.2a.6.6 0 0 0 0-1L5.4 2.3a.6.6 0 0 0-.9.5Z"/></svg><svg class="i-restart" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v2.8h2.8"/></svg></button>
+                  <span class="timecode"><span id="studio-time">00:00</span><span class="time-divider">/</span><span id="studio-duration">--:--</span></span>
+                  <span class="monitor-source" id="monitor-source">No footage open</span>
+                  <span class="spacer"></span>
+                  <span class="throughput" id="studio-throughput">Awaiting footage</span>
+                  <label class="sr-only" for="studio-speed">Playback speed</label>
+                  <select id="studio-speed" disabled><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
+                </div>
+              </div>
+            </article>
+
+            <div class="vision-strip" role="group" aria-label="Tracking status">
+              <div class="vision-cell">
+                <span class="vision-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="6" cy="5" r="2.2"/><path d="M2 13.5c.4-2.4 2-3.7 4-3.7s3.6 1.3 4 3.7"/><path d="M10.6 3a2.1 2.1 0 0 1 0 4.1M12 9.9c1.2.5 1.9 1.7 2.1 3.6"/></svg></span>
+                <span class="vision-text"><span class="vision-label">People tracked</span><strong id="vision-people">—</strong></span>
+              </div>
+              <div class="vision-cell">
+                <span class="vision-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2v12M3.9 3.8c2.2 2.3 2.2 6.1 0 8.4M12.1 3.8c-2.2 2.3-2.2 6.1 0 8.4"/></svg></span>
+                <span class="vision-text"><span class="vision-label">Ball</span><strong id="vision-ball" data-tone="idle">Awaiting footage</strong></span>
+              </div>
+              <div class="vision-cell">
+                <span class="vision-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="1"/><path d="M8 3.5v9"/><circle cx="8" cy="8" r="1.7"/></svg></span>
+                <span class="vision-text"><span class="vision-label">Court mapping</span><strong id="vision-court" data-tone="warn">Needs setup</strong></span>
+                <button type="button" id="studio-calibrate" class="link-btn">Map court</button>
+              </div>
+              <div class="vision-cell" id="poss-cell">
+                <span class="vision-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 12.5h13"/><path d="M3 12.5V9.5h3v3M6.5 12.5V6h3v6.5M10 12.5V3.5h3v9"/></svg></span>
+                <span class="vision-text"><span class="vision-label">Possession</span><strong id="vision-poss" data-tone="idle">—</strong></span>
+                <button type="button" id="poss-watch" class="link-btn" hidden>Watch</button>
+              </div>
+              <div class="pre-row" id="pre-row" hidden>
+                <span class="vision-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v9h-11z"/><path d="M6.5 6v4l3.5-2z"/></svg></span>
+                <span class="pre-text"><strong id="pre-title" data-tone="idle">No replay yet</strong><span id="pre-detail"></span></span>
+                <span class="pre-bar" id="pre-bar" hidden><i id="pre-fill"></i></span>
+                <label class="sr-only" for="pre-stride">Frames to analyse</label>
+                <select id="pre-stride" hidden><option value="1">30 frames a second</option><option value="2">15 frames a second · 2× sooner</option><option value="3">10 frames a second · 3× sooner</option></select>
+                <button type="button" id="pre-action" class="link-btn" hidden>Prepare replay</button>
+              </div>
+            </div>
+
+            <div class="live-lower">
+              <article class="lens-card device" aria-label="Court lens">
+                <header class="lens-head">
+                  <div class="lens-title"><h2>Court lens</h2><span id="lens-sub">Drag to orbit · double-click to reset</span></div>
+                  <div class="seg" role="group" aria-label="Camera">
+                    <button type="button" class="seg-btn" data-lens="broadcast" aria-pressed="true">Broadcast</button>
+                    <button type="button" class="seg-btn" data-lens="overhead" aria-pressed="false">Overhead</button>
+                    <button type="button" class="seg-btn" data-lens="baseline" aria-pressed="false">Baseline</button>
+                  </div>
+                </header>
+                <div class="court-wrap" id="court-wrap">
+                  <canvas id="court-canvas" role="img" aria-label="Court lens: waiting for data"></canvas>
+                  <p class="court-overlay glass" id="court-overlay">Waiting for tracking data</p>
+                  <div class="lens-tip glass" id="lens-tip" hidden></div>
+                  <div class="captions" aria-hidden="true">
+                    <p class="caption-line" id="caption-wrap"><span class="cc-tag">CC</span><span id="caption-line"></span></p>
+                    <p class="caption-line" id="ad-wrap"><span class="cc-tag">AD</span><span id="ad-line"></span></p>
+                  </div>
+                </div>
+                <footer class="lens-foot">
+                  <span class="legend-item away"><i aria-hidden="true"></i><span id="legend-away">Away</span></span>
+                  <span class="legend-item home"><i aria-hidden="true"></i><span id="legend-home">Home</span></span>
+                  <span class="legend-item ball"><i aria-hidden="true"></i>Ball at tracked height</span>
+                  <span class="lens-meta" id="court-meta"></span>
+                </footer>
+              </article>
+
+              <article class="card compare-card">
+                <header class="card-head"><h2>Team comparison</h2><span class="muted" id="compare-meta"></span></header>
+                <div class="compare-head" aria-hidden="true"><span class="compare-team away" id="compare-away-name">Away</span><span></span><span class="compare-team home" id="compare-home-name">Home</span></div>
+                <div class="compare" id="compare-body" role="table" aria-label="Team comparison"></div>
+              </article>
+            </div>
+          </div>
+
+          <aside class="live-rail" id="live-rail" aria-label="Plays, people and narration">
+            <section class="briefing" id="briefing" aria-label="Briefing" aria-live="polite"></section>
+            <div class="rail-tabs" role="tablist" aria-label="Side panel">
+              <button type="button" class="rail-tab" role="tab" id="rtab-plays" aria-controls="rail-plays" aria-selected="true">Plays <span class="count" id="plays-count">0</span></button>
+              <button type="button" class="rail-tab" role="tab" id="rtab-people" aria-controls="rail-people" aria-selected="false" tabindex="-1">People <span class="count" id="track-count">00</span></button>
+              <button type="button" class="rail-tab" role="tab" id="rtab-voice" aria-controls="rail-voice" aria-selected="false" tabindex="-1">Voice <span class="count" id="transcript-count">0</span></button>
+              <button type="button" class="rail-tab" role="tab" id="rtab-insights" aria-controls="rail-insights" aria-selected="false" tabindex="-1">Insights <span class="count" id="insight-count">0</span></button>
+            </div>
+            <div class="rail-panel" id="rail-plays" role="tabpanel" aria-labelledby="rtab-plays">
+              <div class="rail-tools">
+                <div class="seg" role="group" aria-label="Which plays">
+                  <button type="button" class="seg-btn" data-feed="key" aria-pressed="true">Key plays</button>
+                  <button type="button" class="seg-btn" data-feed="all" aria-pressed="false">All</button>
+                  <button type="button" class="seg-btn" data-feed="review" aria-pressed="false">Needs review</button>
+                </div>
+                <button type="button" class="btn btn-sm" id="btn-add-event" title="Add a play (A)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Add</button>
+              </div>
+              <div class="scroll"><ol class="feed" id="feed-list" aria-label="Plays, newest first"></ol></div>
+            </div>
+            <div class="rail-panel" id="rail-people" role="tabpanel" aria-labelledby="rtab-people" hidden>
+              <p class="track-instruction" id="track-instruction">Select a track to highlight it in the feed.</p>
+              <div class="scroll"><div class="track-list" id="track-list" role="group" aria-label="Detected person tracks"></div>
+                <div class="track-empty" id="track-empty"><p>No one tracked yet</p><span>People appear here as soon as analysis starts.</span></div></div>
+              <p class="rail-note" id="track-foot-note">Image-space tracking · IDs are provisional</p>
+            </div>
+            <div class="rail-panel" id="rail-voice" role="tabpanel" aria-labelledby="rtab-voice" hidden>
+              <div class="scroll"><ol class="transcript" id="transcript-list" aria-live="polite" aria-relevant="additions" aria-label="Narration transcript, newest first"></ol></div>
+            </div>
+            <div class="rail-panel" id="rail-insights" role="tabpanel" aria-labelledby="rtab-insights" hidden>
+              <div class="scroll"><ol class="insight-list" id="insight-list"></ol><p class="insight-more" id="insight-more"></p></div>
+            </div>
+          </aside>
+        </section>
+
+        <!-- ======================================================== BOX SCORE -->
+        <section class="view view-pad view-stats" id="view-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
+          <header class="view-intro">
+            <div><h1>Box score</h1><p>Player and team lines from the event log. Shot quality is expected field-goal percentage (xFG).</p></div>
+          </header>
+          <div class="box-grid">
+            <article class="card team-card away">
+              <header class="card-head"><h2 id="box-away-title">Away</h2><span class="muted" id="box-away-summary"></span></header>
+              <div class="table-scroll"><table class="box" id="box-away-table"></table></div>
+            </article>
+            <article class="card team-card home">
+              <header class="card-head"><h2 id="box-home-title">Home</h2><span class="muted" id="box-home-summary"></span></header>
+              <div class="table-scroll"><table class="box" id="box-home-table"></table></div>
+            </article>
+          </div>
+          <p class="footnote"><span class="prov-mark" aria-hidden="true">P</span>Provisional: the line includes plays not yet confirmed by the scoreboard or an operator. Minutes and +/- come only from lineup entries.</p>
+
+          <div class="stats-grid">
+            <article class="card shot-card">
+              <header class="card-head">
+                <h2>Shot chart</h2>
+                <div class="seg" role="group" aria-label="Shot chart team filter">
+                  <button type="button" class="seg-btn" id="shot-filter-all" aria-pressed="true">Both</button>
+                  <button type="button" class="seg-btn" id="shot-filter-away" aria-pressed="false">Away</button>
+                  <button type="button" class="seg-btn" id="shot-filter-home" aria-pressed="false">Home</button>
+                </div>
+              </header>
+              <div class="shot-legend" aria-hidden="true">
+                <span class="lg-item"><svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" class="lg-made"/></svg>Made</span>
+                <span class="lg-item"><svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4" class="lg-miss"/></svg>Missed</span>
+                <span class="lg-item">xFG 20%<span class="ramp"></span>70%+</span>
+              </div>
+              <div class="shot-wrap" id="shot-wrap">
+                <svg id="shot-svg" role="img" aria-labelledby="shot-summary"></svg>
+                <div class="tooltip glass" id="shot-tooltip" role="tooltip" hidden></div>
+              </div>
+              <footer class="card-foot"><span id="shot-summary">No shots yet</span></footer>
+            </article>
+
+            <article class="card">
+              <header class="card-head"><h2>Decision quality</h2><span class="muted" id="decision-meta">EPV-lite grades</span></header>
+              <ol class="decision-list" id="decision-list"></ol>
+            </article>
+          </div>
+        </section>
+
+        <!-- ======================================================== BOARD -->
+        <section class="view view-pad view-board" id="view-board" role="tabpanel" aria-labelledby="tab-board" hidden>
+          <header class="view-intro">
+            <div>
+              <h1>Board</h1>
+              <p>Ask anything about this game and pin the answer. Pinned cards stay live: they rebuild from the newest data as the game runs.</p>
+            </div>
+          </header>
+          <form class="board-ask" id="board-ask" autocomplete="off">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8l1.35 3.5 3.5 1.35-3.5 1.35L8 11.5 6.65 8 3.15 6.65 6.65 5.3z"/><path d="M12.6 10.6l.55 1.4 1.4.55-1.4.55-.55 1.4-.55-1.4-1.4-.55 1.4-.55z"/></svg>
+            <label class="sr-only" for="board-input">Ask about this game</label>
+            <input id="board-input" type="text" placeholder="Who is shooting best? Compare the teams. What needs review?" maxlength="300">
+            <button type="submit" class="btn btn-primary btn-sm">Ask</button>
+          </form>
+          <div class="suggest" id="board-suggest" aria-label="Suggested questions"></div>
+          <div class="board-grid" id="board-grid" aria-live="polite"></div>
+          <div class="board-empty" id="board-empty">
+            <svg class="art" viewBox="0 0 120 72" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="1" y="1" width="54" height="30" rx="6"/><rect x="65" y="1" width="54" height="46" rx="6"/><rect x="1" y="41" width="54" height="30" rx="6" stroke-dasharray="3 3"/><path d="M10 22l8-6 7 4 9-9 9 6"/><path d="M75 37V25M85 37V15M95 37V21M105 37V11"/></svg>
+            <strong>Your board is empty</strong>
+            <span>Ask a question above, then press Pin on the answer.</span>
+          </div>
+        </section>
+
+        <!-- ======================================================== GAME CONTROLS -->
+        <section class="view view-pad view-operator" id="view-operator" role="tabpanel" aria-labelledby="tab-operator" hidden>
+          <header class="view-intro">
+            <div><h1>Game controls</h1><p>Override the scoreboard, steer playback and narration, and keep the lineups current.</p></div>
+          </header>
+          <div class="ops-grid">
+            <div class="ops-col">
+              <article class="card">
+                <header class="card-head"><h2>Score and clock</h2><span class="muted">Sent as a manual reading</span></header>
+                <form class="form-grid" id="form-score" novalidate>
+                  <label><span><span id="op-away-label">Away</span> score</span><input type="number" inputmode="numeric" min="0" max="999" id="op-away-score"></label>
+                  <label><span><span id="op-home-label">Home</span> score</span><input type="number" inputmode="numeric" min="0" max="999" id="op-home-score"></label>
+                  <label>Period<input type="number" inputmode="numeric" min="1" max="20" id="op-period"></label>
+                  <label>Game clock<input type="text" inputmode="decimal" placeholder="mm:ss" pattern="[0-9]{1,2}(:[0-9]{2}(\.[0-9])?)?" id="op-game-clock"></label>
+                  <label>Shot clock<input type="number" inputmode="decimal" min="0" max="60" step="0.1" id="op-shot-clock"></label>
+                  <div class="form-actions">
+                    <button type="button" class="btn" id="btn-score-prefill">Use current</button>
+                    <button type="submit" class="btn btn-primary" id="btn-score-submit">Apply override</button>
+                  </div>
+                </form>
+              </article>
+
+              <article class="card">
+                <header class="card-head"><h2>Playback and narration</h2><span class="muted" id="op-status"></span></header>
+                <div class="control-row">
+                  <button type="button" class="btn" id="btn-pause">Pause <kbd>P</kbd></button>
+                  <button type="button" class="btn" id="btn-resume">Resume</button>
+                  <div class="seg" role="group" aria-label="Playback speed" id="speed-group">
+                    <button type="button" class="seg-btn" data-speed="0.5" aria-pressed="false">0.5&times;</button>
+                    <button type="button" class="seg-btn" data-speed="1" aria-pressed="true">1&times;</button>
+                    <button type="button" class="seg-btn" data-speed="2" aria-pressed="false">2&times;</button>
+                    <button type="button" class="seg-btn" data-speed="4" aria-pressed="false">4&times;</button>
+                  </div>
+                  <button type="button" class="btn" id="btn-mute" aria-pressed="false">Mute narration <kbd>M</kbd></button>
+                  <button type="button" class="btn" id="btn-deadball">Mark dead ball <kbd>D</kbd></button>
+                  <button type="button" class="btn" id="btn-op-add-event">Add play <kbd>A</kbd></button>
+                </div>
+                <p class="hint">Shortcuts work anywhere except inside text fields. Press <kbd>?</kbd> for the full list.</p>
+              </article>
+            </div>
+
+            <article class="card">
+              <header class="card-head">
+                <h2>Substitutions</h2>
+                <div class="seg" role="group" aria-label="Team">
+                  <button type="button" class="seg-btn" id="sub-team-away" aria-pressed="true">Away</button>
+                  <button type="button" class="seg-btn" id="sub-team-home" aria-pressed="false">Home</button>
+                </div>
+              </header>
+              <p class="hint" id="sub-hint">Tap a player on the floor, then the player coming in.</p>
+              <div class="sub-grid">
+                <div><h3 class="sub-title">On the floor</h3><div class="player-grid" id="sub-floor" role="group" aria-label="Players on the floor"></div></div>
+                <div><h3 class="sub-title">Bench</h3><div class="player-grid" id="sub-bench" role="group" aria-label="Bench players"></div></div>
+              </div>
+              <div class="sub-bar">
+                <p class="sub-summary" id="sub-summary" aria-live="polite"></p>
+                <div class="form-actions">
+                  <button type="button" class="btn" id="btn-lineup-set" aria-pressed="false">Set starting five</button>
+                  <button type="button" class="btn" id="btn-sub-clear">Clear</button>
+                  <button type="button" class="btn btn-primary" id="btn-sub-confirm" disabled>Confirm</button>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <!-- ======================================================== COURT MAPPING -->
+        <section class="view view-pad view-tool" id="view-calibration" role="tabpanel" aria-labelledby="tab-calibration" hidden>
+          <header class="view-intro">
+            <div><h1>Court mapping</h1><p>Match court landmarks on a frozen frame. Four well-spread points are the minimum; more points make the map trustworthy.</p></div>
+            <div class="intro-actions"><button type="button" class="btn" id="btn-cal-load"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>Load latest frame</button></div>
+          </header>
+          <div class="tool-grid">
+            <article class="card frame-card">
+              <div class="card-head"><h2>Frame</h2><span class="muted">Click a point, or move with the arrow keys and press Enter</span></div>
+              <div class="frame-wrap" id="cal-wrap">
+                <canvas id="cal-canvas" tabindex="0" aria-label="Video frame. Click, or move the crosshair with the arrow keys and press Enter, to place the selected landmark."></canvas>
+                <div class="frame-empty" id="cal-empty"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="1"/><path d="M8 3.5v9"/><circle cx="8" cy="8" r="1.7"/></svg>Load a frame to start</div>
+              </div>
+              <p class="hint">Arrow keys move the crosshair (Shift moves 10 px). Enter places the point.</p>
+            </article>
+            <aside class="card tool-side">
+              <header class="card-head"><h2>Points</h2><span class="muted" id="cal-count">0 / 4 minimum</span></header>
+              <div class="tool-body">
+                <div class="tool-progress" id="cal-progress" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+                <div class="field-row"><label for="cal-preset">Visible court</label><select id="cal-preset"><option value="left">Left basket · lane corners</option><option value="right">Right basket · lane corners</option><option value="full">Full court · outer corners</option><option value="all">Choose any landmarks</option></select></div>
+                <div class="field-row" id="cal-landmark-row"><label for="cal-landmark">Next landmark</label><select id="cal-landmark"></select></div>
+                <div class="calibration-reference"><svg id="cal-reference" viewBox="-5 -5 104 60" role="img" aria-label="Selected landmark on a court diagram"></svg><p>The glowing point is the selected landmark. Match it on the frozen video, keeping left and right consistent with this diagram.</p></div>
+                <div class="field-row field-pair" id="cal-manual-row" hidden>
+                  <label>Court x (ft)<input type="number" step="0.01" id="cal-manual-x"></label>
+                  <label>Court y (ft)<input type="number" step="0.01" id="cal-manual-y"></label>
+                </div>
+                <ol class="point-list" id="cal-points"></ol>
+                <div class="form-actions">
+                  <button type="button" class="btn" id="btn-cal-undo">Undo</button>
+                  <button type="button" class="btn" id="btn-cal-clear">Clear</button>
+                  <button type="button" class="btn btn-primary" id="btn-cal-submit" disabled>Apply mapping</button>
+                </div>
+                <div class="result" id="cal-result" role="status" aria-live="polite"></div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- ======================================================== SCOREBOARD -->
+        <section class="view view-pad view-tool" id="view-roi" role="tabpanel" aria-labelledby="tab-roi" hidden>
+          <header class="view-intro">
+            <div><h1>Scoreboard</h1><p>Mark the venue scoreboard and each digit cell so scores and clocks can be read from the footage.</p></div>
+            <div class="intro-actions"><button type="button" class="btn" id="btn-roi-load"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>Load latest frame</button></div>
+          </header>
+          <div class="tool-grid">
+            <article class="card frame-card">
+              <div class="card-head"><h2>Frame</h2>
+                <div class="seg" role="group" aria-label="Mode">
+                  <button type="button" class="seg-btn" id="roi-mode-corners" aria-pressed="true">Corners</button>
+                  <button type="button" class="seg-btn" id="roi-mode-cells" aria-pressed="false">Digit cells</button>
+                </div>
+              </div>
+              <div class="frame-wrap" id="roi-wrap">
+                <canvas id="roi-canvas" tabindex="0" aria-label="Video frame. Click the four scoreboard corners, then drag a box for each digit cell."></canvas>
+                <div class="frame-empty" id="roi-empty"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><rect x="1.5" y="4" width="13" height="8" rx="1.5"/><path d="M4.5 6.8v2.4M6.5 6.8v2.4M9.5 6.8h2v2.4h-2z"/></svg>Load a frame to start</div>
+              </div>
+              <p class="hint" id="roi-hint">Click the corners in order: top-left, top-right, bottom-right, bottom-left.</p>
+            </article>
+            <aside class="card tool-side">
+              <header class="card-head"><h2>Regions</h2><span class="muted" id="roi-count">0 cells</span></header>
+              <div class="tool-body">
+                <div class="field-row">
+                  <label for="roi-cell-name">Next cell name</label>
+                  <input type="text" id="roi-cell-name" list="roi-cell-names" value="home_tens" autocomplete="off" spellcheck="false">
+                  <datalist id="roi-cell-names">
+                    <option value="home_tens"></option><option value="home_ones"></option>
+                    <option value="away_tens"></option><option value="away_ones"></option>
+                    <option value="period"></option>
+                    <option value="clock_min_tens"></option><option value="clock_min_ones"></option>
+                    <option value="clock_sec_tens"></option><option value="clock_sec_ones"></option>
+                    <option value="shot_tens"></option><option value="shot_ones"></option>
+                  </datalist>
+                </div>
+                <fieldset class="manual-box">
+                  <legend>Add a cell by pixel coordinates</legend>
+                  <div class="field-quad">
+                    <label>x1<input type="number" id="roi-mx1"></label>
+                    <label>y1<input type="number" id="roi-my1"></label>
+                    <label>x2<input type="number" id="roi-mx2"></label>
+                    <label>y2<input type="number" id="roi-my2"></label>
+                  </div>
+                  <button type="button" class="btn btn-sm" id="btn-roi-add-manual">Add cell</button>
+                </fieldset>
+                <div><h3 class="sub-title">Corners</h3><ol class="point-list" id="roi-corners"></ol></div>
+                <div><h3 class="sub-title">Cells</h3><ol class="point-list" id="roi-cells"></ol></div>
+                <div class="form-actions">
+                  <button type="button" class="btn" id="btn-roi-undo">Undo</button>
+                  <button type="button" class="btn" id="btn-roi-clear">Clear</button>
+                  <button type="button" class="btn btn-primary" id="btn-roi-submit" disabled>Save regions</button>
+                </div>
+                <div class="result" id="roi-result" role="status" aria-live="polite"></div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- ======================================================== MODEL LAB -->
+        <section class="view view-pad view-lab" id="view-lab" role="tabpanel" aria-labelledby="tab-lab" hidden>
+          <header class="view-intro">
+            <div><h1>Model lab</h1><p>The NBA learning loop. Every analysed game is scored against its box score and mined for training data; a model becomes current only when it does better on games it was not fitted on.</p></div>
+            <div class="intro-actions">
+              <button type="button" class="btn" id="lab-refresh"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>Refresh</button>
+            </div>
+          </header>
+          <div id="lab-root"><div class="card lab-empty"><div class="skel w60"></div><div class="skel w40"></div><div class="skel tall"></div></div></div>
+        </section>
+
+      </div>
+    </main>
   </div>
-</header>
+</div>
 
-<nav class="tabs" role="tablist" aria-label="Dashboard views">
-  <button type="button" role="tab" id="tab-live" aria-controls="view-live" aria-selected="true">Live analysis</button>
-  <button type="button" role="tab" id="tab-stats" aria-controls="view-stats" aria-selected="false" tabindex="-1">Box score &amp; shots</button>
-  <button type="button" role="tab" id="tab-operator" aria-controls="view-operator" aria-selected="false" tabindex="-1">Game controls</button>
-  <button type="button" role="tab" id="tab-calibration" aria-controls="view-calibration" aria-selected="false" tabindex="-1">Court setup</button>
-  <button type="button" role="tab" id="tab-roi" aria-controls="view-roi" aria-selected="false" tabindex="-1">Scoreboard setup</button>
-</nav>
-
-<main id="main" tabindex="-1">
-
-  <div class="studio-notice" id="studio-notice" role="status" hidden></div>
-
-  <!-- =========================================================== LIVE -->
-  <section class="view view-live" id="view-live" role="tabpanel" aria-labelledby="tab-live">
-    <div class="col col-main">
-      <article class="monitor-card">
-        <header class="monitor-head"><div><span class="monitor-dot" aria-hidden="true"></span><h2>Game feed</h2><span id="monitor-source">No video loaded</span></div><div class="monitor-options"><label class="overlay-switch"><input type="checkbox" id="studio-overlay" checked>Tracking overlay</label><button type="button" class="monitor-expand" id="studio-fullscreen" aria-label="Expand game feed" title="Expand game feed">⛶</button></div></header>
-        <div class="monitor-screen" id="monitor-screen">
-          <img id="studio-frame" alt="Current processed game frame with player and ball tracking" hidden>
-          <div class="monitor-empty" id="studio-empty">
-            <svg class="empty-court" viewBox="0 0 700 390" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="1"><path d="M92 330 228 70h244l136 260H92ZM160 200h380M350 70v260"/><ellipse cx="350" cy="200" rx="56" ry="35"/><path d="m279 70-23 67h188l-23-67M199 330l49-98h204l49 98"/><path d="M227 74c-65 60-50 116 123 116S538 134 473 74M103 313c113-167 381-167 494 0"/><path d="M315 95h70M311 286h78"/></g><circle cx="350" cy="106" r="5" stroke="currentColor"/><circle cx="350" cy="276" r="8" stroke="currentColor"/></svg>
-            <div class="empty-content"><span class="empty-symbol" aria-hidden="true">↗</span><h2>A new angle on every play.</h2><p>Drop in a game. Follow the action as it unfolds.</p><div class="empty-actions"><button type="button" class="btn btn-primary" id="studio-empty-open">Open a game video</button><button type="button" class="btn btn-demo" id="studio-demo">Explore the demo <span aria-hidden="true">→</span></button></div><span class="empty-formats">MP4, MOV, MKV &amp; AVI · Up to 8 GB · Processed on this computer</span></div>
-          </div>
-          <div class="monitor-loading" id="studio-loading" hidden><span class="loading-bars" aria-hidden="true">▂ ▅ ▃ ▇</span><p id="studio-loading-label">Opening game feed…</p></div>
-          <div class="monitor-badge" id="monitor-badge" hidden>COMPUTER VISION · ESTIMATED</div>
-        </div>
-        <div class="monitor-progress"><progress id="studio-progress" max="100" value="0" aria-label="Video analysis progress"></progress></div>
-        <footer class="monitor-controls"><div><button type="button" id="studio-play" class="play-control" aria-label="Pause analysis" disabled>Ⅱ</button><span id="studio-time">00:00</span><span class="time-divider">/</span><span id="studio-duration">--:--</span></div><div><span id="studio-throughput">Awaiting footage</span><label class="sr-only" for="studio-speed">Playback speed</label><select id="studio-speed" disabled><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></div></footer>
-      </article>
-
-      <div class="vision-strip" aria-label="Tracking status"><div><span class="metric-symbol" aria-hidden="true">⌖</span><span>People tracked<strong id="vision-people">—</strong></span></div><div><span class="metric-symbol" aria-hidden="true">◉</span><span>Ball tracking<strong id="vision-ball">Awaiting video</strong></span></div><div><span class="metric-symbol" aria-hidden="true">▱</span><span>Court map<strong id="vision-court">Not configured</strong></span><button type="button" id="studio-calibrate" class="text-button">Set up →</button></div></div>
-      <article class="card card-court">
-        <header class="card-head">
-          <h2>Court view</h2>
-          <div class="legend" aria-label="Legend">
-            <span class="chip chip-away"><span class="dot" aria-hidden="true"></span><span id="legend-away">Away</span></span>
-            <span class="chip chip-home"><span class="dot" aria-hidden="true"></span><span id="legend-home">Home</span></span>
-            <span class="chip chip-ball"><span class="dot" aria-hidden="true"></span>Ball (ring = height)</span>
-          </div>
-        </header>
-        <div class="court-wrap" id="court-wrap">
-          <canvas id="court-canvas" role="img" aria-label="Top-down court: waiting for data"></canvas>
-          <p class="court-overlay" id="court-overlay">Waiting for tracking data</p>
-        </div>
-        <div class="captions" aria-hidden="true">
-          <p class="caption-line"><span class="cc-tag">CC</span><span id="caption-line">&nbsp;</span></p>
-          <p class="caption-line caption-ad"><span class="cc-tag">AD</span><span id="ad-line">&nbsp;</span></p>
-        </div>
-        <footer class="card-foot"><span id="court-meta">&nbsp;</span></footer>
-      </article>
-
-      <article class="card">
-        <header class="card-head"><h2>Team comparison</h2><span class="muted" id="compare-meta">&nbsp;</span></header>
-        <table class="compare" aria-describedby="compare-meta">
-          <thead><tr><th scope="col">Metric</th><th scope="col" id="compare-away-name">Away</th><th scope="col" id="compare-home-name">Home</th></tr></thead>
-          <tbody id="compare-body"></tbody>
-        </table>
-      </article>
+<!-- ============================================================ ASK PALETTE -->
+<dialog class="palette" id="ask-dialog" aria-label="Ask or run a command">
+  <div class="palette-box">
+    <div class="palette-input">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8l1.35 3.5 3.5 1.35-3.5 1.35L8 11.5 6.65 8 3.15 6.65 6.65 5.3z"/><path d="M12.6 10.6l.55 1.4 1.4.55-1.4.55-.55 1.4-.55-1.4-1.4-.55 1.4-.55z"/></svg>
+      <input id="ask-input" type="text" role="combobox" aria-expanded="true" aria-controls="ask-list" aria-autocomplete="list" placeholder="Ask about the game, or type a command…" maxlength="300" autocomplete="off" spellcheck="false">
+      <span class="palette-scope" id="ask-scope" hidden>Answer</span>
+      <kbd>esc</kbd>
     </div>
-
-    <div class="col col-side">
-      <article class="card card-insights">
-        <header class="card-head"><h2>Coach insights</h2><span class="muted" id="insight-more">&nbsp;</span></header>
-        <ol class="insight-list" id="insight-list"></ol>
-      </article>
-
-      <article class="card card-transcript">
-        <header class="card-head"><h2>Narration</h2><span class="muted" id="transcript-count">0 lines</span></header>
-        <ol class="transcript" id="transcript-list" aria-live="polite" aria-relevant="additions" aria-label="Narration transcript, newest first"></ol>
-      </article>
-
-      <article class="card card-feed">
-        <header class="card-head">
-          <h2>Play-by-play</h2>
-          <div class="head-tools">
-            <label class="sr-only" for="feed-filter">Event filter</label>
-            <select id="feed-filter">
-              <option value="key">Key plays</option>
-              <option value="all">All events</option>
-              <option value="review">Needs review</option>
-            </select>
-            <button type="button" class="btn btn-small" id="btn-add-event">Add event</button>
-          </div>
-        </header>
-        <ol class="feed" id="feed-list" aria-label="Events, newest first"></ol>
-      </article>
+    <div class="palette-body">
+      <ul class="palette-list" id="ask-list" role="listbox" aria-label="Suggestions"></ul>
+      <div class="answer" id="ask-answer" hidden></div>
     </div>
+    <footer class="palette-foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span id="ask-claude-hint" hidden><kbd id="ask-mod-2">⌘</kbd><kbd>↵</kbd> ask Claude</span>
+      <span class="spacer"></span><span id="ask-composer-note">Answers are built on this Mac from the live game</span>
+    </footer>
+  </div>
+</dialog>
+
+<!-- ============================================================ LOAD FOOTAGE -->
+<dialog id="studio-dialog" class="sheet library-sheet" aria-labelledby="upload-title">
+  <header class="sheet-head"><div><h2 id="upload-title">Videos</h2><p>Open a game you added before, or add a new one. Videos stay on this Mac.</p></div><button type="button" class="icon-btn" id="studio-close" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></header>
+  <section class="library" id="library" aria-labelledby="library-title" hidden>
+    <div class="library-head"><h3 id="library-title">Your videos</h3><span class="library-total" id="library-total"></span></div>
+    <ul class="library-list" id="library-list"></ul>
+    <p class="library-extra" id="library-extra" hidden><span id="library-extra-text"></span><button type="button" class="link-btn danger" id="library-extra-delete">Delete</button></p>
   </section>
-
-  <!-- =========================================================== STATS -->
-  <section class="view view-stats" id="view-stats" role="tabpanel" aria-labelledby="tab-stats" hidden>
-    <article class="card card-box">
-      <header class="card-head"><h2 id="box-away-title">Away</h2><span class="muted" id="box-away-summary">&nbsp;</span></header>
-      <div class="table-scroll"><table class="box" id="box-away-table"></table></div>
-    </article>
-    <article class="card card-box">
-      <header class="card-head"><h2 id="box-home-title">Home</h2><span class="muted" id="box-home-summary">&nbsp;</span></header>
-      <div class="table-scroll"><table class="box" id="box-home-table"></table></div>
-    </article>
-    <p class="footnote"><span class="prov-mark" aria-hidden="true">P</span> provisional: the line includes events not yet confirmed by the scoreboard or an operator. Minutes and +/- come only from operator lineup entries.</p>
-
-    <div class="stats-grid">
-      <article class="card card-shots">
-        <header class="card-head">
-          <h2>Shot chart</h2>
-          <div class="seg" role="group" aria-label="Shot chart team filter">
-            <button type="button" class="seg-btn" id="shot-filter-all" aria-pressed="true">Both</button>
-            <button type="button" class="seg-btn" id="shot-filter-away" aria-pressed="false">Away</button>
-            <button type="button" class="seg-btn" id="shot-filter-home" aria-pressed="false">Home</button>
-          </div>
-        </header>
-        <div class="shot-wrap" id="shot-wrap">
-          <svg id="shot-svg" role="img" aria-labelledby="shot-summary"></svg>
-          <div class="tooltip" id="shot-tooltip" role="tooltip" hidden></div>
-        </div>
-        <div class="shot-legend" aria-hidden="true">
-          <span class="lg-item"><svg width="14" height="14"><circle cx="7" cy="7" r="5" class="lg-made"/></svg>Made</span>
-          <span class="lg-item"><svg width="14" height="14"><circle cx="7" cy="7" r="4.5" class="lg-miss"/></svg>Missed</span>
-          <span class="lg-item lg-ramp"><span>xFG 20%</span><span class="ramp" aria-hidden="true"></span><span>70%+</span></span>
-        </div>
-        <footer class="card-foot"><span id="shot-summary">No shots yet</span></footer>
-      </article>
-
-      <article class="card card-decisions">
-        <header class="card-head"><h2>Decision quality</h2><span class="muted" id="decision-meta">EPV-lite grades</span></header>
-        <ol class="decision-list" id="decision-list"></ol>
-      </article>
-    </div>
-  </section>
-
-  <!-- =========================================================== OPERATOR -->
-  <section class="view view-operator" id="view-operator" role="tabpanel" aria-labelledby="tab-operator" hidden>
-    <div class="col">
-    <article class="card">
-      <header class="card-head"><h2>Score &amp; clock override</h2><span class="muted">Sent as source = manual</span></header>
-      <form class="form-grid" id="form-score" novalidate>
-        <label><span class="lbl"><span id="op-away-label">Away</span> score</span><input type="number" inputmode="numeric" min="0" max="999" id="op-away-score"></label>
-        <label><span class="lbl"><span id="op-home-label">Home</span> score</span><input type="number" inputmode="numeric" min="0" max="999" id="op-home-score"></label>
-        <label>Period<input type="number" inputmode="numeric" min="1" max="20" id="op-period"></label>
-        <label>Game clock<input type="text" inputmode="decimal" placeholder="mm:ss" pattern="[0-9]{1,2}(:[0-9]{2}(\.[0-9])?)?" id="op-game-clock"></label>
-        <label>Shot clock<input type="number" inputmode="decimal" min="0" max="60" step="0.1" id="op-shot-clock"></label>
-        <div class="form-actions">
-          <button type="button" class="btn" id="btn-score-prefill">Use current</button>
-          <button type="submit" class="btn btn-primary" id="btn-score-submit">Apply override</button>
-        </div>
-      </form>
-    </article>
-
-    <article class="card">
-      <header class="card-head"><h2>Playback &amp; narration</h2><span class="muted" id="op-status">&nbsp;</span></header>
-      <div class="control-row">
-        <button type="button" class="btn" id="btn-pause">Pause <kbd>P</kbd></button>
-        <button type="button" class="btn" id="btn-resume">Resume</button>
-        <div class="seg" role="group" aria-label="Playback speed" id="speed-group">
-          <button type="button" class="seg-btn" data-speed="0.5" aria-pressed="false">0.5&times;</button>
-          <button type="button" class="seg-btn" data-speed="1" aria-pressed="true">1&times;</button>
-          <button type="button" class="seg-btn" data-speed="2" aria-pressed="false">2&times;</button>
-          <button type="button" class="seg-btn" data-speed="4" aria-pressed="false">4&times;</button>
-        </div>
-        <button type="button" class="btn" id="btn-mute" aria-pressed="false">Mute narration <kbd>M</kbd></button>
-        <button type="button" class="btn" id="btn-deadball">Mark dead ball <kbd>D</kbd></button>
-        <button type="button" class="btn" id="btn-op-add-event">Add event</button>
-      </div>
-      <p class="hint">Hotkeys work anywhere on the page except inside text fields.</p>
-    </article>
-    </div>
-
-    <article class="card">
-      <header class="card-head">
-        <h2>Tap to sub</h2>
-        <div class="seg" role="group" aria-label="Team">
-          <button type="button" class="seg-btn" id="sub-team-away" aria-pressed="true">Away</button>
-          <button type="button" class="seg-btn" id="sub-team-home" aria-pressed="false">Home</button>
-        </div>
-      </header>
-      <p class="hint" id="sub-hint">Tap a player on the floor, then the player coming in.</p>
-      <div class="sub-grid">
-        <div>
-          <h3 class="sub-title">On floor</h3>
-          <div class="player-grid" id="sub-floor" role="group" aria-label="Players on the floor"></div>
-        </div>
-        <div>
-          <h3 class="sub-title">Bench</h3>
-          <div class="player-grid" id="sub-bench" role="group" aria-label="Bench players"></div>
-        </div>
-      </div>
-      <div class="sub-bar">
-        <p class="sub-summary" id="sub-summary" aria-live="polite">&nbsp;</p>
-        <div class="form-actions">
-          <button type="button" class="btn" id="btn-lineup-set" aria-pressed="false">Set starting five</button>
-          <button type="button" class="btn" id="btn-sub-clear">Clear</button>
-          <button type="button" class="btn btn-primary" id="btn-sub-confirm" disabled>Confirm</button>
-        </div>
-      </div>
-    </article>
-  </section>
-
-  <!-- =========================================================== CALIBRATION -->
-  <section class="view view-tool" id="view-calibration" role="tabpanel" aria-labelledby="tab-calibration" hidden>
-    <article class="card card-tool">
-      <header class="card-head">
-        <h2>Court calibration</h2>
-        <button type="button" class="btn btn-small" id="btn-cal-load">Load latest frame</button>
-      </header>
-      <div class="frame-wrap" id="cal-wrap">
-        <canvas id="cal-canvas" tabindex="0" aria-label="Video frame. Click, or move the crosshair with the arrow keys and press Enter, to place the selected landmark."></canvas>
-        <p class="frame-empty" id="cal-empty">Load a frame to start</p>
-      </div>
-      <p class="hint">Arrow keys move the crosshair (Shift = 10 px). Enter places the point.</p>
-    </article>
-    <aside class="card tool-side">
-      <header class="card-head"><h2>Points</h2><span class="muted" id="cal-count">0 / 4 minimum</span></header>
-      <div class="field-row"><label for="cal-preset">Visible court</label><select id="cal-preset"><option value="left">Left basket · paint corners</option><option value="right">Right basket · paint corners</option><option value="full">Full court · outer corners</option><option value="all">Choose any landmarks</option></select></div>
-      <div class="field-row" id="cal-landmark-row">
-        <label for="cal-landmark">Next landmark</label>
-        <select id="cal-landmark"></select>
-      </div>
-      <div class="calibration-reference"><svg id="cal-reference" viewBox="-5 -5 104 60" role="img" aria-label="Selected landmark on a court diagram"></svg><p>The blue point shows the selected landmark. Match it on the frozen video. Use points spread across the visible court; keep left and right consistent with the diagram.</p></div>
-      <div class="field-row field-pair" id="cal-manual-row" hidden>
-        <label>Court x (ft)<input type="number" step="0.01" id="cal-manual-x"></label>
-        <label>Court y (ft)<input type="number" step="0.01" id="cal-manual-y"></label>
-      </div>
-      <ol class="point-list" id="cal-points"></ol>
-      <div class="form-actions">
-        <button type="button" class="btn" id="btn-cal-undo">Undo</button>
-        <button type="button" class="btn" id="btn-cal-clear">Clear</button>
-        <button type="button" class="btn btn-primary" id="btn-cal-submit" disabled>Apply court setup</button>
-      </div>
-      <div class="result" id="cal-result" role="status" aria-live="polite"></div>
-    </aside>
-  </section>
-
-  <!-- =========================================================== SCOREBOARD ROI -->
-  <section class="view view-tool" id="view-roi" role="tabpanel" aria-labelledby="tab-roi" hidden>
-    <article class="card card-tool">
-      <header class="card-head">
-        <h2>Venue scoreboard</h2>
-        <button type="button" class="btn btn-small" id="btn-roi-load">Load latest frame</button>
-      </header>
-      <div class="frame-wrap" id="roi-wrap">
-        <canvas id="roi-canvas" tabindex="0" aria-label="Video frame. Click the four scoreboard corners, then drag a box for each digit cell."></canvas>
-        <p class="frame-empty" id="roi-empty">Load a frame to start</p>
-      </div>
-      <p class="hint" id="roi-hint">Click the corners in order: top-left, top-right, bottom-right, bottom-left.</p>
-    </article>
-    <aside class="card tool-side">
-      <header class="card-head">
-        <h2>Regions</h2>
-        <div class="seg" role="group" aria-label="Mode">
-          <button type="button" class="seg-btn" id="roi-mode-corners" aria-pressed="true">Corners</button>
-          <button type="button" class="seg-btn" id="roi-mode-cells" aria-pressed="false">Digit cells</button>
-        </div>
-      </header>
-      <div class="field-row">
-        <label for="roi-cell-name">Cell name</label>
-        <input type="text" id="roi-cell-name" list="roi-cell-names" value="home_tens" autocomplete="off" spellcheck="false">
-        <datalist id="roi-cell-names">
-          <option value="home_tens"></option><option value="home_ones"></option>
-          <option value="away_tens"></option><option value="away_ones"></option>
-          <option value="period"></option>
-          <option value="clock_min_tens"></option><option value="clock_min_ones"></option>
-          <option value="clock_sec_tens"></option><option value="clock_sec_ones"></option>
-          <option value="shot_tens"></option><option value="shot_ones"></option>
-        </datalist>
-      </div>
-      <fieldset class="manual-box">
-        <legend>Add cell by coordinates (px)</legend>
-        <div class="field-quad">
-          <label>x1<input type="number" id="roi-mx1"></label>
-          <label>y1<input type="number" id="roi-my1"></label>
-          <label>x2<input type="number" id="roi-mx2"></label>
-          <label>y2<input type="number" id="roi-my2"></label>
-        </div>
-        <button type="button" class="btn btn-small" id="btn-roi-add-manual">Add cell</button>
-      </fieldset>
-      <h3 class="sub-title">Corners</h3>
-      <ol class="point-list" id="roi-corners"></ol>
-      <h3 class="sub-title">Cells</h3>
-      <ol class="point-list" id="roi-cells"></ol>
-      <div class="form-actions">
-        <button type="button" class="btn" id="btn-roi-undo">Undo</button>
-        <button type="button" class="btn" id="btn-roi-clear">Clear</button>
-        <button type="button" class="btn btn-primary" id="btn-roi-submit" disabled>Save ROI</button>
-      </div>
-      <div class="result" id="roi-result" role="status" aria-live="polite"></div>
-    </aside>
-  </section>
-</main>
-
-<dialog id="studio-dialog" class="studio-dialog" aria-labelledby="upload-title">
   <form id="studio-form">
-    <header class="upload-header"><div><p class="eyebrow">YOUR NEXT GAME</p><h2 id="upload-title">Bring the game into focus.</h2></div><button type="button" class="icon-btn" id="studio-close" aria-label="Close video setup">×</button></header>
-    <label class="upload-zone" id="studio-dropzone" for="studio-file"><span class="upload-icon" aria-hidden="true">↥</span><strong id="studio-filename">Drop a game video here</strong><span id="studio-file-detail">or choose a file from your computer</span><span class="file-types">MP4, MOV, MKV, AVI · Up to 8 GB</span><input id="studio-file" type="file" accept="video/*,.mkv,.avi,.mov,.mp4"></label>
-    <div class="upload-teams"><label>Away team<input id="studio-away" type="text" maxlength="48" value="Away" required autocomplete="off"></label><label>Home team<input id="studio-home" type="text" maxlength="48" value="Home" required autocomplete="off"></label></div>
-    <label class="broadcast-option"><input id="studio-broadcast" type="checkbox" checked><span>Broadcast footage<small>Track camera movement and pause spatial analysis on cutaways.</small></span></label>
-    <div class="setup-explainer"><span aria-hidden="true">⌖</span><p>Tracking starts with your video. Add court landmarks for spatial events and stats. Player names and official scores need a roster and scoreboard setup.</p></div>
-    <p class="detector-note" id="studio-model-note">First use prepares a local detector (about 350 MB). Generic player and ball detections need review.</p>
-    <progress id="studio-upload-progress" max="100" value="0" aria-label="Video upload progress" hidden></progress>
-    <p class="upload-status" id="studio-upload-status" role="status" aria-live="polite"></p>
-    <button type="submit" class="btn btn-primary upload-submit" id="studio-start" disabled>Start analysis <span aria-hidden="true">→</span></button>
-    <div class="recent-videos" id="studio-recent" hidden><h3>Recent footage</h3><div id="studio-video-list"></div></div>
+    <div class="sheet-body">
+      <h3 class="library-add" id="library-add-title">Add a video</h3>
+      <label class="upload-zone" id="studio-dropzone" for="studio-file"><span class="upload-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10.5V2.5M4.8 5.4 8 2.2l3.2 3.2M2.8 10.5v3h10.4v-3"/></svg></span><strong id="studio-filename">Drop a game video here</strong><span id="studio-file-detail">or choose a file from this Mac</span><span class="file-types">MP4 · MOV · MKV · AVI, up to 8 GB</span><input id="studio-file" type="file" accept="video/*,.mkv,.avi,.mov,.mp4"></label>
+      <div class="upload-teams"><label>Away team<input id="studio-away" type="text" maxlength="48" value="Away" required autocomplete="off"></label><label>Home team<input id="studio-home" type="text" maxlength="48" value="Home" required autocomplete="off"></label></div>
+      <label class="toggle-row switch"><span><strong>Broadcast footage</strong><small>Follow camera moves and pause spatial analysis on cutaways.</small></span><input id="studio-broadcast" type="checkbox" checked><span class="track" aria-hidden="true"></span></label>
+      <p class="detector-note"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 7.2v3.6M8 5.1v.01"/></svg><span id="studio-model-note">First use prepares a local detector (about 350 MB). Generic player and ball detections need review.</span></p>
+      <div class="upload-progress" id="studio-upload-wrap" hidden><progress id="studio-upload-progress" max="100" value="0" aria-label="Video upload progress"></progress></div>
+      <p class="upload-status" id="studio-upload-status" role="status" aria-live="polite"></p>
+      <button type="submit" class="btn btn-primary btn-lg btn-block" id="studio-start" disabled>Add and open</button>
+    </div>
   </form>
 </dialog>
 
-<footer class="workspace-footer"><span>CourtVision <span class="footer-slash">/</span> Game studio</span><span>Vision estimates · Review before using as official statistics</span><span id="studio-cloud">Local processing</span></footer>
-
-<!-- =========================================================== DIALOGS -->
-<dialog class="dialog" id="event-dialog" aria-labelledby="ev-title">
+<!-- ============================================================ CORRECT / ADD PLAY -->
+<dialog class="dialog sheet" id="event-dialog" aria-labelledby="ev-title">
   <form method="dialog" id="event-form" novalidate>
-    <h2 id="ev-title">Correct event</h2>
-    <p class="muted" id="ev-sub">&nbsp;</p>
-    <div class="form-grid form-grid-2">
-      <label>Kind<select id="ev-kind"></select></label>
-      <label>Team<select id="ev-team"><option value="">&ndash;</option><option value="away">Away</option><option value="home">Home</option></select></label>
-      <label>Player<select id="ev-player"></select></label>
-      <label>Other player<select id="ev-other"></select></label>
-      <label>Points / value<input type="number" inputmode="numeric" step="1" min="-99" max="99" id="ev-value" aria-describedby="ev-value-hint"></label>
-      <label>Status<select id="ev-status"><option value="confirmed">Confirmed</option><option value="retracted">Retract (did not happen)</option></select></label>
-      <label>Video time (s)<input type="number" step="0.1" min="0" id="ev-t"></label>
-      <label class="span-2">Note<input type="text" maxlength="200" id="ev-reason" placeholder="Why (kept with the event)"></label>
-    </div>
-    <p class="hint" id="ev-value-hint">Shots: 1 = free throw, 2 or 3. Score correction: signed points (e.g. -2). Period start/end: period number.</p>
-    <p class="form-error" id="ev-error" role="alert"></p>
-    <div class="form-actions">
-      <button type="button" class="btn" id="btn-ev-cancel">Cancel</button>
-      <button type="submit" class="btn btn-primary" id="btn-ev-submit">Save</button>
+    <header class="sheet-head"><div><h2 id="ev-title">Edit play</h2><p id="ev-sub"></p><p class="ev-ask" id="ev-why" hidden></p></div></header>
+    <div class="sheet-body">
+      <div class="form-grid form-grid-2">
+        <label>Kind<select id="ev-kind"></select></label>
+        <label>Team<select id="ev-team"><option value="">&ndash;</option><option value="away">Away</option><option value="home">Home</option></select></label>
+        <label>Player<select id="ev-player"></select></label>
+        <label>Other player<select id="ev-other"></select></label>
+        <label>Points / value<input type="number" inputmode="numeric" step="1" min="-99" max="99" id="ev-value" aria-describedby="ev-value-hint"></label>
+        <label hidden>Status<select id="ev-status"><option value="confirmed">Confirmed</option><option value="retracted">Did not happen</option></select></label>
+        <label>Video time (s)<input type="number" step="0.1" min="0" id="ev-t"></label>
+        <label class="span-2">Note<input type="text" maxlength="200" id="ev-reason" placeholder="Why (kept with the play)"></label>
+      </div>
+      <p class="hint" id="ev-value-hint">Shots: 1 = free throw, 2 or 3. Score correction: signed points (for example -2). Period start or end: the period number.</p>
+      <p class="form-error" id="ev-error" role="alert"></p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-danger" id="btn-ev-retract" hidden>It didn't happen</button>
+        <button type="button" class="btn" id="btn-ev-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="btn-ev-submit">Save</button>
+      </div>
     </div>
   </form>
 </dialog>
 
-<dialog class="dialog" id="settings-dialog" aria-labelledby="settings-title">
+<!-- ============================================================ SETTINGS -->
+<dialog class="dialog sheet" id="settings-dialog" aria-labelledby="settings-title">
   <form method="dialog" id="settings-form">
-    <h2 id="settings-title">Settings</h2>
-    <label class="field">Access token
-      <input type="password" id="set-token" autocomplete="off" spellcheck="false" placeholder="Only if the server requires one">
-    </label>
-    <p class="hint">Kept for this browser tab only. You can also open the dashboard with <code>#token=&hellip;</code>.</p>
-    <label class="field">Theme
-      <select id="set-theme"><option value="auto">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select>
-    </label>
-    <div class="form-actions">
-      <button type="button" class="btn" id="btn-settings-close">Cancel</button>
-      <button type="submit" class="btn btn-primary" id="btn-settings-save">Save</button>
+    <header class="sheet-head"><div><h2 id="settings-title">Settings</h2><p>Kept in this browser.</p></div></header>
+    <div class="sheet-body">
+      <label>Access token
+        <input type="password" id="set-token" autocomplete="off" spellcheck="false" placeholder="Only if the server requires one">
+      </label>
+      <p class="hint">Kept for this tab only. You can also open the dashboard with <code>#token=&hellip;</code>.</p>
+      <label>Theme
+        <select id="set-theme"><option value="auto">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select>
+      </label>
+      <div class="form-actions">
+        <button type="button" class="btn" id="btn-settings-close">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="btn-settings-save">Save</button>
+      </div>
     </div>
   </form>
+</dialog>
+
+<!-- ============================================================ SHORTCUTS -->
+<dialog class="dialog sheet" id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+  <header class="sheet-head"><div><h2 id="shortcuts-title">Keyboard shortcuts</h2><p>Everything in the Studio is a key away.</p></div><button type="button" class="icon-btn" id="shortcuts-close" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></header>
+  <div class="sheet-body"><dl class="blk-kv" id="shortcut-list"></dl></div>
 </dialog>
 
 <div class="toasts" id="toast-region" aria-live="polite" aria-atomic="false"></div>

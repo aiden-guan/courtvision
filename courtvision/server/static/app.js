@@ -133,6 +133,8 @@
     muted: false,
     speed: 1,
     shotFilter: "all",
+    feedMode: "key",
+    margin: [], // [video t, home - away] whenever the score changes, for the momentum line
   };
 
   // =========================================================================== theme colours
@@ -144,10 +146,9 @@
     const cs = getComputedStyle(document.documentElement);
     const v = (n) => cs.getPropertyValue(n).trim();
     C = {
-      ink: v("--ink"), surface: v("--surface"), floor: v("--court-floor"), paint: v("--court-paint"),
-      line: v("--court-line"), rim: v("--court-rim"), home: v("--home"), homeInk: v("--home-ink"),
-      away: v("--away"), awayInk: v("--away-ink"), neutral: v("--neutral-team"), ball: v("--ball"),
-      muted: v("--muted"), seq: [0, 1, 2, 3, 4].map((i) => v(`--seq-${i}`)),
+      ink: v("--ink"), home: v("--home"), homeInk: v("--home-ink"), away: v("--away"), awayInk: v("--away-ink"),
+      neutral: v("--neutral-team"), ball: v("--ball"), ember: v("--ember"), muted: v("--ink-3"),
+      seq: [0, 1, 2, 3, 4].map((i) => v(`--seq-${i}`)),
     };
     FONT = getComputedStyle(document.body).fontFamily || FONT;
   }
@@ -190,7 +191,7 @@
 
   function themeChanged() {
     readColors();
-    courtView.base = null;
+    if (lens) lens.readColors();
     mark("court", "shots");
   }
 
@@ -220,6 +221,9 @@
     }
   }
 
+  // Live cards elsewhere (briefing, board, answers) rebuild from these keys; the court is drawn by the lens.
+  const SHARED = new Set(["scorebar", "compare", "box", "shots", "decisions", "feed", "insights", "transcript", "teams", "status"]);
+
   function flush() {
     rafPending = false;
     const keys = [...dirty];
@@ -227,6 +231,8 @@
     for (const k of keys) {
       try { renderers[k](); } catch (err) { console.error(`render ${k} failed`, err); }
     }
+    const shared = keys.filter((k) => SHARED.has(k));
+    if (shared.length) window.dispatchEvent(new CustomEvent("cv-update", { detail: { keys: shared } }));
   }
 
   // =========================================================================== names & time
@@ -372,9 +378,14 @@
   }
 
   function toast(message, kind) {
-    const el = h("div", { class: `toast${kind === "error" ? " error" : ""}`, text: message });
-    byId("toast-region").append(el);
-    setTimeout(() => el.remove(), kind === "error" ? 6000 : 3500);
+    const el = h("div", { class: `toast${kind === "error" ? " error" : ""}`, role: kind === "error" ? "alert" : null, text: message });
+    const region = byId("toast-region");
+    region.append(el);
+    while (region.children.length > 3) region.firstChild.remove();
+    setTimeout(() => {
+      el.classList.add("leaving");
+      setTimeout(() => el.remove(), 240);
+    }, kind === "error" ? 6000 : 3200);
   }
 
   async function send(path, body, okMessage) {
@@ -392,7 +403,7 @@
 
   // =========================================================================== WebSocket
 
-  const WS = { sock: null, retry: 0, timer: 0, ping: 0, pingId: 0, pingSent: 0, lastMsg: 0, opened: false, rtt: null };
+  const WS = { sock: null, retry: 0, timer: 0, ping: 0, pingId: 0, pingSent: 0, lastMsg: 0, opened: false, openedAt: 0, rtt: null };
 
   function setConn(state, label) {
     const el = byId("conn-status");
@@ -428,6 +439,7 @@
     WS.sock = sock;
     sock.onopen = () => {
       WS.opened = true;
+      WS.openedAt = performance.now();
       WS.retry = 0;
       WS.lastMsg = performance.now();
       resetLiveState();
@@ -437,6 +449,7 @@
       WS.lastMsg = performance.now();
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
+      if (replaying && msg.type !== "pong") return;  // the view is a replay's (static/replay.js)
       dispatch(msg);
     };
     sock.onclose = (ev) => {
@@ -503,13 +516,27 @@
 
   // =========================================================================== dispatch
 
+  // Replay (static/replay.js) applies a recorded game's messages through dispatch; meanwhile the live game's are
+  // dropped, and afterwards the socket reconnects so the hub sends the live game's state again.
+  let replaying = false;
+  function setReplay(on) {
+    if (on === replaying) return;
+    replaying = on;
+    if (!on) {
+      dispatch({ type: "reset", t: 0 });
+      if (WS.sock) WS.sock.close(4001, "replay over");
+    }
+  }
+
   function dispatch(msg) {
     window.dispatchEvent(new CustomEvent("courtvision-message", { detail: msg }));
     switch (msg && msg.type) {
       case "reset":
         resetLiveState();
-        S.frame = null; S.stats = null; S.clock = []; S.held = {};
+        S.frame = null; S.stats = null; S.clock = []; S.held = {}; S.margin = [];
         S.meta = null; S.roster.clear(); S.paused = false; S.finished = false;
+        if (lens) lens.clear();
+        lastScore.home = lastScore.away = null;
         CAL.points = [];
         if (CAL.tool) { CAL.tool.img = null; CAL.tool.empty.hidden = false; CAL.tool.draw(); }
         ROI.corners = []; ROI.cells.clear(); ROI.history = [];
@@ -543,10 +570,8 @@
     applyTeamColors(msg.colors);
     readColors();
     loadLineups();
-    const ratio = `${S.geo.L + 4} / ${S.geo.W + 4}`;
-    byId("court-wrap").style.aspectRatio = ratio;
-    byId("shot-wrap").style.aspectRatio = ratio;
-    courtView.base = null;
+    byId("shot-wrap").style.aspectRatio = `${S.geo.L + 4} / ${S.geo.W + 4}`;
+    if (lens) { lens.readColors(); lens.setGeometry(S.geo); }
     shotView.base = false;
     mark("teams", "court", "shots", "box", "feed", "operator", "calibration", "scorebar");
   }
@@ -556,6 +581,7 @@
     S.frameAt = performance.now();
     recordClock(msg.t, msg.clock);
     holdClock(msg.t, msg.clock);
+    if (lens) lens.setFrame(msg);
     mark("court", "scorebar");
   }
 
@@ -595,6 +621,14 @@
 
   function onStats(msg) {
     S.stats = msg.stats || null;
+    const sc = (S.stats && S.stats.score) || {};
+    const t = isNum(msg.t) ? msg.t : latestT();
+    if (isNum(sc.home) && isNum(sc.away) && isNum(t)) {
+      const m = sc.home - sc.away, last = S.margin[S.margin.length - 1];
+      if (last && t < last[0]) S.margin.length = 0; // video restarted
+      if (!S.margin.length || S.margin[S.margin.length - 1][1] !== m) S.margin.push([t, m]);
+      if (S.margin.length > 4000) S.margin.splice(0, 1000);
+    }
     mark("scorebar", "compare", "box", "shots", "decisions");
   }
 
@@ -623,8 +657,16 @@
     mark("insights");
   }
 
+  const captionTimers = {};
+
   function onCaption(msg) {
-    setText(byId(msg.channel === "ad" ? "ad-line" : "caption-line"), msg.text || " ");
+    const ad = msg.channel === "ad";
+    const text = String(msg.text || "").trim();
+    const wrap = byId(ad ? "ad-wrap" : "caption-wrap");
+    setText(byId(ad ? "ad-line" : "caption-line"), text);
+    wrap.classList.toggle("on", !!text);
+    clearTimeout(captionTimers[ad]);
+    if (text) captionTimers[ad] = setTimeout(() => wrap.classList.remove("on"), 8000);
   }
 
   function onStatus(msg) {
@@ -656,7 +698,7 @@
     const ra = num(c.restricted_radius, 4), cc = num(c.center_circle_radius, 6);
     const ftR = fiba ? 1.8 / 0.3048 : 6; // FT circle radius is not a CourtSpec field (NBA/NCAA/NFHS 6 ft, FIBA 1.8 m)
     const bbHalf = fiba ? 0.9 / 0.3048 : 3; // half backboard width (6 ft; FIBA 1.8 m)
-    const paint = [], lines = [], dashes = [], rims = [];
+    const paint = [], lines = [], dashes = [], rims = [], hoops = [];
     lines.push([[0, 0], [L, 0], [L, W], [0, W], [0, 0]]);
     lines.push([[L / 2, 0], [L / 2, W]]);
     lines.push(arc(L / 2, cy, cc, 0, 2 * Math.PI, 64));
@@ -669,6 +711,7 @@
       lines.push(arc(ftx, cy, ftR, a0 - Math.PI / 2, a0 + Math.PI / 2, 32));
       dashes.push(arc(ftx, cy, ftR, a0 + Math.PI / 2, a0 + 1.5 * Math.PI, 32));
       lines.push([[bbx, cy - bbHalf], [bbx, cy + bbHalf]]);
+      hoops.push({ bx, bbx, dir, cy, rimR, bbHalf });
       rims.push(arc(bx, cy, rimR, 0, 2 * Math.PI, 24));
       rims.push([[bbx, cy], [bx - dir * rimR, cy]]);
       if (ra > 0) {
@@ -679,131 +722,65 @@
       const three = arc(bx, cy, r3, a0 - phi, a0 + phi, 48);
       lines.push([[base, three[0][1]], ...three, [base, three[three.length - 1][1]]]);
     }
-    return { L, W, paint, lines, dashes, rims };
+    return { L, W, paint, lines, dashes, rims, hoops };
   }
 
-  // =========================================================================== live court (canvas)
+  // =========================================================================== court lens
 
-  const courtView = { canvas: null, ctx: null, base: null, w: 1, h: 1, dpr: 1, scale: 1, ox: 0, oy: 0, ariaAt: 0 };
-  const pxX = (x) => courtView.ox + x * courtView.scale;
-  const pxY = (y) => courtView.oy + (S.geo.W - y) * courtView.scale;
+  let lens = null;
+
+  function lensTip(p, x, y) {
+    const tip = byId("lens-tip");
+    if (!p) { tip.hidden = true; return; }
+    const team = p.team === "home" || p.team === "away" ? S.teams[p.team] : "Unassigned";
+    fill(tip, h("strong", { text: pname(p.id) }),
+      h("span", { text: `${team}${isNum(p.speed) ? ` · ${p.speed.toFixed(1)} ft/s` : ""} · ${p.x.toFixed(0)}, ${p.y.toFixed(0)} ft` }));
+    tip.style.left = `${x}px`;
+    tip.style.top = `${y}px`;
+    tip.hidden = false;
+  }
 
   function courtResize() {
-    const r = byId("court-wrap").getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    Object.assign(courtView, { dpr, w: Math.max(1, Math.round(r.width * dpr)), h: Math.max(1, Math.round(r.height * dpr)) });
-    courtView.canvas.width = courtView.w;
-    courtView.canvas.height = courtView.h;
-    courtView.base = null;
-    renderers.court(); // draw now: resizing cleared the canvas
-  }
-
-  function tracePath(g, pts, close) {
-    g.beginPath();
-    pts.forEach(([x, y], i) => (i ? g.lineTo(pxX(x), pxY(y)) : g.moveTo(pxX(x), pxY(y))));
-    if (close) g.closePath();
-  }
-
-  function buildCourtBase() {
-    const geo = S.geo, v = courtView;
-    const pad = 2;
-    v.scale = Math.min(v.w / (geo.L + 2 * pad), v.h / (geo.W + 2 * pad));
-    v.ox = (v.w - geo.L * v.scale) / 2;
-    v.oy = (v.h - geo.W * v.scale) / 2;
-    const off = document.createElement("canvas");
-    off.width = v.w;
-    off.height = v.h;
-    const g = off.getContext("2d");
-    g.fillStyle = C.floor;
-    g.fillRect(0, 0, v.w, v.h);
-    g.fillStyle = C.paint;
-    for (const poly of geo.paint) { tracePath(g, poly, true); g.fill(); }
-    g.lineJoin = "round";
-    g.lineCap = "round";
-    g.strokeStyle = C.line;
-    g.lineWidth = Math.max(1, v.dpr * 1.25);
-    for (const pl of geo.lines) { tracePath(g, pl); g.stroke(); }
-    g.setLineDash([4 * v.dpr, 4 * v.dpr]);
-    for (const pl of geo.dashes) { tracePath(g, pl); g.stroke(); }
-    g.setLineDash([]);
-    g.strokeStyle = C.rim;
-    g.lineWidth = Math.max(1.5, v.dpr * 1.6);
-    for (const pl of geo.rims) { tracePath(g, pl); g.stroke(); }
-    v.base = off;
+    if (lens) lens.resize();
   }
 
   renderers.court = () => {
-    const v = courtView;
-    if (!v.ctx) return;
-    if (!S.geo) S.geo = courtGeometry(S.court || {});
-    if (!v.base) buildCourtBase();
-    const g = v.ctx;
-    g.drawImage(v.base, 0, 0);
     const f = S.frame;
     byId("court-overlay").hidden = !!f;
     if (!f) return;
-    const dpr = v.dpr, r = Math.max(8 * dpr, 1.15 * v.scale);
-    const holder = f.ball && f.ball.holder;
-    g.textAlign = "center";
-    g.textBaseline = "middle";
-    g.font = `650 ${Math.round(r * 1.0)}px ${FONT}`;
-    for (const p of f.players || []) {
-      if (!isNum(p.x) || !isNum(p.y)) continue;
-      const x = pxX(p.x), y = pxY(p.y);
-      const team = p.team === "home" || p.team === "away" ? p.team : null;
-      if (holder && holder === p.id) {
-        g.beginPath();
-        g.arc(x, y, r + 3.5 * dpr, 0, 2 * Math.PI);
-        g.lineWidth = 2 * dpr;
-        g.strokeStyle = C.ink;
-        g.stroke();
-      }
-      g.beginPath();
-      g.arc(x, y, r, 0, 2 * Math.PI);
-      g.fillStyle = team ? C[team] : C.neutral;
-      g.fill();
-      g.lineWidth = 1.5 * dpr;
-      g.strokeStyle = C.floor;
-      g.stroke();
-      g.fillStyle = team ? C[`${team}Ink`] : "#ffffff";
-      g.fillText(String(p.jersey ?? "?"), x, y + 0.5 * dpr);
-    }
-    const b = f.ball;
-    if (b && b.visible && isNum(b.x) && isNum(b.y)) {
-      const x = pxX(b.x), y = pxY(b.y), br = Math.max(4 * dpr, 0.45 * v.scale);
-      if (isNum(b.z) && b.z > 0.3) {
-        g.beginPath();
-        g.arc(x, y, br + b.z * v.scale * 0.35, 0, 2 * Math.PI);
-        g.lineWidth = 1.5 * dpr;
-        g.strokeStyle = C.ball;
-        g.stroke();
-      }
-      g.beginPath();
-      g.arc(x, y, br, 0, 2 * Math.PI);
-      g.fillStyle = C.ball;
-      g.fill();
-      g.lineWidth = dpr;
-      g.strokeStyle = C.ink;
-      g.stroke();
-    }
     const now = performance.now();
-    if (now - v.ariaAt > 3000) {
-      v.ariaAt = now;
+    if (now - (renderers.court.ariaAt || 0) > 3000) {
+      renderers.court.ariaAt = now;
       const n = (f.players || []).length;
       const poss = f.possession ? `${S.teams[f.possession]} ball` : "possession unknown";
-      v.canvas.setAttribute("aria-label", `Top-down court: ${n} players tracked, ${poss}`);
-      setText(byId("court-meta"), `Frame ${f.frame_idx ?? "–"} · video ${fmtVideo(f.t)} · ${n} players`);
+      const b = f.ball;
+      const ball = b && b.visible && isNum(b.z) ? `, ball ${b.z.toFixed(1)} ft up` : "";
+      byId("court-canvas").setAttribute("aria-label", `Court lens: ${n} players tracked, ${poss}${ball}`);
+      setText(byId("court-meta"), `frame ${f.frame_idx ?? "–"} · ${fmtVideo(f.t)} · ${n} on floor`);
     }
   };
 
   // =========================================================================== score bar / teams / status
 
+  const lastScore = { home: null, away: null };
+
+  function setScore(team, value) {
+    const el = byId(`${team}-score`);
+    setText(el, fmtInt(value));
+    if (isNum(value) && isNum(lastScore[team]) && value > lastScore[team]) {
+      el.classList.remove("bump");
+      void el.offsetWidth; // restart the animation
+      el.classList.add("bump");
+    }
+    if (isNum(value)) lastScore[team] = value;
+  }
+
   renderers.scorebar = () => {
     const f = S.frame, st = S.stats;
     const score = (st && st.score) || {};
-    setText(byId("score-source-label"), st ? (st.score_source === "scoreboard" ? "Scoreboard" : "Observed points") : "Score unavailable");
-    setText(byId("away-score"), fmtInt(score.away));
-    setText(byId("home-score"), fmtInt(score.home));
+    setText(byId("score-source-label"), st ? (st.score_source === "scoreboard" ? "Score from the scoreboard" : "Score from observed points") : "Score unavailable");
+    setScore("away", score.away);
+    setScore("home", score.home);
     const period = num(heldClock("period"), st && st.period);
     const game = num(heldClock("game"), st && st.game_clock);
     const shotS = num(heldClock("shot"), st && st.shot_clock);
@@ -815,6 +792,7 @@
     setText(shot, fmtShot(shotS));
     shot.classList.toggle("low", isNum(shotS) && shotS <= 5);
     markStale(shot, "shot", shotS, "Shot clock");
+    byId("shot-box").style.setProperty("--shot", isNum(shotS) ? String(clamp(shotS / 24, 0, 1)) : "0");
     const poss = f && f.possession;
     byId("away-poss").classList.toggle("on", poss === "away");
     byId("home-poss").classList.toggle("on", poss === "home");
@@ -894,15 +872,24 @@
     const a = teams.away || {}, hm = teams.home || {};
     const body = byId("compare-body");
     if (body.children.length !== COMPARE_ROWS.length) {
-      body.replaceChildren(...COMPARE_ROWS.map(([label]) => h("tr", null, h("th", { scope: "row", text: label }), h("td"), h("td"))));
+      body.replaceChildren(...COMPARE_ROWS.map(([label]) => h("div", { class: "cmp-row", role: "row" },
+        h("span", { class: "cmp-v away", role: "cell" }), h("span", { class: "cmp-k", role: "rowheader", text: label }),
+        h("span", { class: "cmp-v home", role: "cell" }), h("span", { class: "cmp-bar", "aria-hidden": "true" }, h("i", { class: "a" }), h("i", { class: "h" })))));
     }
     COMPARE_ROWS.forEach(([, show, key], i) => {
-      const [, ta, th] = body.children[i].children;
+      const row = body.children[i];
+      const [ta, , th] = row.children;
       setText(ta, show(a));
       setText(th, show(hm));
       const va = key ? key(a) : null, vh = key ? key(hm) : null;
-      ta.classList.toggle("lead", isNum(va) && isNum(vh) && va > vh);
-      th.classList.toggle("lead", isNum(va) && isNum(vh) && vh > va);
+      const both = isNum(va) && isNum(vh);
+      ta.classList.toggle("lead", both && va > vh);
+      th.classList.toggle("lead", both && vh > va);
+      row.classList.toggle("lead-a", both && va > vh);
+      row.classList.toggle("lead-h", both && vh > va);
+      const total = both ? Math.abs(va) + Math.abs(vh) : 0;
+      row.classList.toggle("split", total > 0);
+      if (total > 0) row.style.setProperty("--a", (Math.abs(va) / total).toFixed(3));
     });
     const run = S.stats && S.stats.run;
     let meta = " ";
@@ -927,6 +914,7 @@
     const list = byId("insight-list");
     const all = [...S.insights.values()].sort((a, b) => num(b.priority, 0) - num(a.priority, 0) || num(b.t, 0) - num(a.t, 0));
     const top = all.slice(0, 3);
+    setText(byId("insight-count"), String(all.length));
     if (!top.length) {
       list.replaceChildren(h("li", { class: "empty", text: "No insights yet. Cards appear when the numbers support them." }));
     } else {
@@ -936,7 +924,7 @@
           h("span", { class: "insight-n", text: `${sampleSize(ins.evidence)} · ${timeLabel(ins.t)}` })),
         h("p", { class: "insight-text", text: ins.text || "" }))));
     }
-    setText(byId("insight-more"), all.length > 3 ? `${all.length - 3} older` : " ");
+    setText(byId("insight-more"), all.length > 3 ? `${all.length - 3} older insights are kept in the export.` : "");
   };
 
   // =========================================================================== transcript
@@ -966,7 +954,9 @@
       S.utter.splice(0, S.utter.length - 500);
       transcriptRendered = S.utter.length;
     }
-    setText(byId("transcript-count"), `${S.utterIds.size} lines`);
+    setText(byId("transcript-count"), String(S.utterIds.size));
+    if (!list.children.length) list.append(h("li", { class: "empty", text: "Narration lines appear here as the game is called." }));
+    else { const empty = list.querySelector(".empty"); if (empty && list.children.length > 1) empty.remove(); }
   };
 
   // =========================================================================== event feed
@@ -975,7 +965,8 @@
 
   function feedFilter(e, mode) {
     if (mode === "all") return true;
-    if (mode === "review") return !!(e.attrs && e.attrs.needs_review) || e.kind === "score_correction";
+    // flagged plays and score corrections, until someone checks them (a checked play's source is "manual")
+    if (mode === "review") return e.source !== "manual" && (!!(e.attrs && e.attrs.needs_review) || e.kind === "score_correction");
     return e.kind !== "dribble" && e.kind !== "pass";
   }
 
@@ -983,12 +974,20 @@
     return v === 1 ? "a free throw" : v === 2 ? "a 2" : v === 3 ? "a 3" : "a shot";
   }
 
+  // how a team got the ball (a possession's cause)
+  const GAINED = {
+    made_shot: "after a made basket", made_fg: "after a made basket", free_throw: "after a free throw",
+    defensive_rebound: "off a defensive rebound", offensive_rebound: "off an offensive rebound", steal: "on a steal",
+    turnover: "after a turnover", inbound: "on the inbound", jump_ball: "from the jump ball", restart: "at the restart",
+    other: "(how wasn't seen)",
+  };
+
   function describe(e) {
     const p = pname(e.player_id), o = pname(e.other_player_id);
     const tm = e.team ? S.teams[e.team] || e.team : "Team";
     const a = e.attrs || {};
     switch (e.kind) {
-      case "possession": return `${tm} ball${a.cause ? ` · ${humanize(a.cause).toLowerCase()}` : ""}`;
+      case "possession": return `${tm} ball${a.cause ? ` ${GAINED[a.cause] || `(${humanize(a.cause).toLowerCase()})`}` : ""}`;
       case "pass": return `${p} pass to ${o}${a.completed === false ? " (not completed)" : ""}`;
       case "dribble": return `${p} dribble`;
       case "shot_attempt": {
@@ -1013,29 +1012,91 @@
     }
   }
 
+  // Why the engine flagged a play for a person to check, in plain words (its attrs.reason as a fallback).
+  function reviewWhy(e) {
+    const a = e.attrs || {}, reason = String(a.reason || "");
+    if (e.kind === "score_correction") return "The scoreboard changed, but the engine saw no basket to match it.";
+    if (e.kind === "possession" && a.cause === "other") return "The ball changed teams, but the engine didn't see how: no shot, rebound or steal.";
+    if (e.kind === "rebound" && a.team_rebound) return "Nobody caught the ball before it went dead, so the rebound went to the team that inbounded it.";
+    if (e.kind === "turnover" && reason.startsWith("inferred")) return "The engine didn't see who lost the ball. It guessed from the other team inbounding next.";
+    if (a.inferred === "scoreboard") return e.kind === "rebound" ? "Not seen: implied by a put-back the scoreboard shows." :
+      "The scoreboard went up, but the engine didn't see this shot, so it added one.";
+    if (e.kind === "shot_missed" && reason.startsWith("no scoreboard change")) return "It looked like a make, but the scoreboard didn't change, so it became a miss.";
+    if (e.kind === "shot_missed" && reason.includes("unresolved")) return "The engine lost the ball after the shot and couldn't tell whether it went in, so it logged a miss.";
+    return reason ? `Engine note: ${reason}.` : "The engine wasn't sure about this play.";
+  }
+
+  // what a play's status, source and confidence mean, for its badges
+  const STATUS_WORDS = {
+    provisional: ["Unconfirmed", "Logged from the video. Not confirmed yet by the scoreboard or by you."],
+    confirmed: ["Confirmed", "Confirmed by the scoreboard or by you."],
+    retracted: ["Removed", "Marked as not having happened. It no longer counts."],
+  };
+  const SOURCE_WORDS = { scoreboard: "From the scoreboard", manual: "By you", feed: "From the feed", sim: "Simulated" };
+
+  // A small glyph per kind of play (18 px grid). Shapes only; the team colour comes from CSS.
+  const GLYPHS = {
+    shot_made: [["circle", { cx: 9, cy: 9, r: 6.5, fill: "currentColor", stroke: "none" }], ["path", { d: "M6 9.2l2.1 2.1 4-4.4", stroke: "#fff", "stroke-width": 1.7 }]],
+    shot_missed: [["circle", { cx: 9, cy: 9, r: 6 }], ["path", { d: "M7 7l4 4M11 7l-4 4" }]],
+    shot_attempt: [["circle", { cx: 9, cy: 9, r: 6, "stroke-dasharray": "2.4 2.2" }]],
+    pass: [["path", { d: "M3.5 9h10M10 5.5 13.5 9 10 12.5" }]],
+    dribble: [["path", { d: "M9 3v5.5M6.6 6.4 9 8.8l2.4-2.4" }], ["circle", { cx: 9, cy: 13.4, r: 1.9, fill: "currentColor", stroke: "none" }]],
+    rebound: [["path", { d: "M9 14V5M5.5 8.5 9 5l3.5 3.5M5 14.5h8" }]],
+    assist: [["circle", { cx: 5, cy: 12.5, r: 2 }], ["circle", { cx: 13, cy: 5.5, r: 2, fill: "currentColor" }], ["path", { d: "M6.6 11 11.3 7" }]],
+    steal: [["path", { d: "M10.2 2.5 5.4 10h3.8l-1.1 5.5 4.8-7.6H9.1z", fill: "currentColor", stroke: "none" }]],
+    block: [["path", { d: "M9 2.8l5.2 2v4.1c0 3.1-2.2 5.3-5.2 6.3-3-1-5.2-3.2-5.2-6.3V4.8z" }], ["path", { d: "M6.8 9h4.4" }]],
+    turnover: [["path", { d: "M13.5 9a4.5 4.5 0 1 1-1.4-3.3M13.5 3.8v2.6h-2.6" }]],
+    foul: [["path", { d: "M9 3 15.5 14.5h-13z" }], ["path", { d: "M9 7.6v3.1M9 12.5v.01" }]],
+    substitution: [["path", { d: "M4 6.5h9.5M10.5 3.5l3 3-3 3M14 11.5H4.5M7.5 8.5l-3 3 3 3" }]],
+    timeout: [["path", { d: "M7 5v8M11 5v8" }]],
+    period_start: [["path", { d: "M5 15V3.5M5 4h7.5l-1.8 2.8 1.8 2.7H5" }]],
+    period_end: [["path", { d: "M5 15V3.5M5 4h7.5l-1.8 2.8 1.8 2.7H5", fill: "currentColor" }]],
+    possession: [["circle", { cx: 9, cy: 9, r: 6 }], ["path", { d: "M9 3a6 6 0 0 1 0 12z", fill: "currentColor", stroke: "none" }]],
+    score_correction: [["path", { d: "M9 4v6M6 7h6M6 13.5h6" }]],
+    default: [["circle", { cx: 9, cy: 9, r: 2.5, fill: "currentColor", stroke: "none" }]],
+  };
+
+  function glyph(kind) {
+    const el = svg("svg", { viewBox: "0 0 18 18", fill: "none", stroke: "currentColor", "stroke-width": 1.5,
+      "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" });
+    for (const [tag, attrs] of GLYPHS[kind] || GLYPHS.default) el.append(svg(tag, attrs));
+    return el;
+  }
+
   function fillEventRow(li, e) {
     const retracted = e.status === "retracted";
-    li.className = `ev${e.team ? ` team-${e.team}` : ""}${retracted ? " retracted" : ""}${num(e.revision, 0) > 0 ? " revised" : ""}${SCORING.has(e.kind) ? " ev-score" : ""}`;
-    const badges = [h("span", { class: `badge badge-${e.status}`, text: e.status || "provisional" })];
-    if (e.source && e.source !== "cv") badges.push(h("span", { class: "badge", text: e.source }));
-    if (num(e.revision, 0) > 0) badges.push(h("span", { class: "badge badge-rev", text: `rev ${e.revision}` }));
-    if (isNum(e.confidence) && e.confidence < 1 && !retracted) badges.push(h("span", { class: "badge", text: `${Math.round(e.confidence * 100)}%` }));
-    if (e.attrs && e.attrs.needs_review) badges.push(h("span", { class: "badge badge-review", text: "Review" }));
-    const label = describe(e);
+    const fresh = li.classList.contains("is-new");
+    const flagged = !retracted && feedFilter(e, "review");
+    li.className = `ev${e.team ? ` team-${e.team}` : ""}${retracted ? " retracted" : ""}${num(e.revision, 0) > 0 ? " revised" : ""}${SCORING.has(e.kind) ? " ev-score" : ""}${flagged ? " flagged" : ""}${fresh ? " is-new" : ""}`;
+    const [status, statusTip] = STATUS_WORDS[e.status] || STATUS_WORDS.provisional;
+    const badges = [h("span", { class: `badge badge-${e.status}`, text: status, title: e.status === "confirmed" && e.source === "manual" ? "Confirmed by you." : statusTip })];
+    if (e.source && e.source !== "cv") badges.push(h("span", { class: "badge", text: SOURCE_WORDS[e.source] || e.source }));
+    if (num(e.revision, 0) > 0) badges.push(h("span", { class: "badge badge-rev", text: "Revised", title: `Changed ${e.revision} time${e.revision === 1 ? "" : "s"} since it was first logged.` }));
+    if (isNum(e.confidence) && e.confidence < 1 && !retracted) badges.push(h("span", { class: "badge", text: `${Math.round(e.confidence * 100)}% sure`, title: "How sure the engine is that this happened as described." }));
+    if (flagged) badges.push(h("span", { class: "badge badge-review", text: "Needs review", title: "Flagged for you to check against the video." }));
+    const label = describe(e), verb = flagged ? "Check" : "Edit";
     li.replaceChildren(
       h("span", { class: "ev-time", text: timeLabel(e.t) }),
-      h("div", { class: "ev-desc" }, h("span", { class: "tdot", "aria-hidden": "true" }), h("span", { class: "ev-label", text: label, title: label })),
-      h("div", { class: "ev-meta" }, badges),
+      h("span", { class: "ev-glyph" }, glyph(e.kind)),
+      h("div", { class: "ev-desc" }, h("span", { class: "ev-label", text: label, title: label }),
+        flagged ? h("span", { class: "ev-why", text: reviewWhy(e) }) : null, h("div", { class: "ev-meta" }, badges)),
       h("div", { class: "ev-actions" }, h("button", {
-        type: "button", class: "link-btn", text: "Correct", "aria-label": `Correct event: ${label}`,
+        type: "button", class: "link-btn", text: verb, "aria-label": `${verb} play: ${label}`,
         onclick: () => openEventDialog(S.events.get(e.event_id) || e),
       })),
     );
   }
 
+  function setFeedMode(mode) {
+    S.feedMode = ["key", "all", "review"].includes(mode) ? mode : "key";
+    for (const b of document.querySelectorAll("[data-feed]")) b.setAttribute("aria-pressed", String(b.dataset.feed === S.feedMode));
+    mark("feed");
+  }
+
   renderers.feed = () => {
     const list = byId("feed-list");
-    const mode = byId("feed-filter").value;
+    const mode = S.feedMode;
+    const animate = WS.openedAt && performance.now() - WS.openedAt > 1500;
     const evs = [...S.events.values()].filter((e) => feedFilter(e, mode))
       .sort((a, b) => num(b.t, 0) - num(a.t, 0) || String(b.event_id).localeCompare(String(a.event_id)))
       .slice(0, 200);
@@ -1049,6 +1110,10 @@
       const sig = [e.revision, e.status, e.kind, e.player_id, e.other_player_id, e.team, e.value, e.confidence, S.rosterVersion, S.clock.length > 0].join("|");
       if (!entry) {
         entry = { el: h("li"), sig: "" };
+        if (animate) {
+          entry.el.classList.add("is-new");
+          entry.el.addEventListener("animationend", () => entry.el.classList.remove("is-new"), { once: true });
+        }
         feedNodes.set(e.event_id, entry);
       }
       if (entry.sig !== sig) {
@@ -1064,12 +1129,18 @@
         feedNodes.delete(id);
       }
     }
-    if (!evs.length) list.append(h("li", { class: "empty", text: mode === "review" ? "Nothing needs review." : "No events yet." }));
+    if (!evs.length) list.append(h("li", { class: "empty", text: mode === "review" ? "Nothing needs review." : "No plays yet. They appear here as the engine logs them." }));
+    setText(byId("plays-count"), String(evs.length));
   };
 
   // =========================================================================== event correction dialog
 
-  let dialogEvent = null;
+  let dialogEvent = null, dialogStart = "";
+  const dialogState = () => ["ev-kind", "ev-team", "ev-player", "ev-other", "ev-value", "ev-t"].map((id) => byId(id).value).join("|");
+  // the primary button says what it will do: confirm the play as it is, save a change, or add a new one
+  function syncEventButtons() {
+    setText(byId("btn-ev-submit"), !dialogEvent ? "Add play" : dialogState() === dialogStart ? "It's right" : "Save changes");
+  }
 
   function fillPlayerSelect(sel, current) {
     const opts = [h("option", { value: "", text: "— none —" })];
@@ -1089,8 +1160,14 @@
     dialogEvent = e || null;
     const kindSel = byId("ev-kind");
     if (!kindSel.options.length) kindSel.replaceChildren(...KINDS.map((k) => h("option", { value: k, text: humanize(k) })));
-    setText(byId("ev-title"), e ? "Correct event" : "Add event");
-    setText(byId("ev-sub"), e ? `${e.event_id} · rev ${num(e.revision, 0)} · ${e.source || "cv"} · ${describe(e)}` : "Operator entry (source manual, confirmed)");
+    const flagged = !!e && feedFilter(e, "review");
+    setText(byId("ev-title"), !e ? "Add a play" : flagged ? "Check this play" : "Edit play");
+    setText(byId("ev-sub"), e ? `${describe(e)} · ${timeLabel(e.t)}` : "A play you add counts as confirmed.");
+    byId("ev-sub").title = e ? `${e.event_id} · revision ${num(e.revision, 0)} · source ${e.source || "cv"}` : "";
+    setText(byId("ev-why"), e ? `${flagged ? `${reviewWhy(e)} ` : ""}Watch that moment in the video. If it happened like this, choose “It's right”. ` +
+      "If a detail is wrong, change it below and save. If it didn't happen, choose “It didn't happen”." : "");
+    byId("ev-why").hidden = !e;
+    byId("btn-ev-retract").hidden = !e;
     kindSel.value = e ? e.kind : "shot_made";
     byId("ev-team").value = (e && e.team) || "";
     fillPlayerSelect(byId("ev-player"), e && e.player_id);
@@ -1102,6 +1179,8 @@
     byId("ev-t").value = isNum(t) ? String(Math.round(t * 10) / 10) : "";
     byId("ev-reason").value = "";
     setText(byId("ev-error"), "");
+    dialogStart = dialogState();
+    syncEventButtons();
     byId("event-dialog").showModal();
   }
 
@@ -1127,7 +1206,8 @@
         event_id: e.event_id, frame_idx: Math.max(0, num(e.frame_idx, 0)), x: isNum(e.x) ? e.x : null,
         y: isNum(e.y) ? e.y : null, shot_id: e.shot_id || null, revision: num(e.revision, 0) + 1,
       });
-      body.attrs = Object.assign({}, e.attrs || {}, { corrected_from_revision: num(e.revision, 0) });
+      // a person has checked it now: it leaves the review list (and the review counts)
+      body.attrs = Object.assign({}, e.attrs || {}, { corrected_from_revision: num(e.revision, 0), needs_review: false });
     }
     if (reason) body.attrs.reason = reason;
     return body;
@@ -1174,11 +1254,12 @@
       return;
     }
     const btn = byId("btn-ev-submit");
+    const changed = dialogState() !== dialogStart;
     btn.disabled = true;
     try {
       await api("api/events", body);
       byId("event-dialog").close();
-      toast(body.status === "retracted" ? "Event retracted" : dialogEvent ? "Correction sent" : "Event added");
+      toast(body.status === "retracted" ? "Removed: it no longer counts" : !dialogEvent ? "Play added" : changed ? "Changes saved and confirmed" : "Confirmed");
     } catch (err) {
       setText(byId("ev-error"), err.message || String(err));
     } finally {
@@ -1540,6 +1621,7 @@
     if (key === "m") control(S.muted ? "unmute" : "mute");
     else if (key === "p") control(S.paused ? "resume" : "pause");
     else if (key === "d") control("dead_ball");
+    else if (key === "a") openEventDialog(null);
     else return;
     ev.preventDefault();
   }
@@ -1734,6 +1816,7 @@
       h("span", { text: `${p.landmark ? humanize(p.landmark) : `(${fmtNum(p.x, 2)}, ${fmtNum(p.y, 2)}) ft`} ← (${p.u.toFixed(0)}, ${p.v.toFixed(0)}) px` }),
       h("button", { type: "button", class: "link-btn", text: "Remove", "aria-label": `Remove point ${i + 1}`, onclick: () => { CAL.points.splice(i, 1); calChanged(); } }))));
     setText(byId("cal-count"), `${CAL.points.length} / 4 minimum`);
+    [...byId("cal-progress").children].forEach((pip, i) => pip.classList.toggle("on", i < CAL.points.length));
     byId("btn-cal-submit").disabled = CAL.points.length < 4;
     if (CAL.tool) CAL.tool.draw();
   };
@@ -1753,8 +1836,8 @@
       svg("path", {...line, d:`M${L/2} 0v${W} M0 17h19v16H0 M${L} 17h-19v16h19`}),
       svg("circle", {...line, cx:L/2, cy:W/2, r:6}));
     const name = byId("cal-landmark").value, pt = S.landmarks[name];
-    if (pt) map.append(svg("circle", { cx:pt[0], cy:W - pt[1], r:1.5, fill:"#3765dd" }),
-      svg("circle", { cx:pt[0], cy:W - pt[1], r:3, fill:"none", stroke:"#3765dd", "stroke-width":.5 }));
+    if (pt) map.append(svg("circle", { cx:pt[0], cy:W - pt[1], r:3.2, fill:"#ff7a2f", "fill-opacity":.25 }),
+      svg("circle", { cx:pt[0], cy:W - pt[1], r:1.4, fill:"#ff7a2f" }));
   }
 
   function addCalPoint(u, v) {
@@ -1799,7 +1882,7 @@
   }
 
   function drawCalibration(g, tool) {
-    CAL.points.forEach((p, i) => marker(g, tool, p.u, p.v, `${i + 1} ${p.landmark ? humanize(p.landmark) : ""}`.trim(), "#2a78d6"));
+    CAL.points.forEach((p, i) => marker(g, tool, p.u, p.v, `${i + 1} ${p.landmark ? humanize(p.landmark) : ""}`.trim(), "#ff7a2f"));
   }
 
   // ----------------------------------------------------------------------- scoreboard ROI
@@ -1847,6 +1930,7 @@
       h("span", { text: `${name}: ${b.map((v) => v.toFixed(0)).join(", ")}` }),
       h("button", { type: "button", class: "link-btn", text: "Remove", "aria-label": `Remove cell ${name}`, onclick: () => { ROI.cells.delete(name); roiChanged(); } }))));
     byId("btn-roi-submit").disabled = !(ROI.corners.length === 4 && ROI.cells.size > 0);
+    setText(byId("roi-count"), `${ROI.corners.length}/4 corners · ${ROI.cells.size} cell${ROI.cells.size === 1 ? "" : "s"}`);
     if (ROI.tool) ROI.tool.draw();
   }
 
@@ -1903,8 +1987,10 @@
 
   // =========================================================================== tabs, settings, wiring
 
+  const navTabs = () => [...document.querySelectorAll('#side-nav [role="tab"]')];
+
   function selectTab(tab, focus) {
-    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    const tabs = navTabs();
     for (const t of tabs) {
       const on = t === tab;
       t.setAttribute("aria-selected", String(on));
@@ -1913,24 +1999,27 @@
     }
     if (focus) tab.focus();
     store.set("localStorage", "cv-tab", tab.id);
+    setText(byId("crumb-view"), tab.querySelector(".nav-label").textContent);
+    window.dispatchEvent(new CustomEvent("cv-view", { detail: { id: tab.id } }));
     if (tab.id === "tab-live") courtResize();
     if (tab.id === "tab-calibration" && CAL.tool) CAL.tool.resize();
     if (tab.id === "tab-roi" && ROI.tool) ROI.tool.resize();
   }
 
   function setupTabs() {
-    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    const tabs = navTabs();
     for (const t of tabs) t.addEventListener("click", () => selectTab(t, false));
-    byId("tab-live").parentElement.addEventListener("keydown", (ev) => {
+    byId("side-nav").addEventListener("keydown", (ev) => {
       const i = tabs.indexOf(document.activeElement);
       if (i < 0) return;
-      const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[ev.key];
+      const next = { ArrowDown: i + 1, ArrowUp: i - 1, ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[ev.key];
       if (next === undefined) return;
       ev.preventDefault();
       selectTab(tabs[(next + tabs.length) % tabs.length], true);
     });
     const saved = byId(store.get("localStorage", "cv-tab") || "");
-    if (saved && saved.getAttribute("role") === "tab") selectTab(saved, false);
+    if (saved && saved.getAttribute("role") === "tab" && saved.closest("#side-nav")) selectTab(saved, false);
+    else selectTab(byId("tab-live"), false);
   }
 
   function openSettings() {
@@ -1963,10 +2052,14 @@
     byId("settings-form").addEventListener("submit", saveSettings);
     byId("btn-settings-close").addEventListener("click", () => byId("settings-dialog").close());
 
-    byId("feed-filter").addEventListener("change", () => mark("feed"));
+    for (const b of document.querySelectorAll("[data-feed]")) b.addEventListener("click", () => setFeedMode(b.dataset.feed));
     byId("btn-add-event").addEventListener("click", () => openEventDialog(null));
     byId("btn-op-add-event").addEventListener("click", () => openEventDialog(null));
     byId("event-form").addEventListener("submit", submitEvent);
+    byId("event-form").addEventListener("input", syncEventButtons);
+    byId("event-form").addEventListener("change", syncEventButtons);
+    byId("btn-ev-submit").addEventListener("click", () => { byId("ev-status").value = "confirmed"; });
+    byId("btn-ev-retract").addEventListener("click", () => { byId("ev-status").value = "retracted"; byId("event-form").requestSubmit(); });
     byId("ev-player").addEventListener("change", () => {
       const team = teamOfPlayer(byId("ev-player").value); // Event.team is the actor's team
       if (team) byId("ev-team").value = team;
@@ -2053,7 +2146,7 @@
 
   function staleCheck() {
     const overlay = byId("court-overlay");
-    if (!S.frame) return;
+    if (!S.frame) { setText(overlay, "Waiting for tracking data"); return; }
     const age = (performance.now() - S.frameAt) / 1000;
     if (age > 5) {
       overlay.hidden = false;
@@ -2068,12 +2161,32 @@
     const theme = store.get("localStorage", "cv-theme");
     if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
     readColors();
-    courtView.canvas = byId("court-canvas");
-    courtView.ctx = courtView.canvas.getContext("2d");
     S.geo = courtGeometry({});
+    if (window.CourtLens) {
+      lens = new window.CourtLens(byId("court-canvas"), {
+        wrap: byId("court-wrap"), padTop: 44, onHover: lensTip,
+        onPick: (id) => window.CVGen && window.CVGen.openPlayer(id),
+      });
+      lens.setGeometry(S.geo);
+      for (const b of document.querySelectorAll("[data-lens]")) {
+        b.addEventListener("click", () => {
+          lens.setPreset(b.dataset.lens);
+          for (const o of document.querySelectorAll("[data-lens]")) o.setAttribute("aria-pressed", String(o === b));
+          store.set("localStorage", "cv-lens", b.dataset.lens);
+        });
+      }
+      const savedLens = store.get("localStorage", "cv-lens");
+      if (savedLens && window.CourtLens.PRESETS[savedLens]) document.querySelector(`[data-lens="${savedLens}"]`).click();
+      window.addEventListener("cv-focus", (ev) => lens.setFocus(ev.detail && ev.detail.id));
+      // the empty stage: the same lens on a scripted possession, framed to the right of the copy
+      const hero = new window.CourtLens(byId("hero-lens"), {
+        demo: true, interactive: false, camera: { az: -38, el: 24, r: 58 }, center: [74, 25, 3],
+        fitBox: [47, -2, 96, 52], frameRect: [0.36, 0.05, 0.985, 0.97],
+      });
+      hero.setGeometry(courtGeometry({}));
+    }
     wire();
     setupTabs();
-    if (window.ResizeObserver) new ResizeObserver(courtResize).observe(byId("court-wrap"));
     courtResize();
     setRoiMode("corners");
     mark("teams", "court", "shots", "box", "compare", "insights", "feed", "decisions", "operator", "calibration", "status", "scorebar");
@@ -2081,6 +2194,18 @@
     setInterval(heartbeat, 15000);
     setInterval(staleCheck, 1000);
   }
+
+  // Read-only access for the shell, the generative cards and the model lab (static/shell.js, genui.js, lab.js).
+  window.CV = {
+    S, h, svg, fill, setText, byId, isNum, num, clamp, humanize, store,
+    fmtClock, fmtShot, fmtVideo, fmtPct, fmtNum, fmtInt, fmtMade, fmtSigned, fmtMin,
+    pname, pjersey, teamOfPlayer, describe, reviewWhy, timeLabel, periodLabel, teamAbbr, feedFilter, glyph,
+    efgOf, tsOf, pppOf, possOf, rebOf, courtGeometry, xfgColor,
+    get colors() { return C; },
+    get lens() { return lens; },
+    api, send, toast, control, openEventDialog, dispatch, setReplay, setFeedMode, latestT, openSettings, applyTheme,
+    selectView: (id) => { const t = byId(id); if (t) selectTab(t, false); },
+  };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();

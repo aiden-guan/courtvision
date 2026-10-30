@@ -1,0 +1,18 @@
+{
+ "resource": "scoreboardV2",
+ "parameters": {"GameDate": "01/10/2025", "LeagueID": "00", "DayOffset": "0"},
+ "resultSets": [
+  {"name": "GameHeader",
+   "headers": ["GAME_DATE_EST", "GAME_SEQUENCE", "GAME_ID", "GAME_STATUS_ID", "GAME_STATUS_TEXT", "GAMECODE",
+               "HOME_TEAM_ID", "VISITOR_TEAM_ID", "SEASON", "LIVE_PERIOD", "LIVE_PC_TIME",
+               "NATL_TV_BROADCASTER_ABBREVIATION", "HOME_TV_BROADCASTER_ABBREVIATION",
+               "AWAY_TV_BROADCASTER_ABBREVIATION", "LIVE_PERIOD_TIME_BCAST", "ARENA_NAME", "WH_STATUS",
+               "WNBA_COMMISSIONER_FLAG"],
+   "rowSet": [
+    ["2025-01-10T00:00:00", 1, "0022400555", 3, "Final", "20250110/BOSNYK", 1610612752, 1610612738, "2024", 4, "",
+     "ESPN", "MSG", "NBCS-BOS", "Q4       - ESPN", "Madison Square Garden", 1, 0],
+    ["2025-01-10T00:00:00", 2, "0022400556", 3, "Final", "20250110/MIAUTA", 1610612762, 1610612748, "2024", 4, "",
+     null, "KJZZ", "FDSSUN", "Q4       -", "Delta Center", 1, 0]]},
+  {"name": "LineScore", "headers": ["GAME_DATE_EST", "GAME_ID", "TEAM_ID", "TEAM_ABBREVIATION"], "rowSet": []}
+ ]
+}

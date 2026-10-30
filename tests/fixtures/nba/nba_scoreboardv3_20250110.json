@@ -1,0 +1,21 @@
+{
+ "meta": {"version": 1, "request": "http://nba.cloud/league/00/2025/01/10/scoreboard?Format=json",
+          "time": "2025-01-11T06:00:00.000Z"},
+ "scoreboard": {
+  "gameDate": "2025-01-10", "leagueId": "00", "leagueName": "National Basketball Association",
+  "games": [
+   {"gameId": "0022400555", "gameCode": "20250110/BOSNYK", "gameStatus": 3, "gameStatusText": "Final",
+    "period": 4, "gameClock": "", "gameTimeUTC": "2025-01-11T00:30:00Z", "gameEt": "2025-01-10T19:30:00Z",
+    "regulationPeriods": 4, "seriesGameNumber": "", "seriesText": "", "ifNecessary": false,
+    "homeTeam": {"teamId": 1610612752, "teamName": "Knicks", "teamCity": "New York", "teamTricode": "NYK",
+                 "teamSlug": "knicks", "wins": 25, "losses": 14, "score": 101, "seed": null, "inBonus": null,
+                 "timeoutsRemaining": 0, "periods": []},
+    "awayTeam": {"teamId": 1610612738, "teamName": "Celtics", "teamCity": "Boston", "teamTricode": "BOS",
+                 "teamSlug": "celtics", "wins": 27, "losses": 12, "score": 108, "seed": null, "inBonus": null,
+                 "timeoutsRemaining": 0, "periods": []}},
+   {"gameId": "0022400556", "gameCode": "20250110/MIAUTA", "gameStatus": 3, "gameStatusText": "Final",
+    "homeTeam": {"teamId": 1610612762, "teamTricode": "UTA"}, "awayTeam": {"teamId": 1610612748,
+                                                                          "teamTricode": "MIA"}}
+  ]
+ }
+}

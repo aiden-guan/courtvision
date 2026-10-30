@@ -2,7 +2,142 @@
 
 Run `.venv/bin/python -m courtvision studio --open`, or double-click `Start CourtVision.command`.
 The default address is `http://127.0.0.1:8000`. The server binds localhost; a non-loopback bind requires
-`--auth-token`. Enter the token in dashboard settings. Detector setup is an explicit action from Start analysis.
+`--auth-token`. Enter the token in dashboard settings. Detector setup is an explicit action from opening a video.
+
+Select a person under **People** in the Live side panel to highlight their brackets and dim other person tracks.
+**Show all tracks** restores the full overlay; the **Tracking overlay** switch shows clean footage. The labels show
+detector confidence, not identity confidence. The bottom marker is the bounding-box base, not a measured joint.
+Simulator players are labelled separately and cannot be selected as camera detections.
+
+## Your videos
+
+**Add or open a video** (also **Manage** beside the sidebar's video list) opens **Videos**: the games you added, each
+with its length, the space it takes on this Mac and whether its replay is ready, and below them a drop zone to add a
+new one. Titles are made readable from the file name (a downloader's prefix and tags like `_001_1080p` are dropped);
+**Rename** changes one. Adding a video that is already there (the same file, found by its size and its first and
+last MiB) opens the one you have instead of copying it again; earlier copies show **Duplicate**.
+
+**Delete** removes a video with everything made from it: its file, court mapping, replays and the saved results of
+its live analyses. It asks first and says how much space it frees; a video that is open is closed first, and one
+being prepared for replay is stopped. A video a research game folder uses (`runs/nba/<game>/game.json` names its file)
+shows **Kept for research** and cannot be deleted here; delete one of its copies instead. **Delete replay** frees a
+replay's space and keeps the video. The saved results of earlier live analyses that no video owns any more (the demo,
+older runs) can be deleted together at the bottom of the list.
+
+## Finding your way around
+
+The sidebar holds the views: **Live** (footage, the court lens, team comparison, and plays / people / narration /
+insights in the side panel), **Box score** (player lines, shot chart, decision grades), **Board** (pinned answers),
+**Game controls** (score and clock override, playback, substitutions), **Court mapping**, **Scoreboard** and
+**Model lab**. Press `⌘K` (or `/`) to ask a question or run any command; `G` then `L`, `S`, `B`, `C`, `M`, `R` or `T`
+opens a view; `?` lists every shortcut.
+
+**Plays that need review.** The engine flags the plays it was unsure of: a change of possession it didn't see happen,
+a rebound nobody caught, a shot whose result it lost, a basket only the scoreboard showed. Each flagged play says why
+in plain words and has a **Check** button. Watch that moment, then choose **It's right**, change what is wrong and
+**Save changes**, or choose **It didn't happen**. A play you have checked counts as confirmed by you and leaves the
+list. The badges say how sure the engine was ("70% sure") and whether a play is confirmed yet.
+
+The **court lens** draws the mapped floor in perspective. Players stand on their floor position with their number;
+the ball is drawn at its tracked height (feet) with a floor shadow, so 3-D ball flights read as arcs. Drag to orbit,
+double-click to reset, or pick the broadcast, overhead or baseline camera. Hover a player for their position and
+speed; click for their card.
+
+**Ask** answers on this Mac from the live game: team comparisons, leaders by stat, shot charts, player cards,
+momentum, the review queue, tracking health and the training loop. Answers are cards built from live data blocks:
+pin one to the Board and it keeps updating as the game runs. With Anthropic credentials (`scripts/mac/courtvision.sh
+keys`), `⌘↵` sends a question to Claude (`claude-opus-5-5`, low effort), which chooses the blocks and writes a short
+summary from a snapshot of the game; its numbers on the card still come from the game data. Questions the device
+cannot place go to Claude automatically when a key is set. Each Claude answer is a billed API request.
+
+The **Model lab** reads the NBA learning loop (the data of `tools/nba_loop.py status` and `next`). **Run next step**
+starts `tools/nba_loop.py run --max-steps 1`; **Run every ready step** runs the loop until nothing is ready. Both apply
+the loop's guards: a step does not start while another CourtVision job runs or with less than 25% of memory free,
+and the watchdog stops it below 8%. **Stop** sends the loop its interrupt, which stops the step's whole process tree.
+Logs go to `runs/nba/logs/studio-loop-*.log`. Closing the Studio stops a run it started.
+
+## The possession analysis on the feed
+
+When the open video has been analysed as an NBA game (`tools/nba_analyze.py <game> timeline`, [NBA.md](NBA.md)), the
+Studio draws that analysis on the feed. It looks under `runs/nba` for a game folder whose `game.json` names this
+video, or a copy of it (same size, same first and last MiB), and takes its newest run with a timeline. The panel at
+the top left shows the team with the ball ("bringing it up" while it is still in its back court) and the score from
+the shots decided from the video. When the game has a play-by-play, the panel also shows the play-by-play's team with
+the ball, whether the two agree, and its latest line. Each decided shot stays on the feed for a few seconds: made or
+missed, its value, P(made), and whether it was found at a rim visit the engine reported nothing at. Rebounds, steals
+and turnovers show the same way. The band under the feed covers the whole game: who had the ball by the analysis
+(upper) and by the play-by-play (lower), with a tick for each decided shot (tall: made). `B` hides or shows all of it.
+
+**Watch** (at the top of the feed, in the Possession cell, or `W`) plays the recording itself at full speed with its
+sound and draws the analysis for the time playing. The live analysis pauses meanwhile and resumes on **Live**. Click
+the band to jump to any moment. The browser has to be able to play the file; H.264 MP4 works.
+
+Everything shown comes from the video except the play-by-play. That is placed on video time through the scorebug
+clock and is shown only to judge the analysis by. The held-out accuracies in the panel are the run's own: the team
+with the ball in settled play, and made or missed on real shots. A video that no game folder analyses gets its
+possession analysis from its analysis ahead (Replay, below): the camera and the ball of every frame it analysed, the
+possession timeline decoded with the stored settings, and every shot decided by the shot models fitted on the
+research games (`runs/studio/models/shot-models.json`, `tools/nba_shot_models.py`; `courtvision/nba/auto_analysis.py`).
+It has no play-by-play beside it. Until that analysis has run the panel shows "Not analysed"; a research game folder
+(`tools/nba_new_game.py`, NBA.md) is still preferred when there is one.
+
+## Replay: the analysis done ahead
+
+The switch at the top of the feed picks how it plays:
+
+- **Live** analyses the video as it plays. With the NBA detector that is about 18 to 22 frames a second on an M3 Pro
+  (the detector runs on the Neural Engine), so the feed runs at about two thirds of real time and cannot seek.
+- **Watch** (`W`) plays the recording at full speed with the game's possession analysis (above).
+- **Replay** (`R`) plays the recording at full speed with the live analysis done ahead of time: the tracking boxes,
+  the plays, the box score, the court lens and the narration follow the video, and it seeks.
+
+Replay needs a replay prepared: the video analysed ahead. An upload starts that in the background when a detector
+is installed (the NBA detector or a downloaded checkpoint; the first download of the starter detector still needs a
+video opened); any other video starts with **Prepare replay** in the row under the status cells. The row shows how far
+it has got and about how long is left; **Stop** ends it, and Replay works up to where it got. It runs the same pipeline
+and settings as Live, unpaced, one video at a time, with Jev, Claude and spoken narration off: no cloud calls. It
+takes a while, at the analysis's own pace: about 2 hours for a 79-minute game on an M3 Pro before the court was
+tracked in a process of its own (below). It analyses about **30 frames a second**: a 50-60 fps video is read at every
+2nd frame, as the detector, the tracker and the event engine are set up for 29.97 fps (and Live reads it the same
+way). **15 frames a second** or **10 frames a second** finishes 2 or 3 times sooner; the boxes then update less
+often, and the plays come from fewer frames. Replay plays up to what has been analysed so far and pauses there. Live
+analysis at the same time slows both.
+
+The court is tracked in a worker process that reads the video itself and works ahead of the detector
+(`perception/court_worker.py`); its fixes are the ones the tracker gives in process, frame for frame, and when the
+two ever disagree it continues in process. A frame that raises an error is logged with its traceback and passed over
+(the status counts them: `failed_frames`, `first_error`); only 90 failures in a row stop the analysis. When it ends, it
+builds the video's possession analysis from the camera and ball of every frame it recorded, so **Watch** works for
+any video analysed ahead (below).
+
+**Made or missed comes from the video.** The scorebug's scores no longer confirm, veto or invent shots in the Studio:
+the event engine calls each shot, and 2.5 s later the shot judge looks again at the rim (where the detector saw the
+ball about it: above the ring, in the net, off to the side; and, when it has a rim model, the rim's own frames) and
+keeps or overturns the call (`courtvision/nba/live_judge.py`, docs/research/made_shots_at_the_rim.md). Its model is
+`runs/studio/models/shot-judge.json` (`tools/nba_live_judge.py`); without one the engine's own call stands. The
+score panel still shows the broadcast's score when the scorebug is read; the box score is the video's.
+
+Each analysis ahead is kept in `runs/studio/<video id>/replays/<run>/`: `status.json`, the recording in minutes
+(`chunks/NNNN.jsonl`: each analysed frame's boxes and every message the live view got, with its video time),
+`sparse.jsonl` (events, narration, insights and captions, to rebuild the view at any moment for a seek) and
+`analysis/` (the events and stats, as a live run saves them). A full game takes about 250 MB. Analysing again starts
+a new run beside the old one. Closing the Studio stops a running analysis; Replay then works up to where it got.
+
+## Jev setup
+
+Double-click `Set up Jev.command`, or run `.venv/bin/python -m courtvision.credentials` in this folder.
+Paste the TypeSafe key at the hidden prompt and press Return. It is saved to the ignored local `.env`
+with owner-only permissions; existing settings are preserved. Studio checks this file for each new video
+or simulator session, so start/restart a session after saving. Exported `TYPESAFE_API_KEY` takes precedence.
+The footer distinguishes a configured key from an active live-mode session. Saving does not validate the
+key or make an API call. Real requests use the existing decision layer; a rejected key falls back to rules.
+Jev judges decisions; narration text still comes from local templates or separately configured Claude.
+
+UI validation on 2026-10-28: 97 focused server, CLI and credential tests passed; the 15 studio/credential
+tests passed again after the final backend adjustment. Browser checks covered real sample tracking,
+person selection, clean-video mode, JSON download, simulator labels, and dark/light layouts at 1440 px
+and 390 px. No horizontal page overflow was found at either width. The two-person sample is a UI and
+detector smoke check, not a measured basketball accuracy benchmark. No live Jev request was made.
 
 ## What works
 
@@ -41,6 +176,7 @@ must be configured and verified for the broadcast. Fouls, substitutions and time
 Every source frame is processed. The monitor reports measured inference rate; video can run behind wall time
 when inference is slower than the input frame rate. The current monitor is a sequence of processed JPEGs and
 does not play source audio. It supports pause/speed/restart, not random seeking of the stateful event engine.
+Watch and Replay play the recording with sound and seeking; they show saved analysis, not the engine running now.
 
 Footage persists at `runs/studio/<video id>/source.video`. Each run is saved independently under
 `runs/studio/analyses/<run id>/`. There is no automatic retention deletion. Reopening a video starts a fresh
