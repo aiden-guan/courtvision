@@ -225,3 +225,82 @@ def test_restrict_keeps_the_court_region_and_drops_the_stands() -> None:
     assert court_search.coverage(loc, COURT, cam) >= court_search.coverage(ev, COURT, cam)  # no court line lost
     lazy = court_evidence(render(cam), lines=False)  # the tracker's frame: lines only on demand
     assert lazy.lines.size == 0 and court_search.with_lines(lazy).lines.sum() == ev.lines.sum()
+
+
+# ---------------------------------------------------------------- speed-ups that must not change a result
+
+
+def _old_oriented_dist(ev, k: int, clip: float):  # noqa: ANN001, ANN202 - court_search before the speed-up
+    h, w = ev.lines.shape
+    hh, ww = h // k, w // k
+    floor = ev.floor[:hh * k, :ww * k].reshape(hh, k, ww, k).mean(axis=(1, 3)) > 0.5
+    lines, orient = ev.lines[:hh * k, :ww * k], ev.orient[:hh * k, :ww * k]
+    nb = court_search.N_BINS
+    out = np.empty((nb, hh, ww), np.float32)
+    for b in range(nb):
+        d = np.abs(((orient.astype(np.int32) - b + nb // 2) % nb) - nb // 2)
+        mask = (lines & (d <= 1)).reshape(hh, k, ww, k).any(axis=(1, 3))
+        out[b] = np.minimum(cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 3) * k, clip)
+    return floor, out
+
+
+def _old_explained(ev, court, params, tol_px: float = 4.0) -> float:  # noqa: ANN001 - court_search before
+    size = ev.size
+    tol_px *= size[1] / 1080.0
+    mask = np.zeros(ev.lines.shape, np.uint8)
+    G = params.G(size)
+    for line in court.line_segments():
+        pts = np.asarray(line, float)
+        dense = [pts[0]]
+        for a, b in zip(pts[:-1], pts[1:], strict=True):
+            n = max(1, int(math.hypot(*(b - a)) / 0.5))
+            dense.extend(a + (b - a) * (i / n) for i in range(1, n + 1))
+        uv, wz = court_search._project(G, np.asarray(dense))
+        ok = (wz > 0) & np.all(np.abs(uv) < 1e5, axis=1)
+        for p, q, oa, ob in zip(uv[:-1], uv[1:], ok[:-1], ok[1:], strict=True):
+            if oa and ob:
+                cv2.line(mask, (int(round(p[0])), int(round(p[1]))), (int(round(q[0])), int(round(q[1]))), 255, 1)
+    d = cv2.distanceTransform(255 - mask, cv2.DIST_L2, 3)
+    n = int(ev.lines.sum())
+    return float((d[ev.lines] <= tol_px).sum() / n) if n else 0.0
+
+
+def test_scores_do_not_depend_on_the_thread_or_batch_a_candidate_is_scored_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    ev = court_evidence(render(CameraParams(CENTER, 14.0, 15.5, 0.0, 2300.0)))
+    pr = BroadcastPrior()
+    pts, dirs = court_samples(COURT, pr.step_ft)
+    P, D = np.column_stack([pts, np.zeros(len(pts))]), np.column_stack([dirs, np.zeros(len(dirs))])
+    floor, od = court_search._oriented_dist(ev, 4, 40.0)
+    ev_pts = court_search._line_points(ev, 4, pr.inverse_points, np.random.default_rng(0))
+    rng = np.random.default_rng(1)
+    pans, tilts = rng.uniform(-30, 30, 1300), rng.uniform(8, 25, 1300)
+    focals = np.exp(rng.uniform(math.log(500), math.log(3000), 1300))
+
+    def scores(p: np.ndarray, t: np.ndarray, f: np.ndarray) -> np.ndarray:
+        return court_search._scores(floor, od, 4, ev.size, P, D, CENTER, p, t, f, 10.0, pr.miss_weight, ev_pts,
+                                    court_search._court_field(COURT), pr.inverse_weight)
+
+    monkeypatch.setenv("COURTVISION_THREADS", "1")
+    one = scores(pans, tilts, focals)
+    alone = [scores(pans[i:i + 1], tilts[i:i + 1], focals[i:i + 1])[0] for i in range(0, 1300, 97)]
+    shifted = scores(np.r_[pans[:37], pans], np.r_[tilts[:37], tilts], np.r_[focals[:37], focals])[37:]
+    monkeypatch.setenv("COURTVISION_THREADS", "4")
+    assert np.array_equal(scores(pans, tilts, focals), one)  # threads
+    assert np.array_equal(shifted, one) and np.array_equal(alone, one[::97])  # another batch, or none
+    found = court_search.search(ev, COURT, pr, centers=[CENTER])
+    monkeypatch.setenv("COURTVISION_THREADS", "1")
+    assert [(s, p.to_dict()) for s, p in court_search.search(ev, COURT, pr, centers=[CENTER])] == \
+        [(s, p.to_dict()) for s, p in found]
+
+
+def test_oriented_distance_and_explained_lines_match_the_direct_computation() -> None:
+    cam = CameraParams(CENTER, 14.0, 15.5, 0.0, 2300.0)
+    ev = court_evidence(render(cam))
+    for k in (4, 2, 1):
+        new, old = court_search._oriented_dist(ev, k, 10.0 * k), _old_oriented_dist(ev, k, 10.0 * k)
+        assert np.array_equal(new[0], old[0]) and np.array_equal(new[1], old[1]) and new[1].dtype == old[1].dtype
+    rng = np.random.default_rng(2)
+    for _ in range(40):  # cameras that show part of the court, all of it, or point away
+        p = CameraParams(CENTER, rng.uniform(-60, 60), rng.uniform(-5, 40), rng.uniform(-5, 5),
+                         float(np.exp(rng.uniform(math.log(150), math.log(4000)))))
+        assert explained(ev, COURT, p) == _old_explained(ev, COURT, p)

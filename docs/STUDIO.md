@@ -67,8 +67,8 @@ folder analyses shows "Not analysed": add it with `tools/nba_new_game.py` and ru
 
 The switch at the top of the feed picks how it plays:
 
-- **Live** analyses the video as it plays. With the NBA detector that is about 5 to 8 frames a second on an M3 Pro,
-  so the feed runs at a quarter to a sixth of real time and cannot seek.
+- **Live** analyses the video as it plays. With the NBA detector that is about 18 to 22 frames a second on an M3 Pro
+  (the detector runs on the Neural Engine), so the feed runs at about two thirds of real time and cannot seek.
 - **Watch** (`W`) plays the recording at full speed with the game's possession analysis (above).
 - **Replay** (`R`) plays the recording at full speed with the live analysis done ahead of time: the tracking boxes,
   the plays, the box score, the court lens and the narration follow the video, and it seeks.
@@ -78,7 +78,7 @@ Replay needs the video analysed ahead. An upload starts that in the background w
 analysis**); any other video starts with **Analyse ahead** in the row under the status cells. The row shows how far
 it has got and about how long is left; **Stop** ends it, and Replay works up to where it got. It runs the same pipeline
 and settings as Live, unpaced, one video at a time, with Jev, Claude and spoken narration off: no cloud calls. It
-takes a while, at the analysis's own pace: about 5 hours at every frame for a 79-minute game on an M3 Pro. **Every
+takes a while, at the analysis's own pace: about 2 hours at every frame for a 79-minute game on an M3 Pro. **Every
 2nd frame** or **every 3rd frame** finishes 2 or 3 times sooner; the boxes then update 15 or 10 times a second, and
 the plays come from fewer frames. Replay plays up to what has been analysed so far and pauses there. Live analysis
 at the same time slows both.

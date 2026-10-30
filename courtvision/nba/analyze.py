@@ -35,12 +35,14 @@ from __future__ import annotations
 import json
 import logging
 import math
+import queue
 import shutil
 import subprocess
-from collections.abc import Callable, Iterator
+import threading
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import cv2
 import numpy as np
@@ -60,9 +62,10 @@ from courtvision.types import (
 )
 
 __all__ = ["REF_FPS", "REF_HEIGHT", "BallTrack", "CameraTrack", "DetectionCache", "VideoInfo", "detect_video",
-           "link_ball", "load_scorebug", "probe_video", "rate_ratio", "scale_frames"]
+           "link_ball", "load_scorebug", "prefetch", "probe_video", "rate_ratio", "scale_frames"]
 
 log = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 # --------------------------------------------------------------------------- frame rate and frame size
@@ -468,11 +471,58 @@ def iter_frames(video: Path, start: int = 0, end: int | None = None, exact: bool
     cap.release()
 
 
+def prefetch(items: Iterable[T], depth: int = 8) -> Iterator[T]:
+    """``items`` produced ahead in a background thread, at most ``depth`` waiting, in their order: the decoder and the
+    numpy / OpenCV work release the GIL, so decoding overlaps the caller's work. An exception of the producer is
+    raised here; leaving the loop stops the producer (which closes ``items``)."""
+    q: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=max(1, depth))
+    stop = threading.Event()
+
+    def put(item: tuple[bool, Any]) -> bool:
+        while not stop.is_set():
+            try:
+                q.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def run() -> None:
+        it = iter(items)
+        try:
+            for x in it:
+                if not put((True, x)):
+                    return
+            put((False, None))
+        except BaseException as exc:  # noqa: BLE001 - handed to the consumer
+            put((False, exc))
+        finally:
+            close = getattr(it, "close", None)
+            if callable(close):
+                close()
+
+    th = threading.Thread(target=run, name="prefetch", daemon=True)
+    th.start()
+    try:
+        while True:
+            more, x = q.get()
+            if not more:
+                if x is not None:
+                    raise x
+                return
+            yield x
+    finally:
+        stop.set()
+        th.join(timeout=5.0)
+
+
 def detect_video(video: Path, camera: CameraTrack, weights: Path, start: int = 0, end: int | None = None,
-                 batch: int = 4, progress: bool = True) -> DetectionCache:
+                 batch: int = 4, progress: bool = True, backend: str = "auto") -> DetectionCache:
     """Student detections on every frame of [start, end) whose court is in view (the camera is tracked). The
     student sees each frame with two earlier ones spaced as in its training clips (``student.history_step``: the
-    previous two frames at 29.97 fps, every second frame at 50-60 fps)."""
+    previous two frames at 29.97 fps, every second frame at 50-60 fps). Frames are decoded and preprocessed in a
+    background thread (``prefetch``) while the network runs (``backend``: ``StudentConfig.backend``; "torch" gives
+    the detections of the MPS / CPU network bit for bit)."""
     import time
 
     from courtvision.perception.student import (
@@ -482,13 +532,17 @@ def detect_video(video: Path, camera: CameraTrack, weights: Path, start: int = 0
         preprocess_frames,
     )
 
-    det = StudentDetector(StudentConfig(weights=str(weights), ball_thresh=0.04, person_thresh=0.25))
+    det = StudentDetector(StudentConfig(weights=str(weights), ball_thresh=0.04, person_thresh=0.25, backend=backend))
     n_in, step = det.config.frames, history_step(camera.fps)
     cache = DetectionCache()
     hist: list[np.ndarray] = []  # each frame's own preprocessed (3, H, W) slice, oldest first
     pending: list[tuple[int, np.ndarray, tuple[int, int]]] = []
     t0 = time.time()
     n = 0
+
+    def frames() -> Iterator[tuple[int, tuple[int, int], np.ndarray]]:
+        for idx, img in iter_frames(video, start, end, exact=camera.vfr):
+            yield idx, (img.shape[1], img.shape[0]), preprocess_frames([img])
 
     def flush() -> None:
         nonlocal n
@@ -501,16 +555,16 @@ def detect_video(video: Path, camera: CameraTrack, weights: Path, start: int = 0
         n += len(pending)
         pending.clear()
 
-    for idx, img in iter_frames(video, start, end, exact=camera.vfr):
-        if not hist and (img.shape[1], img.shape[0]) != tuple(camera.image_size):
-            raise ValueError(f"{video} is {img.shape[1]}x{img.shape[0]}, the camera track "
+    for idx, wh, x in prefetch(frames()):
+        if not hist and wh != tuple(camera.image_size):
+            raise ValueError(f"{video} is {wh[0]}x{wh[1]}, the camera track "
                              f"{camera.image_size[0]}x{camera.image_size[1]}: detections would be misplaced")
-        hist = (hist + [preprocess_frames([img])])[-((n_in - 1) * step + 1):]
+        hist = (hist + [x])[-((n_in - 1) * step + 1):]
         if camera.get(idx) is None:
             continue
         fs = [hist[max(0, len(hist) - 1 - j * step)] for j in range(n_in - 1, -1, -1)]  # oldest first; the
         #   first frames of the range repeat the earliest one
-        pending.append((idx, np.concatenate(fs, axis=0), (img.shape[1], img.shape[0])))
+        pending.append((idx, np.concatenate(fs, axis=0), wh))
         if len(pending) >= batch:
             flush()
             if progress and n % 2000 < batch:
@@ -725,9 +779,33 @@ def is_referee(frame_bgr: np.ndarray, box: tuple[float, float, float, float]) ->
     crop = frame_bgr[int(y1 + 0.2 * bh):int(y1 + 0.5 * bh), int(x1 + 0.25 * bw):int(x2 - 0.25 * bw)]
     if crop.size < 30:
         return False
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV).reshape(-1, 3).astype(float)
-    s_med, v_med, v20 = np.median(hsv[:, 1]), np.median(hsv[:, 2]), np.percentile(hsv[:, 2], 20)
-    return bool(s_med < 70 and v_med < 175 and v20 < 75)
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+    s, v = _OrderStats(hsv[:, 1]), _OrderStats(hsv[:, 2])
+    return bool(s.median() < 70 and v.median() < 175 and v.percentile(20) < 75)
+
+
+class _OrderStats:
+    """``np.median`` / ``np.percentile`` (linear) of 8-bit values from their counts: the same float64 results without
+    sorting (``is_referee`` asks for three of them per person box)."""
+
+    def __init__(self, values: np.ndarray) -> None:
+        self.n = len(values)
+        self.cum = np.cumsum(np.bincount(values, minlength=256))
+
+    def kth(self, k: int) -> float:
+        """The k-th smallest value (from 0)."""
+        return float(np.searchsorted(self.cum, k, side="right"))
+
+    def median(self) -> float:
+        return (self.kth((self.n - 1) // 2) + self.kth(self.n // 2)) / 2.0  # numpy: the mean of the middle one or two
+
+    def percentile(self, q: float) -> float:
+        virtual = (self.n - 1) * (q / 100)  # numpy's "linear" method, step by step
+        if virtual >= self.n - 1:
+            return self.kth(self.n - 1)
+        prev = math.floor(virtual)
+        a, b, t = self.kth(prev), self.kth(prev + 1), virtual - prev
+        return b - (b - a) * (1 - t) if t >= 0.5 else a + (b - a) * t
 
 
 def rectify_box(box: tuple[float, float, float, float], cam: CameraParams, size: tuple[int, int],

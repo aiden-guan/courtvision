@@ -10,7 +10,7 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
 |---|---|---|
 | Scorebug | `perception/scorebug_ocr.py`, `perception/scorebug_layout.py`, `perception/vision_ocr.py` | Reads the bug (scores, period, game clock with tenths, shot clock) with Apple Vision text recognition. No glyph training. The ESPN/ABC layout is hand-measured; other broadcasters' layouts are discovered per video (see "Adding a game"). Its layout moves when the shot clock is off, so fields are told apart by pattern and order rather than by fixed boxes. |
 | Court | `perception/court_search.py`, `perception/broadcast_court.py` | **No clicks.** The main NBA camera sits at half court, high behind the near sideline, and only pans, tilts and zooms. The camera centre is estimated once per game; each frame then needs only pan, tilt, roll and zoom. |
-| Detection | `perception/student.py`, `training/train_student.py` | A ResNet-18 CenterNet trained on this footage. It sees the current and two previous frames (motion makes a blurred ball stand out), at 960x544. |
+| Detection | `perception/student.py`, `training/train_student.py` | A ResNet-18 CenterNet trained on this footage. It sees the current and two previous frames (motion makes a blurred ball stand out), at 960x544. On a Mac it runs on the Neural Engine through Core ML (exported once per weights and cached; `nba_analyze.py detect --backend torch` gives the MPS detections of before bit for bit; [docs/research/analysis_speed.md](research/analysis_speed.md)). |
 | Ball | `nba/analyze.py` (`link_ball`), `perception/ball3d.py` | One ball path through the per-frame candidates (dynamic programme; the camera's turn between frames is removed from the motion cost). Ballistic stretches are fitted in 3-D: gravity fixes the depth a single camera cannot see. |
 | Players | `nba/analyze.py` (`rectify_box`, `is_referee`) | Boxes re-drawn as a standing player at the box centre through the camera (feet within a few px); referees (grey with black stripes) are kept out of the teams. |
 | Events | `events/engine.py` | The existing monocular event engine on these frame states. |
@@ -103,6 +103,9 @@ the timeline was scored against is kept in `timeline.json` (`reference`) for the
 `$G/game.json` names the video and the ESPN event id, plus optional team colours (BGR) for the team classifier.
 `espn_summary.json` comes from `courtvision.nba.espn.fetch_summary(event_id, out=...)`. The court tracker can run
 in parallel chunks (`--start` / `--duration`), one output file per chunk.
+
+The court search scores its candidate cameras on several threads (`COURTVISION_THREADS`, by default one per core
+but one, at most 8): set it to 2 or so when several `nba_track_court.py` parts run at once.
 
 On a Mac, `tools/nba_mac_jobs.sh` runs the heavy steps one at a time (`q1`, `retrack-q1`, `train`, `retrack-full`,
 `full`); it refuses to start while another CourtVision job runs or when little memory is free. Several heavy jobs

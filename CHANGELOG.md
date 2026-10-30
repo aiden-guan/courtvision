@@ -5,6 +5,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Faster analysis, the same results
+
+Measured on an M3 Pro, Lakers @ Warriors, before and after on the same frames
+([docs/research/analysis_speed.md](docs/research/analysis_speed.md)).
+
+- The student detector runs on the Neural Engine through Core ML (`perception/student.py`): its weights are exported
+  once to an fp16 ML program, cached by their hash; 7.7 ms a frame where MPS took 28, and the GPU stays free. On the
+  held-out labels the ball F1 is unchanged (0.9608) and person recall moves from 0.8037 to 0.8039. `StudentConfig.
+  backend` ("auto", "coreml", "torch") and `nba_analyze.py detect --backend torch` keep the torch network, whose
+  detections are those of before bit for bit.
+- Each frame is normalised once for the detector, through lookup tables (it used to be normalised three times, once
+  for every stacked sample it was in): 63 ms to 27 ms a detection on torch, the same inputs bit for bit. `detect`
+  decodes and preprocesses on a background thread while the network runs (`nba/analyze.prefetch`).
+- The torso colour feature reads each pixel's bin from a table of every 8-bit colour (`perception/appearance.py`) and
+  the referee test takes its medians from value counts (`nba/analyze.is_referee`): the same features and decisions,
+  8 and 4 times faster.
+- The court search scores its candidate cameras on threads (`COURTVISION_THREADS`, by default up to 8), scores the
+  refining levels' grids in one call per centre, and builds its orientation maps and explained-lines masks faster
+  (`perception/court_search.py`): the same cameras, frame for frame; a re-acquisition 1.40 s to 0.54 s.
+- The Studio reads the scorebug on its own thread while the same frame's players are detected
+  (`perception/broadcast.py`).
+- Results: the Studio's analysis 164 to 47-55 ms a frame on a clip with replays, 118 to 46 ms in live play (0.20-0.28
+  to 0.6-0.72 times real time: a game in about 2 hours instead of 5 to 7); offline `events`
+  14.5 to 5.1 ms a frame with the same `events.jsonl`, `detect` 56.5 to 20.6 ms, court tracking 82.7 to 48 ms where
+  the camera is often lost. With the torch backend the Studio's recording of a clip is identical to before's in every
+  frame and message.
+
+---
+
 ## [Unreleased] — Replay: the live analysis done ahead, played at full speed
 
 - The Studio analyses a video ahead of time, in the background (`courtvision/server/preanalysis.py`): the same

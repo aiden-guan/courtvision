@@ -1,7 +1,7 @@
 """Analysing a whole video ahead of time, so the Studio can replay its live analysis at full speed.
 
-The live view analyses as it plays, at the pipeline's speed (about 5 frames a second for the NBA detector on an
-M3 Pro, a sixth of real time). A pre-analysis runs the same pipeline (:class:`StudioGame`, the same settings) over
+The live view analyses as it plays, at the pipeline's speed (about 20 frames a second for the NBA detector on an
+M3 Pro, two thirds of real time). A pre-analysis runs the same pipeline (:class:`StudioGame`, the same settings) over
 the whole video unpaced, in the background and with no cloud calls, and records what the live view shows:
 
 * each analysed frame's boxes (the people and the ball the feed draws), and

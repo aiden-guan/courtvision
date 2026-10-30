@@ -1,6 +1,6 @@
 """Analyse a whole NBA broadcast and score it against the official box score (research use).
 
-    .venv/bin/python tools/nba_analyze.py runs/nba/<game> detect [--workers 2]
+    .venv/bin/python tools/nba_analyze.py runs/nba/<game> detect [--workers 2] [--backend auto|coreml|torch]
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> ball
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> events [--tag baseline] [--3d] [--start S --end S]
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> eval --tag baseline
@@ -66,8 +66,8 @@ def cmd_detect(root: Path, args: argparse.Namespace) -> None:
     hi = min(frames[-1] + 1, int(args.end * camera.fps)) if args.end else frames[-1] + 1
     n = max(args.workers, args.chunks)  # chunks already written are skipped, so an interrupted run resumes
     bounds = [lo + (hi - lo) * k // n for k in range(n + 1)]
-    jobs = [(str(root), game["video"], args.weights, bounds[k], bounds[k + 1], str(out / f"{bounds[k]:07d}-{bounds[k + 1]:07d}.npz"))
-            for k in range(n) if not (out / f"{bounds[k]:07d}-{bounds[k + 1]:07d}.npz").exists()]
+    jobs = [(str(root), game["video"], args.weights, bounds[k], bounds[k + 1], str(out / f"{bounds[k]:07d}-{bounds[k + 1]:07d}.npz"),
+             args.backend) for k in range(n) if not (out / f"{bounds[k]:07d}-{bounds[k + 1]:07d}.npz").exists()]
     if args.workers == 1:
         for j in jobs:
             _detect_part(*j)
@@ -76,11 +76,11 @@ def cmd_detect(root: Path, args: argparse.Namespace) -> None:
             pool.starmap(_detect_part, jobs)
 
 
-def _detect_part(root: str, video: str, weights: str, start: int, end: int, out: str) -> None:
+def _detect_part(root: str, video: str, weights: str, start: int, end: int, out: str, backend: str = "auto") -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     _, camera = load_game(Path(root))
     t0 = time.time()
-    cache = detect_video(Path(video), camera, Path(weights), start, end)
+    cache = detect_video(Path(video), camera, Path(weights), start, end, backend=backend)
     cache.save(Path(out))
     print(f"{out}: {len(cache.balls)} frames in {time.time() - t0:.0f}s", flush=True)
 
@@ -391,6 +391,9 @@ def main() -> int:
     ap.add_argument("--chunks", type=int, default=1, help="detect: split the range into this many files (resumable)")
     ap.add_argument("--det-dir", default="detections", help="detect / ball / events: detection folder in the game folder")
     ap.add_argument("--weights", default="runs/models/student/best.pt")
+    ap.add_argument("--backend", choices=("auto", "coreml", "torch"), default="auto",
+                    help="detect: the student on the Neural Engine (coreml; auto where it loads) or on torch "
+                         "(MPS / CPU, the detections of before bit for bit)")
     ap.add_argument("--tag", default="baseline")
     ap.add_argument("--3d", dest="use_3d", action="store_true")
     ap.add_argument("--start", type=float, default=0.0)

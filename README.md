@@ -266,6 +266,19 @@ play-by-play (research use; how it works: [docs/NBA.md](docs/NBA.md)). Measureme
 Held-out quarters (Q2-Q4, never used for tuning) and further games are the real test; `tools/nba_loop.py` records
 every evaluation in `runs/nba/leaderboard.jsonl`.
 
+### Analysis speed
+
+The same game on an M3 Pro, before and after the speed-ups of 2026-10-29, on the same frames
+([how, and how each was checked](docs/research/analysis_speed.md)):
+
+| Stage | Before | After | Same results |
+|---|---:|---:|---|
+| Studio analysis (Live, and the analysis ahead for Replay): 20 s of Q2 with replays; 60 s of live Q3 | 164; 118 ms a frame (0.20-0.28 x real time) | 47-55; 46 ms (0.6-0.72 x) | identical recording with the torch detector; with Core ML 99.8 % of boxes within 1 px, the same plays |
+| Student detector, one live frame | 63 ms (MPS) | 10 ms (Neural Engine) | held-out ball F1 0.9608 both |
+| `nba_analyze.py events` | 14.5 ms a frame | 5.1 ms | `events.jsonl` byte-identical |
+| `nba_analyze.py detect` (one process) | 56.5 ms a frame | 20.6 ms | `--backend torch`: bit-identical |
+| `nba_track_court.py` where the camera is often lost | 82.7 ms a frame | 48.0 ms | every frame identical |
+
 ---
 
 ## Quickstart

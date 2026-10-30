@@ -24,12 +24,20 @@ focal. ``CourtTracker`` then follows the game from that centre and re-acquires a
 
 The prior and thresholds are design choices checked on ESPN frames of Lakers @ Warriors (2024-12-25); other
 arenas may need a wider prior.
+
+Speed. The chamfer scores of a level are computed on several threads (``COURTVISION_THREADS``, by default up to 8;
+numpy releases the GIL) and the local grids of all the candidates a level refines are scored in one call per centre.
+A candidate's score does not depend on the batch or the thread it is scored in (checked bit for bit on broadcast
+frames), so the search returns what one thread scoring one grid at a time did, 3.3 times faster on an M3 Pro.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import cv2
@@ -307,13 +315,17 @@ def _oriented_dist(ev: Evidence, k: int, clip: float) -> tuple[np.ndarray, np.nd
     floor = ev.floor[:hh * k, :ww * k].reshape(hh, k, ww, k).mean(axis=(1, 3)) > 0.5
     lines = ev.lines[:hh * k, :ww * k]
     orient = ev.orient[:hh * k, :ww * k]
-    out = np.empty((N_BINS, hh, ww), np.float32)
-    for b in range(N_BINS):
-        d = np.abs(((orient.astype(np.int32) - b + N_BINS // 2) % N_BINS) - N_BINS // 2)
-        mask = (lines & (d <= 1)).reshape(hh, k, ww, k).any(axis=(1, 3))
+    # the line pixels of each bin at 1/k; bin b takes those of b - 1, b and b + 1 (orientation distance <= 1)
+    own = [(lines & (orient == o)).reshape(hh, k, ww, k).any(axis=(1, 3)) for o in range(N_BINS)]
+
+    def one(b: int) -> np.ndarray:
+        mask = own[(b - 1) % N_BINS] | own[b] | own[(b + 1) % N_BINS]
         dt = cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 3) * k
-        out[b] = np.minimum(dt, clip)
-    return floor, out
+        return np.minimum(dt, clip)
+
+    workers = _workers()
+    bins = _pool(workers).map(one, range(N_BINS)) if workers > 1 else map(one, range(N_BINS))
+    return floor, np.stack(list(bins)).astype(np.float32, copy=False)
 
 
 # --------------------------------------------------------------------------- search
@@ -383,10 +395,48 @@ class CourtField:
         return np.where(inside, self.dist[np.clip(i, 0, h - 1), np.clip(j, 0, w - 1)], far)
 
 
+_BATCH = 256  # candidates projected together in ``_score_part``
+_POOL: tuple[int, int, ThreadPoolExecutor] | None = None  # (process id, workers, executor)
+_POOL_LOCK = threading.Lock()
+
+
+def _workers() -> int:
+    """Threads scoring camera candidates: ``COURTVISION_THREADS``, else one per core but one, at most 8."""
+    try:
+        n = int(os.environ.get("COURTVISION_THREADS") or min(8, (os.cpu_count() or 2) - 1))
+    except ValueError:
+        n = 1
+    return max(1, n)
+
+
+def _pool(n: int) -> ThreadPoolExecutor:
+    """The process's scoring threads (made again in a forked child, whose copy has no threads)."""
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is None or _POOL[0] != os.getpid() or _POOL[1] != n:
+            _POOL = (os.getpid(), n, ThreadPoolExecutor(n, thread_name_prefix="court-search"))
+        return _POOL[2]
+
+
 def _scores(floor: np.ndarray, odist: np.ndarray, k: int, size: tuple[int, int], P: np.ndarray, D: np.ndarray,
             C: np.ndarray, pans: np.ndarray, tilts: np.ndarray, focals: np.ndarray, tau: float,
             lam: float, ev_pts: np.ndarray | None = None, field: CourtField | None = None,
             beta: float = 1.0) -> np.ndarray:
+    """Bidirectional chamfer scores of level cameras at ``C`` (one per (pan, tilt, focal) triple): ``_score_part``
+    over runs of whole batches on the scoring threads (``_workers``) when there are enough candidates."""
+    n, workers = len(pans), _workers()
+    if workers <= 1 or n <= 2 * _BATCH:
+        return _score_part(floor, odist, k, size, P, D, C, pans, tilts, focals, tau, lam, ev_pts, field, beta)
+    per = _BATCH * math.ceil(n / (_BATCH * workers))
+    jobs = [_pool(workers).submit(_score_part, floor, odist, k, size, P, D, C, pans[a:a + per], tilts[a:a + per],
+                                  focals[a:a + per], tau, lam, ev_pts, field, beta) for a in range(0, n, per)]
+    return np.concatenate([j.result() for j in jobs])
+
+
+def _score_part(floor: np.ndarray, odist: np.ndarray, k: int, size: tuple[int, int], P: np.ndarray, D: np.ndarray,
+                C: np.ndarray, pans: np.ndarray, tilts: np.ndarray, focals: np.ndarray, tau: float,
+                lam: float, ev_pts: np.ndarray | None = None, field: CourtField | None = None,
+                beta: float = 1.0) -> np.ndarray:
     """Bidirectional chamfer scores of level cameras at ``C`` (one per (pan, tilt, focal) triple).
 
     Forward: each projected model point on the floor mask scores ``g - lam (1 - g)`` with ``g = 1 - d / tau`` and
@@ -401,10 +451,10 @@ def _scores(floor: np.ndarray, odist: np.ndarray, k: int, size: tuple[int, int],
     if ev_pts is not None and field is not None and len(ev_pts):
         e_uv = (ev_pts - np.array([size[0] / 2.0, size[1] / 2.0])).astype(np.float32)
         inv_scale = beta * len(P) / len(ev_pts)
-    for a in range(0, len(Rs), 256):
-        R = Rs[a:a + 256]
+    for a in range(0, len(Rs), _BATCH):
+        R = Rs[a:a + _BATCH]
         Rt = R.transpose(0, 2, 1)
-        f = focals[a:a + 256, None].astype(np.float32)
+        f = focals[a:a + _BATCH, None].astype(np.float32)
         ca = A @ Rt  # (a, n, 3): each candidate's rotation applied to every model point (BLAS, not einsum's loop)
         cb = B @ Rt
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -434,7 +484,7 @@ def _scores(floor: np.ndarray, odist: np.ndarray, k: int, size: tuple[int, int],
             gi = np.clip(1.0 - d_ft * f / np.maximum(rng, 1.0) / tau, 0.0, 1.0)
             gi = np.where(down, gi, 0.0)
             sc += inv_scale * (gi - lam * (1.0 - gi)).sum(axis=1)
-        out[a:a + 256] = sc
+        out[a:a + _BATCH] = sc
     return out
 
 
@@ -561,18 +611,31 @@ def search(ev: Evidence, court: CourtSpec, prior: BroadcastPrior | None = None, 
             cand.append((float(sc[i]), C, float(pans_a[i]), float(tilts_a[i]), float(focals_a[i])))
     cand.sort(key=lambda r: -r[0])
     cand = cand[: pr.keep[0]]
-    # finer levels: a local grid around each carried candidate
+    # finer levels: a local grid around each carried candidate (the grids of one centre scored in one call)
     prev_step = step0
     for lvl, (k, floor, od, step, tau) in enumerate(pyramid[1:], start=1):
-        nxt: list[tuple[float, np.ndarray, float, float, float]] = []
+        grids: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
         for _, C, pan, tilt, f in cand:
             half = prev_step / f
             offs = np.degrees(np.arange(-half, half + 1e-9, step / f))
             gp, gt, gf = np.meshgrid(pan + offs, tilt + offs, f * np.array([0.94, 1.0, 1.06]), indexing="ij")
-            sc = _scores(floor, od, k, size, P, D, C, gp.ravel(), gt.ravel(), gf.ravel(), tau, pr.miss_weight,
+            grids.append((C, gp.ravel(), gt.ravel(), gf.ravel()))
+        by_centre: dict[int, list[int]] = {}
+        for j, g in enumerate(grids):
+            by_centre.setdefault(id(g[0]), []).append(j)
+        scored: list[np.ndarray] = [np.empty(0, np.float32)] * len(grids)
+        for js in by_centre.values():
+            pans_a, tilts_a, focals_a = (np.concatenate([grids[j][a] for j in js]) for a in (1, 2, 3))
+            sc = _scores(floor, od, k, size, P, D, grids[js[0]][0], pans_a, tilts_a, focals_a, tau, pr.miss_weight,
                          ev_pts[lvl], field, pr.inverse_weight)
+            start = 0
+            for j in js:
+                scored[j] = sc[start:start + len(grids[j][1])]
+                start += len(grids[j][1])
+        nxt: list[tuple[float, np.ndarray, float, float, float]] = []
+        for (C, gp, gt, gf), sc in zip(grids, scored, strict=True):
             i = int(np.argmax(sc))
-            nxt.append((float(sc[i]), C, float(gp.ravel()[i]), float(gt.ravel()[i]), float(gf.ravel()[i])))
+            nxt.append((float(sc[i]), C, float(gp[i]), float(gt[i]), float(gf[i])))
         nxt.sort(key=lambda r: -r[0])
         cand = nxt[: pr.keep[lvl] if lvl < len(pr.keep) else top * 2]
         prev_step = step
@@ -587,6 +650,24 @@ def search(ev: Evidence, court: CourtSpec, prior: BroadcastPrior | None = None, 
     return out
 
 
+_DENSE: dict[CourtSpec, list[np.ndarray]] = {}
+
+
+def _dense_lines(court: CourtSpec) -> list[np.ndarray]:
+    """Each court line as points at most 0.5 ft apart (its corners kept), for drawing it through a camera."""
+    if court not in _DENSE:
+        out = []
+        for line in court.line_segments():
+            pts = np.asarray(line, float)
+            dense = [pts[0]]
+            for a, b in zip(pts[:-1], pts[1:], strict=True):
+                n = max(1, int(math.hypot(*(b - a)) / 0.5))
+                dense.extend(a + (b - a) * (i / n) for i in range(1, n + 1))
+            out.append(np.asarray(dense))
+        _DENSE[court] = out
+    return _DENSE[court]
+
+
 def explained(ev: Evidence, court: CourtSpec, params: CameraParams, tol_px: float = 4.0) -> float:
     """Share of the frame's line pixels within ``tol_px`` (1080-line px) of a projected court line (the image ->
     model half of a bidirectional match: a wrong camera that puts the court on some lines leaves the others
@@ -595,17 +676,16 @@ def explained(ev: Evidence, court: CourtSpec, params: CameraParams, tol_px: floa
     tol_px *= size[1] / 1080.0
     mask = np.zeros(ev.lines.shape, np.uint8)
     G = params.G(size)
-    for line in court.line_segments():
-        pts = np.asarray(line, float)
-        dense = [pts[0]]
-        for a, b in zip(pts[:-1], pts[1:], strict=True):
-            n = max(1, int(math.hypot(*(b - a)) / 0.5))
-            dense.extend(a + (b - a) * (i / n) for i in range(1, n + 1))
-        uv, wz = _project(G, np.asarray(dense))
+    for dense in _dense_lines(court):
+        uv, wz = _project(G, dense)
         ok = (wz > 0) & np.all(np.abs(uv) < 1e5, axis=1)
-        for p, q, oa, ob in zip(uv[:-1], uv[1:], ok[:-1], ok[1:], strict=True):
-            if oa and ob:
-                cv2.line(mask, (int(round(p[0])), int(round(p[1]))), (int(round(q[0])), int(round(q[1]))), 255, 1)
+        # the segments between consecutive points both in front: one polyline per run of such points (a thin
+        # polyline draws each segment as cv2.line does)
+        q = np.round(np.where(ok[:, None], uv, 0.0)).astype(np.int32)
+        cuts = np.flatnonzero(np.diff(ok.astype(np.int8)) != 0) + 1
+        runs = [r for r in np.split(np.arange(len(ok)), cuts) if len(r) >= 2 and ok[r[0]]]
+        if runs:
+            cv2.polylines(mask, [q[r] for r in runs], False, 255, 1)
     d = cv2.distanceTransform(255 - mask, cv2.DIST_L2, 3)
     n = int(ev.lines.sum())
     return float((d[ev.lines] <= tol_px).sum() / n) if n else 0.0

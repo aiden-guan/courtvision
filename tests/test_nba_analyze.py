@@ -702,8 +702,74 @@ def test_student_history_steps_and_the_live_detectors_input_frames(monkeypatch: 
                                                                                [1, 3, 5]])):
         det = student.StudentDetector(student.StudentConfig(frame_step=step))
         got: list[list[int]] = []
-        monkeypatch.setattr(det, "infer", lambda batch, got=got: got.append([int(f[0, 0, 0]) for f in batch[0]])
+        made: list[int] = []
+        # each frame is preprocessed once (its own slice, kept): a slice holds its frame's number
+        monkeypatch.setattr(student, "preprocess_frames", lambda fs, made=made: made.append(int(fs[0][0, 0, 0]))
+                            or np.full((3, 1, 1), fs[0][0, 0, 0], np.float32))
+        monkeypatch.setattr(det, "infer_arrays", lambda x, sizes, got=got: got.append([int(v) for v in x[0][::3, 0, 0]])
                             or [([], [])])
         for i in range(6):
             det.detect(np.full((4, 4, 3), i, np.uint8), i, i / 60.0)
         assert [got[i] for i in (0, 1, 2, 5)] == expect
+        assert made == list(range(6))
+
+
+def test_order_statistics_from_counts_equal_numpys() -> None:
+    rng = np.random.default_rng(0)
+    for n in [*range(1, 40), 255, 256, 1001, 5000]:
+        for _ in range(5):
+            lo, hi = sorted(rng.integers(0, 256, 2))
+            x = rng.integers(lo, hi + 1, n).astype(np.uint8)
+            o = analyze._OrderStats(x)
+            assert o.median() == np.median(x.astype(float))
+            for q in (0, 20, 37.5, 50, 99.9, 100):
+                assert o.percentile(q) == np.percentile(x.astype(float), q)
+
+
+def test_referee_test_unchanged_on_grey_striped_and_coloured_shirts() -> None:
+    def old(frame: np.ndarray, box: tuple[float, float, float, float]) -> bool:
+        x1, y1, x2, y2 = box
+        bw, bh = x2 - x1, y2 - y1
+        crop = frame[int(y1 + 0.2 * bh):int(y1 + 0.5 * bh), int(x1 + 0.25 * bw):int(x2 - 0.25 * bw)]
+        if crop.size < 30:
+            return False
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV).reshape(-1, 3).astype(float)
+        return bool(np.median(hsv[:, 1]) < 70 and np.median(hsv[:, 2]) < 175 and np.percentile(hsv[:, 2], 20) < 75)
+
+    rng = np.random.default_rng(3)
+    frame = rng.integers(0, 256, (300, 400, 3), dtype=np.uint8)
+    frame[50:150, 50:110] = (120, 120, 120)
+    frame[50:150:3, 50:110] = (20, 20, 20)  # a referee: grey with black stripes
+    frame[50:150, 200:260] = (40, 40, 200)  # a red jersey
+    for _ in range(300):
+        x1, y1 = rng.uniform(-20, 380), rng.uniform(-20, 280)
+        box = (x1, y1, x1 + rng.uniform(4, 90), y1 + rng.uniform(4, 160))
+        assert analyze.is_referee(frame, box) == old(frame, box)
+    assert analyze.is_referee(frame, (40.0, 30.0, 120.0, 180.0)) and old(frame, (40.0, 30.0, 120.0, 180.0))
+    assert not analyze.is_referee(frame, (190.0, 30.0, 270.0, 180.0))
+
+
+def test_prefetch_keeps_order_raises_the_producers_error_and_stops_early() -> None:
+    assert list(analyze.prefetch(iter(range(50)), depth=3)) == list(range(50))
+    closed = []
+
+    def failing():  # noqa: ANN202
+        yield 1
+        raise KeyError("decoder")
+
+    with pytest.raises(KeyError, match="decoder"):
+        list(analyze.prefetch(failing()))
+
+    def endless():  # noqa: ANN202
+        try:
+            i = 0
+            while True:
+                yield i
+                i += 1
+        finally:
+            closed.append(True)
+
+    for i in analyze.prefetch(endless(), depth=2):
+        if i == 5:
+            break
+    assert closed == [True]  # the producer stopped and closed its generator

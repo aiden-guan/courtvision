@@ -19,7 +19,9 @@ wraps it for broadcast footage:
   (a replay hides it; ``live_requires_scorebug``). Non-live frames (replays, close-ups, crowd shots) yield a
   ``FrameState`` with no players and no ball, so the event engine sees nothing and emits nothing from them;
   ``live`` / ``gate_reason`` record why (``last_gate``).
-* **Scorebug** (``ScorebugReader``): read at ``scoreboard_hz`` (D14: 5 Hz) on live frames.
+* **Scorebug** (``ScorebugReader``): read at ``scoreboard_hz`` (D14: 5 Hz) on live frames, on a thread of its own
+  while the wrapped pipeline detects and tracks the players of the same frame (Vision OCR waits about 80 ms for
+  another process); the frame's state gets the read as before.
 
 Thresholds are design choices tuned on simulator broadcast renders (``sim/broadcast.py``).
 """
@@ -27,6 +29,7 @@ Thresholds are design choices tuned on simulator broadcast renders (``sim/broadc
 from __future__ import annotations
 
 import logging
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -102,6 +105,7 @@ class BroadcastPerception:
         self.tracker = CourtTracker(inner.court, calibration.image_size, calibration.homography, tcfg)
         self.cuts = ShotBoundaryDetector(self.config.cut_threshold)
         self.scorebug = scorebug
+        self._reader: ThreadPoolExecutor | None = None  # reads the scorebug alongside ``inner.process``
         self._last_read_t: float | None = None
         self._was_live = True
         self._prev_ptz: tuple[float, float, float] | None = None
@@ -206,21 +210,26 @@ class BroadcastPerception:
             if not isinstance(det, _Rectifying):
                 det = self.inner.detector = _Rectifying(det)
             det.camera, det.size = params, self.base.image_size
+        read = self._start_scoreboard_read(frame_bgr, t)  # the scorebug is read while the players are detected
         state = self.inner.process(frame_bgr, frame_idx, t)
-        state.scoreboard = self._read_scoreboard(frame_bgr, t)
+        state.scoreboard = read.result() if read is not None else None
         center = self.auto.center if self.auto is not None else self.tracker.center
         if center is not None:
             state.camera_xyz = (float(center[0]), float(center[1]), float(center[2]))
         return state
 
-    def _read_scoreboard(self, frame_bgr: np.ndarray, t: float) -> Any:
+    def _start_scoreboard_read(self, frame_bgr: np.ndarray, t: float) -> Future[Any] | None:
+        """The frame's scorebug read when one is due (``scoreboard_hz``), running on this perception's reader thread:
+        an OCR reader waits tens of ms for text recognition (another process), which then overlaps the detector."""
         if self.scorebug is None:
             return None
         hz = self.config.scoreboard_hz
         if self._last_read_t is not None and hz > 0 and t - self._last_read_t < 1.0 / hz - 1e-9:
             return None
         self._last_read_t = t
-        return self.scorebug.read(frame_bgr, t)
+        if self._reader is None:
+            self._reader = ThreadPoolExecutor(1, thread_name_prefix="scorebug")
+        return self._reader.submit(self.scorebug.read, frame_bgr, t)
 
 
 class _Rectifying:
