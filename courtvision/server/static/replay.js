@@ -7,7 +7,8 @@
   const $ = id => document.getElementById(id);
   const CHUNK_S = 60, HOLD_S = 0.5, JUMP_S = 2.5;  // recording files' length; how long boxes stay up; a seek
   const COLORS = { home: "rgb(120,187,237)", away: "rgb(246,191,117)", ball: "rgb(248,224,105)", other: "rgb(209,235,151)" };
-  let status = null, vid = "", on = false, lastT = NaN, pending = 0, held = false;
+  let status = null, vid = "", run = "", on = false, lastT = NaN, pending = 0, held = false;
+  let generation = 0, requestSerial = 0;
   let chunks = new Map(), loading = new Set(), font = "";
   const token = () => { try { return sessionStorage.getItem("cv-token") || ""; } catch { return ""; } };
   const headers = extra => ({ ...extra, ...(token() ? { Authorization: `Bearer ${token()}` } : {}) });
@@ -32,7 +33,8 @@
 
   async function load(k, again = false) {
     if (k < 0 || loading.has(k) || (chunks.has(k) && !again)) return;
-    loading.add(k);
+    const mine = generation, inFlight = loading;
+    inFlight.add(k);
     try {
       const response = await fetch(`api/studio/replay/${vid}/chunk/${k}`, { headers: headers(), cache: "no-store" });
       if (!response.ok) return;
@@ -43,9 +45,10 @@
         try { rec = JSON.parse(line); } catch { break; }  // the line a running analysis is writing
         (rec.b ? boxes : msgs).push(rec);
       }
+      if (mine !== generation) return;
       const last = Math.max(boxes.length ? boxes[boxes.length - 1].vt : -1, msgs.length ? msgs[msgs.length - 1].vt : -1);
       chunks.set(k, { boxes, boxT: boxes.map(r => r.vt), msgs, msgT: msgs.map(r => r.vt), last });
-    } catch { /* retried on the next tick */ } finally { loading.delete(k); }
+    } catch { /* retried on the next tick */ } finally { inFlight.delete(k); }
   }
 
   function fresh(k, t) {  // a minute still being written: fetch again once the analysis has moved on
@@ -57,12 +60,13 @@
 
   // while one is in flight (pending) the messages wait; a failed one is tried again by the next tick after 1.5 s
   async function resync(t) {
-    const my = ++pending;
+    const my = ++requestSerial, mine = generation;
+    pending = my;
     try {
       const response = await fetch(`api/studio/replay/${vid}/state?t=${t.toFixed(3)}`, { headers: headers(), cache: "no-store" });
       if (!response.ok) throw new Error(String(response.status));
       const st = await response.json();
-      if (my !== pending || !on) return;
+      if (mine !== generation || my !== pending || !on) return;
       const send = window.CV.dispatch;
       send({ type: "reset", t: 0 });
       if (st.meta) send(st.meta);
@@ -235,8 +239,12 @@
 
   function sync() {
     const ws = window.CVStudio?.workspace, id = ws?.active && !ws.active.demo ? ws.active.id : "";
-    if (id !== vid) { vid = id; chunks = new Map(); loading = new Set(); lastT = NaN; }
-    status = id ? ws.replay || null : null;
+    const next = id ? ws.replay || null : null, nextRun = next?.run || "";
+    if (id !== vid || nextRun !== run) {
+      vid = id; run = nextRun; generation++; pending = 0;
+      chunks = new Map(); loading = new Set(); lastT = NaN;
+    }
+    status = next;
     row();
   }
 

@@ -16,6 +16,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,10 +54,15 @@ def _binary() -> Path:
     exe = cache / f"vision_ocr-{digest}"
     if not exe.is_file():
         cache.mkdir(parents=True, exist_ok=True)
-        tmp = exe.with_suffix(".tmp")
-        log.info("compiling %s", _SOURCE.name)
-        subprocess.run(["swiftc", "-O", str(_SOURCE), "-o", str(tmp)], check=True, capture_output=True)
-        tmp.replace(exe)
+        fd, name = tempfile.mkstemp(prefix=f".{exe.name}-", dir=cache)
+        os.close(fd)
+        tmp = Path(name)
+        try:
+            log.info("compiling %s", _SOURCE.name)
+            subprocess.run(["swiftc", "-O", str(_SOURCE), "-o", str(tmp)], check=True, capture_output=True)
+            tmp.replace(exe)
+        finally:
+            tmp.unlink(missing_ok=True)
     return exe
 
 

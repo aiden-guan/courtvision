@@ -463,11 +463,15 @@ courtvision/
 
 ## Verification & Testing
 
-CourtVision has 2,075 deterministic, network-free tests (6 more skip when optional extras are missing; 3 strict expected failures document known monocular limitations):
+CourtVision's Python suite collects 2,548 network-free tests, including 3 strict expected failures documenting known
+monocular limitations. Tests for optional backends skip when their extras are unavailable.
 
 ```bash
 # Run the complete test suite
 .venv/bin/python -m pytest -q
+
+# Replay request and cache regressions (Node.js, no npm dependencies)
+node --test tests/js/replay.test.cjs
 
 # Run integration and CLI verification suites
 .venv/bin/pytest tests/test_integration_cli_commands.py -q

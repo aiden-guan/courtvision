@@ -298,4 +298,3 @@ What is left:
   stoppage, looks like a shot.
 - The engine's blocks (1 right of 11) went with the shots they hung on: blocks are 0.
 - One game.
-

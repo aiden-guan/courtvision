@@ -1435,6 +1435,12 @@ class LiveGame:
         if self._executor is not None:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
+        close_perception = getattr(self.perception, "close", None)
+        if callable(close_perception):
+            try:
+                await asyncio.to_thread(close_perception)
+            except Exception:  # noqa: BLE001 - the video source must still be closed
+                log.exception("closing perception failed")
         try:
             self.source.close()
         except Exception:  # noqa: BLE001

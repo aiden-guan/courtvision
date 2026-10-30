@@ -84,6 +84,17 @@ def test_pipeline_load_roster_keeps_the_flat_form(tmp_path) -> None:
     assert empty.entries == [] and empty.team_names[Team.HOME] == "Home"
 
 
+def test_pipeline_closes_the_perception_owned_by_the_finished_game() -> None:
+    from types import SimpleNamespace
+
+    cfg = _cfg("sim.seconds=1", "narration.llm_enabled=false")
+    game = LiveGame(cfg, make_source(cfg, realtime=False), realtime=False, env=NO_KEYS)
+    closed = []
+    game.perception = SimpleNamespace(close=lambda: closed.append(True))
+    asyncio.run(game._close())
+    assert closed == [True]
+
+
 def test_claude_is_not_built_when_the_jev_line_guard_cannot_run(tmp_path, caplog) -> None:
     """D4: Claude lines are spoken only after a passing Jev guard. With an Anthropic key but no Jev,
     building Claude (and pre-warming its cache every 55 min) would only cost money."""

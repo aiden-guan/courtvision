@@ -105,7 +105,7 @@ class PlayDirection:
             if tilt <= 0.5:
                 continue
             d = C[2] / math.tan(math.radians(tilt))
-            ts.append(f / camera.fps)
+            ts.append(camera.time(f))
             xs.append(C[0] + d * math.sin(math.radians(pan)))
         t, x = np.asarray(ts), np.asarray(xs)
         k = max(1, int(round(smooth_s * camera.fps)))

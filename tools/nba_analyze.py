@@ -55,6 +55,11 @@ def load_game(root: Path) -> tuple[dict, CameraTrack]:
     return game, camera
 
 
+def frame_bound(camera: CameraTrack, t: float) -> int:
+    """A CLI time bound in frames, following decoder timestamps on variable-rate video."""
+    return camera.frame_at(t) if camera.vfr else int(t * camera.fps)
+
+
 def cmd_detect(root: Path, args: argparse.Namespace) -> None:
     import multiprocessing as mp
 
@@ -62,8 +67,8 @@ def cmd_detect(root: Path, args: argparse.Namespace) -> None:
     out = root / args.det_dir
     out.mkdir(exist_ok=True)
     frames = sorted(camera.params)
-    lo = max(frames[0], int(args.start * camera.fps)) if args.start else frames[0]
-    hi = min(frames[-1] + 1, int(args.end * camera.fps)) if args.end else frames[-1] + 1
+    lo = max(frames[0], frame_bound(camera, args.start)) if args.start else frames[0]
+    hi = min(frames[-1] + 1, frame_bound(camera, args.end)) if args.end else frames[-1] + 1
     n = max(args.workers, args.chunks)  # chunks already written are skipped, so an interrupted run resumes
     bounds = [lo + (hi - lo) * k // n for k in range(n + 1)]
     jobs = [(str(root), game["video"], args.weights, bounds[k], bounds[k + 1], str(out / f"{bounds[k]:07d}-{bounds[k + 1]:07d}.npz"),
@@ -107,8 +112,8 @@ def cmd_events(root: Path, args: argparse.Namespace) -> None:
     reads = load_scorebug(root / "scorebug.jsonl")
     cfg = PerceiveConfig(use_3d_flights=args.use_3d, home_color_bgr=tuple(game["home_color_bgr"]) if game.get("home_color_bgr") else None,
                          away_color_bgr=tuple(game["away_color_bgr"]) if game.get("away_color_bgr") else None)
-    start = int(args.start * camera.fps) if args.start else 0
-    end = int(args.end * camera.fps) if args.end else None
+    start = frame_bound(camera, args.start) if args.start else 0
+    end = frame_bound(camera, args.end) if args.end else None
     t0 = time.time()
     frames = perceive(Path(game["video"]), camera, cache, ball, reads, cfg, start, end)
     events = run_engine(frames, config=json.loads(args.engine) if args.engine else None)

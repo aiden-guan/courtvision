@@ -231,6 +231,16 @@ class BroadcastPerception:
             self._reader = ThreadPoolExecutor(1, thread_name_prefix="scorebug")
         return self._reader.submit(self.scorebug.read, frame_bgr, t)
 
+    def close(self) -> None:
+        """Finish outstanding reads and release this game's OCR worker and helper process."""
+        if self._reader is not None:
+            self._reader.shutdown(wait=True, cancel_futures=True)
+            self._reader = None
+        reader, self.scorebug = self.scorebug, None
+        close = getattr(reader, "close", None)
+        if callable(close):
+            close()
+
 
 class _Rectifying:
     """Detector wrapper: PLAYER / REFEREE boxes re-drawn through ``camera`` (``nba/analyze.rectify_box``)."""

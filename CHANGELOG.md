@@ -5,6 +5,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Replay and analysis reliability
+
+- Switching videos or preparing a new replay discards responses from the previous recording. Leaving and reopening
+  Replay also discards an unfinished seek response.
+- Deleting a video or replay waits until its background worker has finished writing, and clears its replay status.
+  Reopening a live analysis stops the previous game before resetting the shared detector's frame history.
+- Finished games release their scorebug thread and OCR helper process. Two analyses can compile the helper on first
+  use concurrently, and wheel installs include its Swift source.
+- Possession direction and the offline analysis's clip boundaries use decoder timestamps on variable-rate video.
+
+---
+
 ## [Unreleased] — Your videos: open, rename and delete them; plainer wording
 
 - **Videos** (the Studio's **Add or open a video**, or **Manage** in the sidebar) lists the games you added with their

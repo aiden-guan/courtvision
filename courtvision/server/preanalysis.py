@@ -174,6 +174,7 @@ class Preanalysis:
         self.game: PreanalysisGame | None = None
         self.recorder: Recorder | None = None
         self._stop = False
+        self._finished = asyncio.Event()
 
     def status(self) -> dict[str, Any]:
         rec, now = self.recorder, time.time()
@@ -200,10 +201,14 @@ class Preanalysis:
         if self.game is not None:
             self.game.request_stop(drain=False)
 
+    async def wait_finished(self) -> None:
+        """Wait until the worker has closed its recording and written its final status."""
+        await self._finished.wait()
+
     async def run(self) -> None:
         self.state = "loading"
-        self.write_status()
         try:
+            self.write_status()
             detector = await asyncio.to_thread(self.detector_factory)
             if self._stop:
                 self.state = "stopped"
@@ -235,10 +240,15 @@ class Preanalysis:
             log.exception("Pre-analysis of %s failed", self.video_id)
             self.state, self.error = "failed", "The analysis stopped with an error. See the Studio's log."
         finally:
-            if self.recorder is not None:
-                self.recorder.close()
-            self.finished = time.time()
-            self.write_status()
+            try:
+                if self.recorder is not None:
+                    self.recorder.close()
+            finally:
+                self.finished = time.time()
+                try:
+                    self.write_status()
+                finally:
+                    self._finished.set()
 
     async def _tick(self) -> None:
         while True:

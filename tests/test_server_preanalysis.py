@@ -188,3 +188,40 @@ def test_an_upload_does_not_start_one_that_would_download_a_detector(tmp_path, m
     with TestClient(app) as client:
         video = client.post("/api/studio/upload?name=Game.avi", content=data, headers=AUTH).json()
         assert video["replay"] is None and app.state.workspace.preanalysis is None
+
+
+def test_deleting_a_replay_waits_for_loading_and_forgets_the_finished_job(app, tmp_path):
+    import asyncio
+    import threading
+
+    async def check():
+        ws = app.state.workspace
+        video_id = "a" * 32
+        folder = ws.root / video_id
+        folder.mkdir()
+        (folder / "video.json").write_text(json.dumps({"id": video_id}))
+        loading, release = threading.Event(), threading.Event()
+
+        def detector():
+            loading.set()
+            assert release.wait(timeout=10)
+            return PeopleDetector()
+
+        out = folder / "replays" / "run1"
+        job = pa.Preanalysis(video_id=video_id, video=folder / "source.video", out=out,
+                             config_for=lambda _: ws.cfg, detector_factory=detector)
+        ws.preanalysis = job
+        worker = asyncio.create_task(job.run())
+        await asyncio.to_thread(loading.wait, 5)
+        deletion = asyncio.create_task(ws.delete_replays(video_id))
+        try:
+            await asyncio.sleep(.05)
+            assert not deletion.done() and out.is_dir()
+        finally:
+            release.set()
+            await worker
+        assert (await deletion)["freed_bytes"] > 0
+        assert not out.parent.exists()
+        assert ws.replay_status(video_id) is None  # no stale "Replay ready" after deletion
+
+    asyncio.run(check())

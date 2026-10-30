@@ -233,12 +233,12 @@ class Workspace:
         """Take a video out of the queue and stop its running analysis ahead, waiting until it has stopped writing."""
         self.preanalysis_queue = [(v, s) for v, s in self.preanalysis_queue if v != video_id]
         job = self.preanalysis
-        if job is not None and job.video_id == video_id and job.finished is None:
-            job.stop()
-            for _ in range(600):  # its frame loop ends within a frame; the results are then written
-                if job.finished is not None:
-                    break
-                await asyncio.sleep(0.05)
+        if job is not None and job.video_id == video_id:
+            if job.finished is None:
+                job.stop()
+                await job.wait_finished()
+            if self.preanalysis is job:
+                self.preanalysis = None
 
     async def delete_video(self, video_id: str) -> dict[str, Any]:
         """Delete an upload: its file, calibration, analyses ahead and saved live results. A video that is open is
@@ -506,10 +506,10 @@ class Workspace:
                 active["title"] = active.get("title") or video_title(str(active.get("name", "")))
                 cfg = self.video_config(body.video_id, self.detector, broadcast=body.broadcast,
                                         home_name=body.home_name, away_name=body.away_name)
-                if type(self.detector).__name__ == "StudentDetector":
-                    self.detector.reset()
                 source = await asyncio.to_thread(VideoFileSource, cfg.source.path, realtime=True)
             await self.stop()
+            if not body.demo and type(self.detector).__name__ == "StudentDetector":
+                self.detector.reset()
             await self.hub.reset()
             self.active = {**active, "run_id": uuid.uuid4().hex}
             self.game = StudioGame(cfg, source, self.hub, realtime=True,

@@ -78,6 +78,19 @@ def perception(statuses: list[str], cuts: list[bool]) -> tuple[BroadcastPercepti
 FRAME = np.zeros((SIZE[1], SIZE[0], 3), np.uint8)
 
 
+def test_closing_a_game_releases_its_scorebug_worker_and_helper() -> None:
+    bp, _, _ = perception([], [])
+    closed = []
+    bp.scorebug = SimpleNamespace(read=lambda frame, t: t, close=lambda: closed.append(True))
+    future = bp._start_scoreboard_read(FRAME, 1.0)
+    assert future is not None and future.result(timeout=5) == 1.0
+    pool = bp._reader
+    bp.close()
+    bp.close()
+    assert closed == [True] and bp._reader is None and bp.scorebug is None
+    assert not any(thread.is_alive() for thread in pool._threads)
+
+
 def test_a_flagged_cut_through_which_the_tracker_keeps_the_camera_is_no_cut() -> None:
     bp, inner, _ = perception(["tracking", "tracking", "tracking"], [False, True, False])
     for i in range(3):
