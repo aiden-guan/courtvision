@@ -13,12 +13,7 @@
 
 <br/>
 
-<img src="assets/readme/studio-nba-replay.png" alt="CourtVision Studio replaying its analysis of Lakers at Warriors, 2024-12-25: tracked players, the team with the ball decided from the video, and a missed Lakers three called at P(made) 0.27" width="100%"/>
-
-<sub>The Studio replaying its own analysis of a real broadcast (Lakers @ Warriors, 2024-12-25, ESPN). Boxes are the
-detector's tracks with confidence; <b>GS BALL</b> is the team with the ball decided from the video, here agreeing with
-the play-by-play; the card at the bottom left is a shot the engine saw and judged missed. The top-bar score is read from
-the broadcast scorebug for reference only. Unedited screenshot, 2026-10-30.</sub>
+<img src="assets/readme/hero.png" alt="CourtVision: the Studio replaying its analysis of Lakers at Warriors with tracked players, the team with the ball and a missed three, beside the court lens and three held-out results" width="100%"/>
 
 </div>
 
@@ -41,6 +36,13 @@ accuracy is measured on two NBA games so far, and the numbers below say exactly 
 ## What you get
 
 The Studio is the app: a local web workspace served by `courtvision studio`.
+
+<img src="assets/readme/studio-nba-replay.png" alt="CourtVision Studio replaying its analysis of Lakers at Warriors, 2024-12-25: tracked players, the team with the ball decided from the video, and a missed Lakers three called at P(made) 0.27" width="100%"/>
+
+<sub>The Studio replaying its own analysis of a real broadcast (Lakers @ Warriors, 2024-12-25, ESPN). Boxes are the
+detector's tracks with confidence; <b>GS BALL</b> is the team with the ball decided from the video, here agreeing with
+the play-by-play; the card at the bottom left is a shot the engine saw and judged missed. The top-bar score is read from
+the broadcast scorebug for reference only. Unedited screenshot, 2026-10-30.</sub>
 
 - **Open a game video** (MP4, MOV, MKV or AVI, up to 8 GB). For NBA broadcasts the Studio detects, tracks and maps the
   court with no clicks; for other venues you match four floor landmarks once.
