@@ -5,6 +5,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — README rebuilt around the real Studio on a real broadcast
+
+- **Real screenshots replace the mockup hero.** `assets/readme/hero.png` (an illustration with invented numbers) is
+  gone. The README now opens on an unedited Studio Replay of Lakers @ Warriors (`studio-nba-replay.png`), with the
+  court lens on the same game and the simulated demo's live view, shot chart and decision grades, all captured from
+  a running Studio on 2026-10-30.
+- **Vision-only headline results.** The results table reports only held-out numbers from the video alone (possession
+  96.2% / 75.8%, made or missed 84.8%, the shot judge across games, ball and court registration). Scorebug-fused
+  figures and the simulator rounds 3-5 moved to the new [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+- **Corrected claims.** The scorebug no longer confirms makes in the Studio (the shot judge does); Jev deadlines are
+  0.7-1.5 s per bundle, not 250 ms; narration uses `claude-opus-5-5`; NBA results cover two games, not one.
+- **New engineering write-ups:** the shot judge at the rim, the whole-game Viterbi possession timeline and click-free
+  court registration, each with its problem, approach, reason and cost. Limitations now name the Studio's lopsided
+  live team split on broadcasts and the footage-rights position.
+- Verified: `validate_readme.py --strict` passes (links, images, env vars); the pytest and Node suites were run.
+
+---
+
 ## [Unreleased] — Made shots from the rim, a second game, a faster and sturdier analysis ahead
 
 - **The Studio decides made or missed from the video.** The scorebug's scores no longer confirm, veto or invent shots
