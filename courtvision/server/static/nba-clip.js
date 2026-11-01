@@ -50,6 +50,7 @@
         await this.model.reset();
         this.decoder.src = this.video.currentSrc || this.video.src; this.decoder.load();
         this.callbacks.phase("Finding the court camera using the local pipeline…");
+        this.callbacks.setup?.({ stage: "court", label: "Reading court views from your clip…", completed: 0, total: 7 });
         const calibration = [];
         for (let i = 0; i < 6; i++) {
           await this.ready();
@@ -58,7 +59,8 @@
           if (i === 0) this.callbacks.preview?.(pixels);
         }
         await this.ready();
-        await this.model.calibrate(calibration, this.video.videoWidth, this.video.videoHeight);
+        await this.model.calibrate(calibration, this.video.videoWidth, this.video.videoHeight,
+          progress => { if (!this.closed) this.callbacks.setup?.(progress); });
         this.callbacks.phase("Analysing at 30 frames per second with the local NBA pipeline…");
         const fps = 29.97, count = Math.ceil(this.video.duration * fps);
         for (let index = 0; index < count; index++) {

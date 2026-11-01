@@ -29,14 +29,35 @@ async function verify(candidate, reference) {
 
 async function handle(data) {
   const { id, action } = data;
+  const progress = (stage, label, completed = null, total = null) =>
+    self.postMessage({ id, progress: { stage, label, completed, total } });
   try {
     if (action === "load") {
       const metadata = await fetch("nba-student.json");
       if (!metadata.ok) throw new Error("The NBA model is unavailable. Please retry.");
       manifest = await metadata.json();
+      progress("model", "Downloading the NBA model…", 0, null);
       const response = await fetch("nba-student.onnx");
       if (!response.ok) throw new Error("The NBA model could not download. Check your connection and retry.");
-      const bytes = await response.arrayBuffer();
+      let bytes;
+      if (response.body) {
+        const reader = response.body.getReader(), chunks = [];
+        const total = response.headers.get("content-encoding") ? null : Number(response.headers.get("content-length")) || null;
+        let completed = 0, reported = 0;
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          chunks.push(value); completed += value.byteLength;
+          if (performance.now() - reported > 100) {
+            progress("model", "Downloading the NBA model…", completed, total); reported = performance.now();
+          }
+        }
+        const joined = new Uint8Array(completed);
+        let offset = 0;
+        for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.byteLength; }
+        bytes = joined.buffer;
+      } else bytes = await response.arrayBuffer();
+      progress("model", "Checking the model on this device…");
       const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), b => b.toString(16).padStart(2, "0")).join("");
       if (digest !== manifest.onnx_sha256) throw new Error("The NBA model download is incomplete. Reload and retry.");
       const referenceResponse = await fetch("nba-validation.json");
@@ -49,17 +70,19 @@ async function handle(data) {
           await verify(session, reference); backend = "webgpu";
         } catch {
           await session?.release(); session = null;
-          self.postMessage({ loading: "Using the verified CPU backend on this device…" });
+          progress("model", "Checking the CPU backend on this device…");
         }
       }
       if (!session) {
         session = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"] });
         await verify(session, reference);
       }
-      self.postMessage({ loading: "Loading the local Python vision pipeline…" });
+      progress("runtime", "Starting local analysis tools…", 0, 3);
       const { loadPyodide } = await import("https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.mjs");
       python = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/" });
+      progress("runtime", "Loading vision libraries…", 1, 3);
       await python.loadPackage(["numpy", "scipy", "opencv-python"]);
+      progress("runtime", "Preparing local tracking…", 2, 3);
       const packageResponse = await fetch("browser-python.json");
       if (!packageResponse.ok) throw new Error("The local vision pipeline is unavailable. Please retry.");
       const packageInfo = await packageResponse.json();
@@ -71,13 +94,19 @@ async function handle(data) {
       python.unpackArchive(bundle, "zip", { extractDir: "/home/pyodide" });
       await python.runPythonAsync("from courtvision.browser.runtime import BrowserPipeline");
       pipeline = python.runPython("BrowserPipeline()");
+      progress("runtime", "Local analysis tools ready", 3, 3);
       self.postMessage({ id, result: { backend, checkpoint: manifest.checkpoint_sha256, pipeline: "original-python", source: packageHash, validated: true } });
     } else if (action === "reset") {
       pipeline?.destroy(); pipeline = python.runPython("BrowserPipeline()");
       self.postMessage({ id, result: true });
     } else if (action === "calibrate") {
       const frames = python.toPy(data.frames.map(buffer => new Uint8Array(buffer)));
-      try { self.postMessage({ id, result: JSON.parse(pipeline.calibrate(frames, data.width, data.height)) }); }
+      try {
+        const report = (completed, total) => progress("court", completed < total - 1 ?
+          `Checking court view ${completed + 1} of ${total - 1}…` : completed < total ?
+          "Refining the court map…" : "Court setup complete", completed, total);
+        self.postMessage({ id, result: JSON.parse(pipeline.calibrate(frames, data.width, data.height, report)) });
+      }
       finally { frames.destroy(); }
     } else if (action === "process") {
       if (!session || !pipeline) throw new Error("The NBA vision pipeline is not loaded yet.");

@@ -68,9 +68,9 @@ class BrowserPipeline:
         self.t = 0.
         self.gate = None
 
-    def calibrate(self, frames, width, height):
+    def calibrate(self, frames, width, height, progress=None):
         images = [image_rgba(f, width, height) for f in frames]
-        self.center, cameras = estimate_center(images, self.court)
+        self.center, cameras = estimate_center(images, self.court, progress=progress)
         self.initial = next((cam for cam in cameras if cam is not None), None)
         return json.dumps({"calibrated": self.center is not None and self.initial is not None})
 

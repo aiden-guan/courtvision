@@ -39,6 +39,7 @@ function harness(detector, duration = 30) {
       analysis = { paused: false, records: [],
         pause() { this.paused = true; callbacks.state(); }, resume() { this.paused = false; callbacks.state(); }, close() {},
         at: () => analysis.records[0],
+        progress(event) { callbacks.setup(event); },
         async run() {
           detectCalls++;
           const result = await (detector ? detector() : new Promise(() => {}));
@@ -161,6 +162,7 @@ test("analysis pause controls the ordered processor; replay seeking uses recorde
   resolveDetection({ t: 5, detections: [{ id: "home-t1", class: "person", confidence: .9, bbox: [10, 10, 30, 40] }] }); await settle();
   assert.equal(h.element("local-samples").textContent, 1);
   assert.equal(h.rendered.vision.people, 1);
+  assert.equal(h.element("local-setup").hidden, true);
   h.analysis.complete();
   h.element("local-video").currentTime = 5;
   h.element("local-video").emit("seeked");
@@ -169,4 +171,22 @@ test("analysis pause controls the ordered processor; replay seeking uses recorde
   h.element("local-video").currentTime = 10;
   h.element("local-video").emit("seeked");
   assert.equal(h.rendered.vision.people, 0); // no stale boxes on a different source frame
+});
+
+test("setup shows real stage progress and elapsed time, and ignores updates after exit", async () => {
+  const h = harness();
+  await h.visitor.openFile({ name: "Game.mp4" });
+  h.element("local-video").emit("loadedmetadata"); await settle();
+  const analysis = h.analysis;
+  analysis.progress({ stage: "court", label: "Checking court view 3 of 6…", completed: 2, total: 7 });
+  assert.equal(h.element("local-setup").hidden, false);
+  assert.equal(h.element("local-setup-step").textContent, "Step 3 of 3");
+  assert.equal(h.element("local-setup-amount").textContent, "29%");
+  await h.advance(2000);
+  assert.equal(h.element("local-setup-elapsed").textContent, "0:02 elapsed");
+  await h.visitor.exit();
+  analysis.progress({ stage: "court", label: "Old clip", completed: 7, total: 7 });
+  assert.equal(h.element("local-setup").hidden, true);
+  await h.advance(10000);
+  assert.equal(h.element("local-setup").hidden, true);
 });

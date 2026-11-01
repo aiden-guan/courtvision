@@ -15,6 +15,51 @@
   let samples = [], totalSamples = 0, peak = 0, ballSamples = 0, lastBoxes = [];
   let autoPlayPending = false;
   let captureHandle = 0, choice = 0, clip = null, analysing = false, analysisT = 0, highlight = "";
+  let setup = null, setupTimer = 0;
+
+  function renderSetup() {
+    $("local-setup").hidden = mode !== "video" || !setup;
+    if (!setup || mode !== "video") return;
+    const stages = ["model", "runtime", "court"], index = Math.max(0, stages.indexOf(setup.stage));
+    const seconds = Math.floor((performance.now() - setup.started) / 1000);
+    text("local-setup-elapsed", `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} elapsed`);
+    text("local-setup-label", setup.label);
+    text("local-setup-step", `Step ${index+1} of 3`);
+    const meter = $("local-setup-progress"), measured = Number.isFinite(setup.total) && setup.total > 0;
+    if (measured) {
+      meter.max = setup.total; meter.value = Math.max(0,Math.min(setup.total,setup.completed || 0));
+      text("local-setup-amount", `${Math.round(100*meter.value/meter.max)}%`);
+    } else {
+      meter.removeAttribute("value");
+      text("local-setup-amount", setup.stage === "model" && setup.completed > 0 ? `${(setup.completed/1048576).toFixed(1)} MB received` : "Working…");
+    }
+    for (let i = 0; i < stages.length; i++) {
+      const el = $(`setup-stage-${stages[i]}`);
+      el.dataset.state = i < index ? "complete" : i === index ? "active" : "pending";
+      if (i === index) el.setAttribute("aria-current", "step"); else el.removeAttribute("aria-current");
+    }
+    text("local-setup-note", clip?.paused ? "Setup continues. Analysis will wait until you resume." :
+      "Analysis starts after setup. First use can take a few minutes.");
+  }
+
+  function setupTick() {
+    clearTimeout(setupTimer);
+    if (setup) {
+      const seconds = Math.floor((performance.now() - setup.started) / 1000);
+      text("local-setup-elapsed", `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")} elapsed`);
+      setupTimer = setTimeout(setupTick, 1000);
+    }
+  }
+
+  function updateSetup(progress) {
+    setup = { started: setup?.started ?? performance.now(), ...progress };
+    text("local-analysis-note", progress.label);
+    renderSetup(); setupTick();
+  }
+
+  function clearSetup() {
+    setup = null; clearTimeout(setupTimer); renderSetup();
+  }
 
   function render() {
     if (!view) return;
@@ -31,8 +76,8 @@
     if (mode === "video") {
       text("monitor-badge", "ON-DEVICE DETECTION");
       text("monitor-source", "Stays on your device");
-      text("studio-session-label", analysing ? (clip?.paused ? "Analysis paused" : "Analysing locally") : video().ended ? "Video ended" : video().paused ? "Paused" : "Replay");
-      text("studio-throughput", analysing ? "30 fps · local pipeline" : detectorState === "ready" ? "Recorded analysis" : detectorState === "loading" ? "Loading detector…" : "Video preview");
+      text("studio-session-label", clip?.paused && analysing ? "Analysis paused" : setup ? "Preparing analysis" : analysing ? "Analysing locally" : video().ended ? "Video ended" : video().paused ? "Paused" : "Replay");
+      text("studio-throughput", setup ? "Preparing analysis…" : analysing ? "30 fps · local pipeline" : detectorState === "ready" ? "Recorded analysis" : detectorState === "loading" ? "Loading detector…" : "Video preview");
       video().controls = !analysing && detectorState !== "loading";
       $("studio-play").setAttribute("aria-label", video().ended ? "Replay video" : video().paused ? "Play video" : "Pause video");
       text("vision-court", view.vision?.calibrated ? "Mapped locally" : "Image-space tracking");
@@ -48,6 +93,7 @@
       text("track-foot-note", "Original local tracking · provisional identities");
     }
     text("sys-detector-label", mode === "video" ? detectorState === "ready" ? "NBA model ready" : detectorState === "error" ? "NBA model unavailable" : "Loading NBA model…" : "NBA model · loads on demand");
+    renderSetup();
   }
 
   function emptyView() {
@@ -88,6 +134,7 @@
   }
 
   function clearSession() {
+    clearSetup();
     epoch++; choice++; autoPlayPending = false;
     if (captureHandle && video().cancelVideoFrameCallback) video().cancelVideoFrameCallback(captureHandle);
     captureHandle = 0;
@@ -211,8 +258,8 @@
     if (!modelPromise) {
       modelController = new AbortController();
       const generation = epoch;
-      modelPromise = window.CVNBA.load({ signal: modelController.signal, progress: message => {
-        if (generation === epoch && mode === "video") text("local-analysis-note", message);
+      modelPromise = window.CVNBA.load({ signal: modelController.signal, progress: progress => {
+        if (generation === epoch && mode === "video") updateSetup(progress);
       } });
     }
     const pending = modelPromise;
@@ -224,6 +271,7 @@
   async function prepareDetector() {
     const generation = epoch;
     detectorState = "loading"; detectorError = "";
+    updateSetup({ stage: "model", label: "Loading the NBA model…" });
     text("local-analysis-note", "Loading the NBA-trained model on this device. Your clip stays here.");
     $("local-retry").hidden = true; render();
     try {
@@ -236,6 +284,7 @@
     } catch (error) {
       if (generation !== epoch || mode !== "video") return;
       detectorState = "error"; detectorError = error.message;
+      clearSetup();
       modelPromise = null;
       console.error("NBA detector initialization failed", error);
       text("local-analysis-note", "Detector unavailable. You can still watch your video. Check your connection and retry.");
@@ -370,6 +419,7 @@
     clip = window.CVNBAClip.create(video(), model, {
       state: () => { if (generation === epoch) localStatus(); },
       phase: message => { if (generation === epoch) text("local-analysis-note", message); },
+      setup: progress => { if (generation === epoch) updateSetup(progress); },
       preview: pixels => {
         if (generation !== epoch) return;
         const canvas = $("local-analysis-frame");
@@ -378,6 +428,7 @@
       },
       frame: (result, pixels, through) => {
         if (generation !== epoch) return;
+        if (setup) clearSetup();
         const canvas = $("local-analysis-frame");
         canvas.width = pixels.width; canvas.height = pixels.height;
         canvas.getContext("2d").putImageData(pixels,0,0);
@@ -391,6 +442,7 @@
       complete: () => {
         if (generation !== epoch) return;
         analysing = false;
+        clearSetup();
         text("local-analysis-note", "Analysis complete. Playback uses the original pipeline’s recorded frame-by-frame results.");
         video().currentTime = 0; replayFrame(0); replayLoop();
         video().play().catch(() => { text("local-analysis-note", "Analysis complete. Press play to view the recorded results."); });
@@ -398,6 +450,7 @@
       error: error => {
         if (generation !== epoch) return;
         analysing = false; lastBoxes = []; drawOverlay();
+        clearSetup();
         detectorState = "error"; detectorError = error.message;
         console.error("Original NBA pipeline failed", error);
         text("local-analysis-note", "Analysis stopped on this device. Retry the analysis or choose another clip.");
@@ -457,7 +510,7 @@
   video().addEventListener("timeupdate", () => { if (!analysing && !video().requestVideoFrameCallback) replayFrame(); });
   $("studio-dialog").addEventListener("close", () => { choice++; });
   $("studio-overlay").addEventListener("change", () => { if (enabled) render(); });
-  window.addEventListener("pagehide", () => { clip?.close(); clearTimeout(bufferTimer); video().pause(); if (url) URL.revokeObjectURL(url); });
+  window.addEventListener("pagehide", () => { clearSetup(); clip?.close(); clearTimeout(bufferTimer); video().pause(); if (url) URL.revokeObjectURL(url); });
   window.CVVisitor = { get enabled() { return enabled; }, get mode() { return mode; },
     workspaceUpdate, receive, control, startDemo, togglePlay, openFile, exit, exportJson };
 })();

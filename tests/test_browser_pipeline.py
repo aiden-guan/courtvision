@@ -68,3 +68,26 @@ def test_shipped_python_bundle_matches_original_sources():
             source = (root / name).read_bytes()
             assert hashlib.sha256(source).hexdigest() == digest
             assert archive.read('courtvision/' + name) == source
+
+
+def test_court_setup_reports_each_checked_view_and_completion(monkeypatch):
+    from types import SimpleNamespace
+    from courtvision.perception import broadcast_court as module
+    from courtvision.geometry.court import court_for
+
+    images = [np.zeros((30, 40, 3), np.uint8) for _ in range(3)]
+    monkeypatch.setattr(module, "court_evidence", lambda *args: SimpleNamespace(size=(40, 30)))
+    monkeypatch.setattr(module, "plausible", lambda *args: True)
+    monkeypatch.setattr(module, "fit_center", lambda *args: (np.array([1., 2., 3.]), [None]*3))
+    for found in (False, True):
+        monkeypatch.setattr(module, "calibrate_frame", lambda *args, **kwargs:
+                            SimpleNamespace(quality=1., params=None) if found else None)
+        events = []
+        actual = module.estimate_center(images, court_for("nba"), progress=lambda n,total: events.append((n,total)))
+        expected = module.estimate_center(images, court_for("nba"))
+        assert events == [(0,4), (1,4), (2,4), (3,4), (4,4)]
+        if found:
+            np.testing.assert_array_equal(actual[0], expected[0])
+        else:
+            assert actual[0] is None
+        assert actual[1] == expected[1]

@@ -49,6 +49,10 @@ the displayed frame is the exact pixel snapshot sent to inference. Pause suspend
 frames; Close terminates an active worker and releases the video. Seeking during replay
 reads recorded results instead of starting a new detector history. Footage never leaves the
 device. Camera registration and analysis can take several minutes, depending on the device.
+A setup panel on the video shows the current stage (model, vision tools, court), measured
+progress and elapsed time. Court progress advances after each checked view and the final
+map refinement; stages without a known total show an indeterminate bar. It disappears when
+the first analysed frame arrives, and the video timeline then shows analysis progress.
 If no camera can be registered, the same original image-space trackers provide a preview;
 the interface reports that the court is not mapped. Track IDs and team groups are provisional.
 

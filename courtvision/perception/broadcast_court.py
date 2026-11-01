@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
+from typing import Callable
 
 import cv2
 import numpy as np
@@ -346,28 +347,38 @@ def params_from_homography(hom: Homography, center: np.ndarray, size: tuple[int,
 
 def estimate_center(frames: list[np.ndarray], court: CourtSpec, work_width: int = 960,
                     evidence: EvidenceConfig | None = None, prior: BroadcastPrior | None = None,
-                    min_quality: float = 0.15) -> tuple[np.ndarray | None, list[CameraParams | None]]:
+                    min_quality: float = 0.15,
+                    progress: Callable[[int, int], None] | None = None) -> tuple[np.ndarray | None, list[CameraParams | None]]:
     """The game camera's centre (court ft) from sample frames, and each frame's camera (full resolution; None
     where the court was not found). Frames without the game camera (close-ups, replays) are skipped."""
     evs: list[Evidence] = []
     starts: list[CameraParams] = []
     idx: list[int] = []
     scale = 1.0
+    total = len(frames) + 1  # each view, then the joint camera refinement
+    if progress is not None:
+        progress(0, total)
     for i, img in enumerate(frames):
         scale = min(1.0, work_width / img.shape[1])
         small = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else img
         ev = court_evidence(small, evidence)
         r = calibrate_frame(ev, court, prior, free_center=True)
+        if progress is not None:
+            progress(i + 1, total)
         if r is None or r.quality < min_quality or not plausible(r.params, ev.size, prior):
             continue
         evs.append(ev)
         starts.append(r.params)
         idx.append(i)
     if len(evs) < 2:
+        if progress is not None:
+            progress(total, total)
         return None, [None] * len(frames)
     center, results = fit_center(evs, court, starts)
     out: list[CameraParams | None] = [None] * len(frames)
     for i, ev, r in zip(idx, evs, results, strict=True):
         if r is not None and r.coverage * explained(ev, court, r.params) >= 0.5 * min_quality:
             out[i] = _scaled(r.params, 1.0 / scale)
+    if progress is not None:
+        progress(total, total)
     return center, out

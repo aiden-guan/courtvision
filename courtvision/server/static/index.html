@@ -10,13 +10,13 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308090a'/%3E%3Cpath d='M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5' fill='none' stroke='%23edeef0' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3.8' fill='%23ff7a2f'/%3E%3C/svg%3E">
   <link rel="preload" href="static/archivo.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="static/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="static/styles.css?v=20261031-pipeline2">
+  <link rel="stylesheet" href="static/styles.css?v=20261101-progress1">
   <script src="static/lens.js?v=20261031-pipeline2" defer></script>
   <script src="static/app.js?v=20261031-pipeline2" defer></script>
   <script src="static/studio.js?v=20261031-pipeline2" defer></script>
-  <script src="static/nba-browser.js?v=20261031-pipeline2" defer></script>
-  <script src="static/nba-clip.js?v=20261031-pipeline2" defer></script>
-  <script src="static/visitor.js?v=20261031-pipeline2" defer></script>
+  <script src="static/nba-browser.js?v=20261101-progress1" defer></script>
+  <script src="static/nba-clip.js?v=20261101-progress1" defer></script>
+  <script src="static/visitor.js?v=20261101-progress1" defer></script>
   <script src="static/playback.js?v=20261031-pipeline2" defer></script>
   <script src="static/possession.js?v=20261031-pipeline2" defer></script>
   <script src="static/replay.js?v=20261031-pipeline2" defer></script>
@@ -152,6 +152,14 @@
                 <video id="local-video" playsinline preload="metadata" controls hidden aria-label="Your video, analysed on this device"></video>
                 <canvas id="local-analysis-frame" aria-label="Current analysed frame" hidden></canvas>
                 <canvas id="local-overlay" aria-hidden="true" hidden></canvas>
+                <section class="local-setup" id="local-setup" aria-label="Preparing video analysis" hidden>
+                  <div class="local-setup-head"><span>Preparing analysis</span><span id="local-setup-elapsed" aria-live="off">0:00 elapsed</span></div>
+                  <p id="local-setup-label" role="status">Loading the NBA model…</p>
+                  <div class="local-setup-meta"><span id="local-setup-step">Step 1 of 3</span><span id="local-setup-amount">Working…</span></div>
+                  <progress id="local-setup-progress" max="1" aria-label="Current setup stage progress"></progress>
+                  <ol class="local-setup-stages" aria-label="Setup stages"><li id="setup-stage-model">NBA model</li><li id="setup-stage-runtime">Vision tools</li><li id="setup-stage-court">Court setup</li></ol>
+                  <p class="local-setup-note" id="local-setup-note">Analysis starts after setup. First use can take a few minutes.</p>
+                </section>
                 <video id="watch-video" playsinline preload="metadata" controls controlslist="nofullscreen noremoteplayback" disablepictureinpicture hidden></video>
                 <canvas id="replay-canvas" aria-hidden="true" hidden></canvas>
                 <div class="mode-switch glass" id="mode-switch" role="group" aria-label="How the feed plays" hidden>
