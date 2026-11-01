@@ -280,7 +280,7 @@ Copy [`.env.example`](.env.example), or store keys in the Keychain with `scripts
 
 | Command | Does |
 |---|---|
-| `courtvision studio` | Opens the local video workspace (`--public-demo` for the watch-only showcase) |
+| `courtvision studio` | Opens the local video workspace (`--public-demo` for the browser showcase) |
 | `courtvision simulate` | Simulates a game and scores the engine against its truth (`--mode truth3d\|mono\|video`) |
 | `courtvision serve` | Live dashboard over a simulator, video file or camera |
 | `courtvision render` / `run` / `eval` | Renders synthetic video, runs perception on a file, scores `events.jsonl` |
@@ -311,7 +311,7 @@ courtvision/
 ├── tests/              # pytest suite and Node tests for the replay client
 ├── docs/               # architecture, NBA pipeline, Studio guide, training, benchmarks, research notes
 ├── scripts/mac/        # launcher behind Start CourtVision.command
-└── Dockerfile          # public watch-only demo image (Vercel)
+└── Dockerfile          # public simulator and on-device NBA detector (Vercel)
 ```
 
 ---
@@ -343,7 +343,7 @@ single-camera limits (below).
   prepares the full analysis in the background instead.
 - **Fouls, timeouts and substitutions** come from the operator, not from vision.
 - **Footage rights.** NBA footage and statistics are used for research and evaluation only; they are not shipped,
-  and the public demo runs the simulator alone with no API keys ([docs/DEPLOY_VERCEL.md](docs/DEPLOY_VERCEL.md)).
+  and the public site offers a simulator plus on-device browser detection with no API keys ([docs/DEPLOY_VERCEL.md](docs/DEPLOY_VERCEL.md)).
 
 ---
 

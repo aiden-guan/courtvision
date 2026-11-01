@@ -732,6 +732,30 @@ body.watching .poss-feed { bottom: 72px; }  /* above the video's own controls */
 .play-control[data-state="play"] .i-pause, .play-control[data-state="restart"] .i-pause { display: none; }
 .play-control[data-state="play"] .i-play { display: block; margin-left: 2px; }
 .play-control[data-state="restart"] .i-restart { display: block; fill: none; }
+.play-control { display: flex; justify-content: center; gap: 7px; width: auto; min-width: 84px; padding: 0 10px; border-radius: 8px; font: 600 12px var(--display); }
+.play-control::after { content: attr(data-label); }
+#demo-canvas, #local-video, #local-overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+#demo-canvas { background: var(--bg); }
+#local-video { background: #000; }
+#local-overlay { pointer-events: none; }
+body[data-visitor="video"] .feed-hud, body[data-visitor="video"] .scorebug,
+body[data-visitor="video"] #score-source-label, body[data-visitor="video"] .live-lower,
+body[data-visitor="video"] #poss-cell, body[data-visitor="video"] #pre-row { display: none; }
+body[data-visitor="video"] .monitor-tools { bottom: 58px; }
+body[data-visitor="video"] .monitor-badge { top: 12px; left: 12px; }
+.local-summary { padding: 20px; }
+.local-summary-head { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+.local-summary h2 { margin: 0 0 6px; font-size: 16px; }
+.local-summary-head p { margin: 0; color: var(--ink-2); font-size: 13px; }
+.local-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+.local-metrics div { display: flex; flex-direction: column; gap: 5px; }
+.local-metrics strong { font: 500 24px var(--mono); }
+.local-metrics span { color: var(--ink-2); font-size: 12px; }
+@media (max-width: 700px) {
+  #studio-exit { padding-inline: 8px; white-space: nowrap; }
+  .transport-row { gap: 8px; flex-wrap: wrap; height: auto; min-height: 30px; }
+  .local-summary { padding: 16px; }
+}
 .timecode { color: #fff; font: 500 12px var(--mono); font-variant-numeric: tabular-nums; }
 .time-divider { margin: 0 5px; color: rgba(255, 255, 255, 0.3); }
 .monitor-source { color: rgba(255, 255, 255, 0.4); font: 500 11px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

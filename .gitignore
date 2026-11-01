@@ -25,6 +25,8 @@ data/
 *.pt
 *.pth
 *.onnx
+# Published browser inference asset: exported from the existing NBA checkpoint, not source training data.
+!courtvision/server/static/nba-student.onnx
 *.mlpackage/
 *.mlmodel
 

@@ -442,13 +442,14 @@
       WS.openedAt = performance.now();
       WS.retry = 0;
       WS.lastMsg = performance.now();
-      resetLiveState();
+      if (!replaying && !window.CVVisitor?.enabled) resetLiveState();
       setConn("live");
     };
     sock.onmessage = (ev) => {
       WS.lastMsg = performance.now();
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type !== "pong" && window.CVVisitor?.receive(msg)) return;
       if (replaying && msg.type !== "pong") return;  // the view is a replay's (static/replay.js)
       dispatch(msg);
     };
@@ -1597,6 +1598,7 @@
   // =========================================================================== operator: playback
 
   async function control(action, value) {
+    if (window.CVVisitor?.enabled) return window.CVVisitor.control(action, value);
     const body = value === undefined ? { action } : { action, value };
     try {
       await send("api/control", body);
@@ -2203,7 +2205,7 @@
     efgOf, tsOf, pppOf, possOf, rebOf, courtGeometry, xfgColor,
     get colors() { return C; },
     get lens() { return lens; },
-    api, send, toast, control, openEventDialog, dispatch, setReplay, setFeedMode, latestT, openSettings, applyTheme,
+    api, send, toast, control, openEventDialog, dispatch, setReplay, setFeedMode, latestT, openSettings, applyTheme, reconnect: connect,
     selectView: (id) => { const t = byId(id); if (t) selectTab(t, false); },
   };
 

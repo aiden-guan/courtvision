@@ -623,6 +623,16 @@
   function briefingSpecs() {
     const st = window.CVStudio || {}, ws = st.workspace, status = st.status || {}, vision = st.vision || {};
     const active = ws && ws.active, out = [];
+    if (ws?.public_demo && active?.browser) {
+      return [["browser", spec("NBA model, on your device", "The existing NBA-trained model detects people and the ball in your clip. Open People, pause or seek to inspect the results, then export. Teams and scoring require the full desktop pipeline.", [
+        { type: "actions", items: [{ label: "Choose another video", command: "footage:load", primary: true }, { label: "Export detections", command: "footage:export" }] },
+      ], { icon: "film", tone: "info" })]];
+    }
+    if (ws?.public_demo && !active) {
+      return [["welcome", spec("Try CourtVision", "Explore the simulated game or try the NBA-trained model on a clip up to 30 seconds. Your footage stays on your device.", [
+        { type: "actions", items: [{ label: "Try my video", command: "footage:load", primary: true }, { label: "Run the demo", command: "footage:demo" }] },
+      ], { icon: "film", tone: "ember" })]];
+    }
     const err = (status && status.error) || (ws && ws.error);
     if (err) out.push(["error", spec("Analysis stopped", err, [{ type: "actions", items: [{ label: "Open a video", command: "footage:load", primary: true }] }], { icon: "alert", tone: "bad" })]);
     if (ws && ws.model && ws.model.state === "loading") out.push(["model", spec("Preparing the detector", "The first run downloads about 350 MB. Your video opens when it is ready.", [], { icon: "bolt", tone: "ember" })]);

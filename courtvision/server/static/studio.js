@@ -54,7 +54,7 @@
   function openDialog() {
     if (!isStudio) { notify("Open the video workspace with: courtvision studio --open"); return; }
     if (!$("studio-dialog").open) $("studio-dialog").showModal();
-    loadLibrary();
+    if (!workspace?.public_demo) loadLibrary();
   }
   const titleOf = video => video?.title || (video?.name || "Game video").replace(/\.[^.]+$/, "");
   const size = bytes => !Number.isFinite(bytes) ? "" : bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` :
@@ -203,7 +203,9 @@
     $("studio-play").disabled = !hasActive;
     $("studio-speed").disabled = !hasActive || !!status.finished;
     $("studio-play").dataset.state = status.finished ? "restart" : status.paused ? "play" : "pause";
+    $("studio-play").dataset.label = status.finished ? "Restart" : status.paused ? "Resume" : "Pause";
     $("studio-play").setAttribute("aria-label", status.finished ? "Restart analysis" : status.paused ? "Resume analysis" : "Pause analysis");
+    $("studio-play").title = status.finished ? "Restart (P)" : status.paused ? "Resume (P)" : "Pause (P)";
     if (Number.isFinite(status.speed)) $("studio-speed").value = String(status.speed);
     document.body.classList.toggle("has-session", hasActive);
     document.body.dataset.analysis = !hasActive ? "" : status.finished ? "complete" : status.paused ? "paused" : "live";
@@ -299,11 +301,12 @@
     text("studio-cloud", jevMode === "live" ? "Jev live · local vision" : data.capabilities?.jev ? (claude ? "Jev and Claude keys set" : "Jev key set · next session") : claude ? "Claude key set" : "Local only · no cloud keys");
     $("sys-cloud").dataset.tone = jevMode === "live" || claude || data.capabilities?.jev ? "good" : "idle";
     if (data.public_demo) {
-      // Watch-only showcase: only the simulated demo can run, so hide footage, control and other write entry points.
-      for (const id of ["studio-open", "studio-empty-open", "studio-manage", "studio-export", "studio-play", "studio-speed",
+      // Server writes stay private. Visitor controls and video detection run entirely in the browser.
+      for (const id of ["studio-manage",
                         "studio-calibrate", "pre-stride", "pre-action", "poss-watch"]) if ($(id)) $(id).hidden = true;
       for (const id of ["tab-operator", "tab-calibration", "tab-roi", "tab-lab", "btn-add-event", "ask-open", "board-ask"]) if ($(id)) $(id).hidden = true;
-      text("studio-cloud", "Public demo · Simulated game · Template commentary");
+      text("studio-cloud", "On-device analysis · No video uploads");
+      text("studio-model-note", "Uses the existing NBA-trained model. First use downloads about 75 MB. Clips must be 30 seconds or shorter; MP4 (H.264) or WebM recommended. Nothing is uploaded.");
     }
   }
   function renderRecent(data) {
@@ -325,10 +328,11 @@
     }
     $("studio-recent").hidden = !(data.videos || []).length;
   }
-  function renderWorkspace(data) {
+  function renderWorkspace(data, visitor = false) {
+    if (!visitor && window.CVVisitor?.workspaceUpdate(data)) return;
     workspace = data;
     const active = data.active;
-    if (!active && activeId) {
+    if (!active && isStudio) {
       activeId = null; lastStatus = null; lastVision = null; processedT = 0;
       text("studio-title", "Game studio");
       text("studio-session-label", "Ready for footage"); text("monitor-source", "No footage open");
@@ -342,6 +346,9 @@
       if (frameUrl) { URL.revokeObjectURL(frameUrl); frameUrl = null; }
     }
     $("studio-export").disabled = !active;
+    $("studio-exit").hidden = !active;
+    text("studio-exit", active?.demo ? "Exit demo" : "Close video");
+    $("studio-switch").hidden = !active;
     $("studio-calibrate").disabled = !active;
     document.body.classList.toggle("has-session", !!active);
     if (active) {
@@ -434,6 +441,7 @@
   }
   async function monitor() {
     try {
+      if (workspace?.public_demo || workspace?.active?.browser) return;
       if (frameBusy || document.hidden || (!workspace?.active && isStudio)) return;
       if ($("view-live").hidden) return;
       const monitorKey = `${activeId}:${processedT}:${$("studio-overlay").checked}:${focusedTrack}:${lastStatus?.finished}:${lastStatus?.paused}`;
@@ -527,12 +535,14 @@
     } catch (error) { notify(error.message); }
   }
   async function startDemo() {
+    if (window.CVVisitor?.enabled) return window.CVVisitor.startDemo();
     if (busy) return; busy = true; $("studio-demo").disabled = true;
     try { renderWorkspace(await api("api/studio/start", {demo:true})); $("tab-live").click(); }
     catch (error) { notify(error.message); window.CV?.toast(error.message, "error"); }
     finally { busy = false; $("studio-demo").disabled = false; }
   }
   async function exportJson() {
+    if (window.CVVisitor?.enabled) return window.CVVisitor.exportJson();
     try {
       const response = await fetch("api/studio/export", {headers:headers()});
       if (!response.ok) throw new Error("Export failed. Check the local server and retry.");
@@ -542,6 +552,7 @@
     } catch (error) { notify(error.message); window.CV?.toast(error.message, "error"); }
   }
   async function togglePlay() {
+    if (window.CVVisitor?.enabled) return window.CVVisitor.togglePlay();
     if (lastStatus?.finished && workspace?.active) {
       if (workspace.active.demo) await startDemo();
       else await queueStart(workspace.active.id);
@@ -554,17 +565,26 @@
     try { if (document.fullscreenElement) await document.exitFullscreen(); else await $("monitor-screen").requestFullscreen(); }
     catch { window.CV?.toast("Fullscreen is unavailable in this browser. Enlarge the window instead.", "error"); }
   }
+  async function exitSession() {
+    if (window.CVVisitor?.enabled) return window.CVVisitor.exit();
+    if (busy) return;
+    try { renderWorkspace(await api("api/studio/close", {})); window.CV?.selectView("tab-live"); openDialog(); }
+    catch (error) { window.CV?.toast(error.message, "error"); }
+  }
 
   window.CVStudio = {
     get workspace() { return workspace; }, get status() { return lastStatus; }, get vision() { return lastVision; },
     get notice() { return notice; }, get isStudio() { return isStudio; }, get processedT() { return processedT; },
     get focus() { return focusedTrack; },
-    openDialog, startDemo, setupCourt, exportJson, togglePlay, fullscreen, queueStart, setFocus,
+    openDialog, startDemo, setupCourt, exportJson, togglePlay, fullscreen, queueStart, setFocus, exitSession,
+    renderWorkspace, receiveStatus, receiveVision, renderTracks,
     toggleOverlay() { $("studio-overlay").checked = !$("studio-overlay").checked; lastMonitorKey = ""; },
   };
 
   $("studio-open").addEventListener("click", openDialog);
   $("studio-manage").addEventListener("click", openDialog);
+  $("studio-exit").addEventListener("click", exitSession);
+  $("studio-switch").addEventListener("click", openDialog);
   $("library-extra-delete").addEventListener("click", async () => {
     try {
       const result = await api("api/studio/analyses", undefined, "DELETE");
@@ -580,6 +600,14 @@
   $("studio-overlay").addEventListener("change", () => { lastMonitorKey = ""; });
   $("studio-form").addEventListener("submit", async event => {
     event.preventDefault(); if (!selected || busy) return;
+    if (window.CVVisitor?.enabled) {
+      const file = selected; selected = null;
+      $("studio-file").value = ""; $("studio-start").disabled = true;
+      text("studio-filename", "Drop a game video here");
+      text("studio-file-detail", "or choose a file from this device");
+      await window.CVVisitor.openFile(file);
+      return;
+    }
     busy = true; $("studio-start").disabled = true;
     try {
       if (workspace?.model.state !== "ready") await api("api/studio/prepare", {});
@@ -601,6 +629,7 @@
   $("studio-demo").addEventListener("click", startDemo);
   $("studio-play").addEventListener("click", togglePlay);
   $("studio-speed").addEventListener("change", async () => {
+    if (window.CVVisitor?.enabled) { await window.CVVisitor.control("speed", Number($("studio-speed").value)); return; }
     try { await api("api/control", {action:"speed", value:Number($("studio-speed").value)}); }
     catch (error) { notify(error.message); }
   });

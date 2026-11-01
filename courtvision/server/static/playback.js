@@ -16,7 +16,7 @@
   let mode = "live", resumeLive = false, raf = 0, beat = 0, lastTick = 0;
   const token = () => { try { return sessionStorage.getItem("cv-token") || ""; } catch { return ""; } };
   const video = () => $("watch-video");
-  const uploaded = () => { const a = window.CVStudio?.workspace?.active; return a && !a.demo ? a : null; };
+  const uploaded = () => { const a = window.CVStudio?.workspace?.active; return a && !a.demo && !a.browser ? a : null; };
   const can = m => m === "live" || (m === "watch" ? !!window.CVPossession?.data : !!window.CVReplay?.available);
   const emit = (name, detail) => window.dispatchEvent(new CustomEvent(name, { detail }));
 

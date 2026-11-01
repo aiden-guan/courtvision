@@ -119,6 +119,24 @@ def test_bad_upload_and_missing_video_do_not_start_analysis(app):
         assert app.state.workspace.task is None
 
 
+def test_closing_a_session_stops_analysis_and_preserves_the_uploaded_video(app, video_bytes):
+    with TestClient(app) as client:
+        video = client.post("/api/studio/upload?name=Game.avi", content=video_bytes, headers=AUTH).json()
+        client.post("/api/studio/start", json={"video_id": video["id"], "broadcast": False}, headers=AUTH)
+        wait_for(client, lambda s: bool(s["vision"]))
+        run_id = app.state.workspace.active["run_id"]
+        assert client.post("/api/studio/close").status_code == 401
+        closed = client.post("/api/studio/close", headers=AUTH)
+        assert closed.status_code == 200
+        state = closed.json()
+        assert state["active"] is None and state["frame"] is None and state["status"] is None
+        assert app.state.workspace.task is None and app.state.workspace.game is None
+        assert [v["id"] for v in state["videos"]] == [video["id"]]
+        assert (app.state.workspace.root / "analyses" / run_id / "events.jsonl").exists()
+        assert client.post("/api/studio/close", headers=AUTH).status_code == 200  # already closed
+        assert client.post("/api/studio/start", json={"video_id": video["id"], "broadcast": False}, headers=AUTH).status_code == 200
+
+
 def test_calibration_persists_and_reopens_on_same_footage(app, video_bytes):
     with TestClient(app) as client:
         video = client.post("/api/studio/upload", content=video_bytes, headers=AUTH).json()
@@ -324,6 +342,7 @@ def test_public_demo_is_watch_only_and_never_uses_credentials(tmp_path, monkeypa
         assert client.post("/api/studio/upload", content=b"x" * 1024).status_code == 403
         assert client.post("/api/studio/prepare").status_code == 403
         assert client.post("/api/control", json={"action": "pause"}).status_code == 403
+        assert client.post("/api/studio/close").status_code == 403
         assert client.post("/api/scoreboard", json={"home_score": 1, "away_score": 0}).status_code == 403
         assert client.post("/api/studio/start", json={"video_id": "0" * 32}).status_code == 403
         # the write endpoints added since: the video library, replays, the model lab, Ask

@@ -10,16 +10,19 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308090a'/%3E%3Cpath d='M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5' fill='none' stroke='%23edeef0' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3.8' fill='%23ff7a2f'/%3E%3C/svg%3E">
   <link rel="preload" href="static/archivo.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="static/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="static/styles.css?v=20261029-library5">
-  <script src="static/lens.js?v=20261029-library5" defer></script>
-  <script src="static/app.js?v=20261029-library5" defer></script>
-  <script src="static/studio.js?v=20261029-library5" defer></script>
-  <script src="static/playback.js?v=20261029-library5" defer></script>
-  <script src="static/possession.js?v=20261029-library5" defer></script>
-  <script src="static/replay.js?v=20261029-library5" defer></script>
-  <script src="static/genui.js?v=20261029-library5" defer></script>
-  <script src="static/lab.js?v=20261029-library5" defer></script>
-  <script src="static/shell.js?v=20261029-library5" defer></script>
+  <link rel="stylesheet" href="static/styles.css?v=20261031-nba1">
+  <script src="static/lens.js?v=20261031-nba1" defer></script>
+  <script src="static/app.js?v=20261031-nba1" defer></script>
+  <script src="static/studio.js?v=20261031-nba1" defer></script>
+  <script src="static/nba-core.js?v=20261031-nba1" defer></script>
+  <script src="static/nba-browser.js?v=20261031-nba1" defer></script>
+  <script src="static/visitor.js?v=20261031-nba1" defer></script>
+  <script src="static/playback.js?v=20261031-nba1" defer></script>
+  <script src="static/possession.js?v=20261031-nba1" defer></script>
+  <script src="static/replay.js?v=20261031-nba1" defer></script>
+  <script src="static/genui.js?v=20261031-nba1" defer></script>
+  <script src="static/lab.js?v=20261031-nba1" defer></script>
+  <script src="static/shell.js?v=20261031-nba1" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -128,6 +131,7 @@
         </section>
 
         <div class="head-actions">
+          <button type="button" class="btn btn-sm" id="studio-exit" hidden>Exit demo</button>
           <span class="head-meta" id="score-source-label">Score unavailable</span>
           <span class="flag" id="paused-flag" hidden>Paused</span>
           <span class="flag flag-muted" id="muted-flag" hidden>Muted</span>
@@ -144,6 +148,9 @@
             <article class="stage device" aria-label="Game feed">
               <div class="monitor-screen" id="monitor-screen">
                 <img id="studio-frame" alt="Current processed game frame with player and ball tracking" hidden>
+                <canvas id="demo-canvas" aria-label="Simulated basketball game" hidden></canvas>
+                <video id="local-video" playsinline preload="metadata" controls hidden aria-label="Your video, analysed on this device"></video>
+                <canvas id="local-overlay" aria-hidden="true" hidden></canvas>
                 <video id="watch-video" playsinline preload="metadata" controls controlslist="nofullscreen noremoteplayback" disablepictureinpicture hidden></video>
                 <canvas id="replay-canvas" aria-hidden="true" hidden></canvas>
                 <div class="mode-switch glass" id="mode-switch" role="group" aria-label="How the feed plays" hidden>
@@ -203,6 +210,7 @@
                   <button type="button" id="studio-play" class="play-control" data-state="pause" aria-label="Pause analysis" disabled><svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="2.5" width="3" height="11" rx="1"/><rect x="9.5" y="2.5" width="3" height="11" rx="1"/></svg><svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.8v10.4a.6.6 0 0 0 .9.5l8.3-5.2a.6.6 0 0 0 0-1L5.4 2.3a.6.6 0 0 0-.9.5Z"/></svg><svg class="i-restart" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v2.8h2.8"/></svg></button>
                   <span class="timecode"><span id="studio-time">00:00</span><span class="time-divider">/</span><span id="studio-duration">--:--</span></span>
                   <span class="monitor-source" id="monitor-source">No footage open</span>
+                  <button type="button" class="btn btn-sm" id="studio-switch" hidden>Use my video</button>
                   <span class="spacer"></span>
                   <span class="throughput" id="studio-throughput">Awaiting footage</span>
                   <label class="sr-only" for="studio-speed">Playback speed</label>
@@ -210,6 +218,12 @@
                 </div>
               </div>
             </article>
+
+            <section class="local-summary device" id="local-summary" aria-labelledby="local-summary-title" hidden>
+              <div class="local-summary-head"><div><h2 id="local-summary-title">On-device analysis</h2><p id="local-analysis-note" role="status">Preparing your video…</p></div><button type="button" class="btn btn-sm" id="local-retry" hidden>Retry detector</button></div>
+              <div class="local-metrics"><div><strong id="local-samples">0</strong><span>Frames sampled</span></div><div><strong id="local-peak">—</strong><span>Most people in view</span></div><div><strong id="local-ball">0</strong><span>Ball detections</span></div></div>
+              <p class="hint">The NBA-trained model detects people and the ball. Teams, identities, scoring and court positions need the full desktop pipeline. Export saves detections, not your video.</p>
+            </section>
 
             <div class="vision-strip" role="group" aria-label="Tracking status">
               <div class="vision-cell">

@@ -666,6 +666,15 @@ def create_studio_app(config: AppConfig | None = None, *, root: Path | str = "ru
     async def studio_state() -> Any:
         return workspace.state()
 
+    @app.post("/api/studio/close", dependencies=[write])
+    async def close_session() -> Any:
+        async with workspace.lock:
+            await workspace.stop()
+            workspace.game = None
+            workspace.active = None
+            await workspace.hub.reset()
+            return workspace.state()
+
     @app.post("/api/studio/prepare", dependencies=[write])
     async def prepare() -> Any:
         if workspace.model_state not in ("ready", "loading"):

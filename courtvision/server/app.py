@@ -433,8 +433,9 @@ class _GuardMiddleware:
             return
         host = headers.get("host", "")
         csp = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "
-            f"connect-src 'self' ws://{host} wss://{host}; object-src 'none'; base-uri 'none'; "
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; "
+            f"connect-src 'self' ws://{host} wss://{host}; "
+            "worker-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'none'; "
             "frame-ancestors 'none'; form-action 'self'"
         )
 

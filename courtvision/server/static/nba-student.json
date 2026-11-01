@@ -1,0 +1,62 @@
+{
+  "architecture": "BallPersonNet",
+  "training": "existing NBA student checkpoint; no new training",
+  "checkpoint_sha256": "8bdf229ae53c773e4a5993dc7379b832b7f5ce9e102ca6079c6f4ed1c8c425c4",
+  "onnx_sha256": "43f3a9a3c4fbd0d4e2233fceddd11ab98d5f83ce33e47d5daea6a0ca5a556979",
+  "epoch": 8,
+  "input": [
+    1,
+    9,
+    544,
+    960
+  ],
+  "outputs": [
+    "ball_hm",
+    "ball_off",
+    "person_hm",
+    "person_wh",
+    "person_off"
+  ],
+  "temporal_spacing_s": 0.033366700033366704,
+  "ball_threshold": 0.08,
+  "person_threshold": 0.3,
+  "validation_clip": "full_981-1001.mp4",
+  "parity": [
+    {
+      "t": 0.0,
+      "max_absolute_error": {
+        "ball_hm": 3.0517578125e-05,
+        "ball_off": 8.642673492431641e-07,
+        "person_hm": 5.7220458984375e-06,
+        "person_wh": 2.86102294921875e-06,
+        "person_off": 7.152557373046875e-07
+      },
+      "balls": 3,
+      "people": 14
+    },
+    {
+      "t": 3.0,
+      "max_absolute_error": {
+        "ball_hm": 3.4332275390625e-05,
+        "ball_off": 9.238719940185547e-07,
+        "person_hm": 4.76837158203125e-06,
+        "person_wh": 2.6226043701171875e-06,
+        "person_off": 6.556510925292969e-07
+      },
+      "balls": 3,
+      "people": 12
+    },
+    {
+      "t": 6.0,
+      "max_absolute_error": {
+        "ball_hm": 3.0517578125e-05,
+        "ball_off": 8.940696716308594e-07,
+        "person_hm": 4.0531158447265625e-06,
+        "person_wh": 3.0994415283203125e-06,
+        "person_off": 7.152557373046875e-07
+      },
+      "balls": 5,
+      "people": 11
+    }
+  ]
+}
