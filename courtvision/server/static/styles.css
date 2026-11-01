@@ -741,6 +741,8 @@ body.watching .poss-feed { bottom: 72px; }  /* above the video's own controls */
 body[data-visitor="video"] .feed-hud, body[data-visitor="video"] .scorebug,
 body[data-visitor="video"] #score-source-label, body[data-visitor="video"] .live-lower,
 body[data-visitor="video"] #poss-cell, body[data-visitor="video"] #pre-row { display: none; }
+body[data-visitor="video"] #rtab-plays, body[data-visitor="video"] #rtab-voice,
+body[data-visitor="video"] #rtab-insights { display: none; }
 body[data-visitor="video"] .monitor-tools { bottom: 58px; }
 body[data-visitor="video"] .monitor-badge { top: 12px; left: 12px; }
 .local-summary { padding: 20px; }

@@ -109,7 +109,7 @@
       const data = await cv().api("api/studio/start", { demo: true });
       if (generation !== epoch) return;
       view = { ...data, videos: [] };
-      render(); cv().selectView("tab-live");
+      render(); cv().selectView("tab-live"); $("rtab-plays").click();
       if (!lens) lens = new window.CourtLens($("demo-canvas"), { wrap: $("monitor-screen"), interactive: false });
       lens.setGeometry(cv().courtGeometry(cv().S.court || {}));
       lens.resize();
@@ -264,7 +264,7 @@
     text("local-samples", 0); text("local-peak", "—"); text("local-ball", 0);
     detectorState = model ? "ready" : "idle";
     text("local-analysis-note", "Opening your video on this device…");
-    render(); cv().selectView("tab-live");
+    render(); cv().selectView("tab-live"); $("rtab-people").click();
     if ($("studio-dialog").open) $("studio-dialog").close();
     video().playbackRate = 1;
     video().src = url;
