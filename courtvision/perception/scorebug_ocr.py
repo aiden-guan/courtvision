@@ -472,7 +472,16 @@ class OCRScorebugReader:
     def read(self, frame: np.ndarray, t: float) -> ScoreboardReading | None:
         if self._logo is not None and not self.present(frame):
             return None
-        f = self.read_fields(frame)
+        return self._reading(frame, t, self.read_fields(frame))
+
+    def read_prepared(self, frame: np.ndarray, t: float, fields: dict[str, Any]) -> ScoreboardReading | None:
+        """Apply recognition prepared for this exact frame. Logo learning/seen-score state changes only here,
+        after the frame's live gate accepts it; discarded recognition never changes game state."""
+        if self._logo is not None and not self.present(frame):
+            return None
+        return self._reading(frame, t, fields)
+
+    def _reading(self, frame: np.ndarray, t: float, f: dict[str, Any]) -> ScoreboardReading | None:
         if f["game_clock"] is None and f["period"] is None:
             return None
         if self._logo is None and f["game_clock"] is not None and f["period"] is not None:

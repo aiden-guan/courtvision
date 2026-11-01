@@ -104,6 +104,44 @@ def test_frame_to_frame_maps_a_point_to_the_same_world_direction_in_the_other_fr
     assert cam.frame_to_frame(0, 7) is None  # no camera in frame 7
 
 
+def _uncached_frame_to_frame(camera: CameraTrack, a: int, b: int) -> np.ndarray | None:
+    ca, cb = camera.get(a), camera.get(b)
+    if ca is None or cb is None:
+        return None
+    return cb.K(camera.image_size) @ cb.R() @ ca.R().T @ np.linalg.inv(ca.K(camera.image_size))
+
+
+def test_cached_turns_are_exact_and_follow_camera_edits_and_image_size() -> None:
+    rng = np.random.default_rng(93)
+    cam = track({i: (float(rng.uniform(-50, 50)), float(rng.uniform(5, 40)), float(rng.uniform(-3, 3)),
+                     float(rng.uniform(500, 4000))) for i in range(30)})
+    for size in ((1920, 1080), (1280, 720)):
+        cam.image_size = size
+        for b in range(1, 30):
+            for a in range(max(0, b - 6), b):
+                np.testing.assert_array_equal(cam.frame_to_frame(a, b), _uncached_frame_to_frame(cam, a, b),
+                                              strict=True)
+    cam.params[1] = (9.0, 18.5, -0.3, 3400.0)  # same frame ID, changed calibration
+    np.testing.assert_array_equal(cam.frame_to_frame(0, 1), _uncached_frame_to_frame(cam, 0, 1), strict=True)
+    cam.frame_to_frame(0, 1)[:] = 0  # a caller's matrix is its own, not a view into the shared cache
+    np.testing.assert_array_equal(cam.frame_to_frame(0, 1), _uncached_frame_to_frame(cam, 0, 1), strict=True)
+    del cam.params[1]
+    assert cam.frame_to_frame(0, 1) is None and cam.frame_to_frame(1, 0) is None
+
+
+@pytest.mark.parametrize("fps", [29.97, 59.94])
+def test_ball_path_is_identical_with_cached_camera_factors(monkeypatch: pytest.MonkeyPatch, fps: float) -> None:
+    rng = np.random.default_rng(32)
+    cam = track({i: (10.0 * math.sin(i / 40), 16.0, 0.1, 2400.0 + i) for i in range(180) if i not in (70, 71)})
+    cam.fps = fps
+    cache = DetectionCache(balls={i: np.column_stack([rng.uniform([0, 0], SIZE, (6, 2)), rng.uniform(0, 1, 6)])
+                                 .astype(np.float32) if i % 9 else np.zeros((0, 3), np.float32)
+                                 for i in range(180)})
+    cached = link_ball(cache, cam)
+    monkeypatch.setattr(CameraTrack, "frame_to_frame", _uncached_frame_to_frame)
+    assert cached and link_ball(cache, cam) == cached
+
+
 # --------------------------------------------------------------------------- detections and the ball path
 
 
@@ -696,6 +734,7 @@ def test_student_input_of_a_16_9_frame_is_unchanged_and_a_taller_frame_keeps_its
 
 
 def test_student_history_steps_and_the_live_detectors_input_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(student, "INPUT_HW", (1, 1))
     assert [student.history_step(f) for f in (15.0, 23.976, 25.0, 29.97, 44.0, 50.0, 59.94, 60.0, 119.88, 0.0)] == \
         [1, 1, 1, 1, 1, 2, 2, 2, 4, 1]
     for step, expect in ((1, [[0, 0, 0], [0, 0, 1], [0, 1, 2], [3, 4, 5]]), (2, [[0, 0, 0], [0, 0, 1], [0, 0, 2],
@@ -704,8 +743,14 @@ def test_student_history_steps_and_the_live_detectors_input_frames(monkeypatch: 
         got: list[list[int]] = []
         made: list[int] = []
         # each frame is preprocessed once (its own slice, kept): a slice holds its frame's number
-        monkeypatch.setattr(student, "preprocess_frames", lambda fs, made=made: made.append(int(fs[0][0, 0, 0]))
-                            or np.full((3, 1, 1), fs[0][0, 0, 0], np.float32))
+        def preprocess(fs, *, out=None):
+            made.append(int(fs[0][0, 0, 0]))
+            if out is None:
+                out = np.empty((3, 1, 1), np.float32)
+            out.fill(fs[0][0, 0, 0])
+            return out
+
+        monkeypatch.setattr(student, "preprocess_frames", preprocess)
         monkeypatch.setattr(det, "infer_arrays", lambda x, sizes, got=got: got.append([int(v) for v in x[0][::3, 0, 0]])
                             or [([], [])])
         for i in range(6):

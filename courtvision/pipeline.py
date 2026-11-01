@@ -61,8 +61,9 @@ import math
 import os
 import threading
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
@@ -1139,6 +1140,7 @@ class LiveGame:
         self._calib_hold = False  # real-time file playback paused until a calibration arrives
         self._perc_lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = None
+        self._ahead_items: tuple[Future[FrameItem | None], ...] = ()
 
         # --- state
         self._lock = threading.RLock()  # engine / stats / insights / stores (controller may call from another thread)
@@ -1283,12 +1285,52 @@ class LiveGame:
         """Start, consume the whole source (or until :meth:`request_stop`), then finish."""
         await self.start()
         frames = self.source.__aiter__()
+        ahead: deque[tuple[asyncio.Task[FrameItem | None], Future[FrameItem | None]]] = deque()
         try:
-            async for item in frames:
-                if self._stop_requested:
-                    break
-                await self.process(item)
+            if self.realtime and self.config.pipeline.parallel_live and isinstance(self.source, (VideoFileSource, CameraSource)):
+                item = await anext(frames, None)
+                depth = max(1, min(3, self.config.pipeline.live_lookahead_frames))
+
+                def enqueue() -> None:
+                    ready: Future[FrameItem | None] = Future()
+                    previous = ahead[-1][0] if ahead else None
+
+                    async def read_ahead() -> FrameItem | None:
+                        try:
+                            # Async generators permit only one read at a time, including while the decoder yields.
+                            if previous is not None and await asyncio.shield(previous) is None:
+                                ready.set_result(None)
+                                return None
+                            following = await anext(frames, None)
+                        except BaseException as exc:
+                            ready.set_exception(exc)
+                            raise
+                        ready.set_result(following)
+                        return following
+
+                    ahead.append((asyncio.create_task(read_ahead(), name="live-next-frame"), ready))
+
+                for _ in range(depth):
+                    enqueue()
+                while item is not None and not self._stop_requested:
+                    self._ahead_items = tuple(ready for _, ready in ahead)
+                    await self.process(item)
+                    if self._stop_requested:
+                        break
+                    next_frame, _ = ahead.popleft()
+                    item = await next_frame
+                    if item is not None:
+                        enqueue()
+            else:
+                async for item in frames:
+                    if self._stop_requested:
+                        break
+                    await self.process(item)
         finally:
+            for pending, _ in ahead:
+                pending.cancel()
+            await asyncio.gather(*(pending for pending, _ in ahead), return_exceptions=True)
+            self._ahead_items = ()
             closer = getattr(frames, "aclose", None)
             if closer is not None:
                 await closer()  # stop the source generator now, not at garbage collection
@@ -1299,6 +1341,11 @@ class LiveGame:
             return
         self._started = True
         self._loop = asyncio.get_running_loop()
+        if self.shot_judge is not None:
+            try:
+                await asyncio.to_thread(self.shot_judge.warmup)
+            except Exception:
+                log.exception("Shot-judge warmup failed; inference will retry on actual rim evidence")
         self._wall0 = time.perf_counter()
         if self.hub is not None:
             if self.hub.loop is None or self.hub.loop.is_closed() or not self.hub.loop.is_running():
@@ -1308,6 +1355,10 @@ class LiveGame:
             await self.hub.publish(status_msg(self._t, **self.status()))
         if self.realtime and self.source.mode in ("video", "broadcast"):
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="perception")
+        if self.source.mode in ("video", "broadcast") and self.config.pipeline.opencv_threads is not None:
+            from courtvision.perception.runtime import configure_opencv
+
+            configure_opencv(max(1, self.config.pipeline.opencv_threads))
         self.narrator.start()
         if self.narrator.pool is not None and self.config.llm.prewarm:
             self._prewarm_task = asyncio.create_task(self._prewarm_loop(), name="claude-prewarm")
@@ -1557,12 +1608,20 @@ class LiveGame:
             from courtvision.perception.broadcast_court import BroadcastCourtTracker
 
             path = getattr(self.source, "path", None)
-            if self.config.pipeline.court_worker and isinstance(self.source, VideoFileSource) and path is not None:
+            file_source = isinstance(self.source, VideoFileSource) and path is not None and not self.source.live
+            parallel_live = (self.realtime and self.config.pipeline.parallel_live
+                             and (file_source or getattr(inner.detector, "parallel_court", False)))
+            use_worker = self.config.pipeline.court_worker or parallel_live
+            if use_worker and file_source:
                 from courtvision.perception.court_worker import CourtTrackerProcess
 
                 tracker = CourtTrackerProcess(self.court, calib.image_size, self._auto_center, video=str(path),
                                               start_s=self.source.start_s, stride=getattr(self.source, "stride", 1),
                                               cut_threshold=pc.broadcast_config.cut_threshold)
+            elif use_worker and (self.realtime or self.source.live):
+                from courtvision.perception.live_court_worker import LiveCourtTrackerProcess
+
+                tracker = LiveCourtTrackerProcess(self.court, calib.image_size, self._auto_center)
             else:
                 tracker = BroadcastCourtTracker(self.court, calib.image_size, self._auto_center)
             if self._auto_params is not None:
@@ -1570,7 +1629,41 @@ class LiveGame:
         log.info("broadcast perception: court tracking (%s), cut / replay gate, scorebug %s",
                  "automatic" if tracker is not None else "from the operator calibration",
                  "on" if reader is not None else "off (no layout)")
-        return BroadcastPerception(inner, calib, reader, pc.broadcast_config, court_tracker=tracker)
+        return BroadcastPerception(inner, calib, reader, pc.broadcast_config, court_tracker=tracker,
+                                   prefetch_next=self._prefetch_detector_input,
+                                   prefetch_court=self._prefetch_court_input)
+
+    def _prefetch_court_input(self) -> None:
+        """Overlap the next arrived frame's court fit; its result is validated/committed by its actual gate."""
+        auto = getattr(self.perception, "auto", None)
+        if not getattr(auto, "prefetch_available", False) or not self._ahead_items:
+            return
+        ready = self._ahead_items[0]
+        if not ready.done():
+            return
+        try:
+            item = ready.result()
+        except BaseException:
+            return
+        if item is not None and item.image is not None and item.state is None:
+            auto.prefetch(item.image, item.frame_idx, cut=self.perception.cuts.peek(item.image))
+
+    def _prefetch_detector_input(self, pending_read: Future[Any]) -> None:
+        """Use an OCR wait for bounded FIFO raw inference; gates and stats still consume frames in source order."""
+        prefetch = getattr(self._detector, "prefetch", None)
+        if not callable(prefetch):
+            return
+        for ready in self._ahead_items:
+            if pending_read.done() or not ready.done():
+                break
+            try:
+                item = ready.result()
+            except BaseException:
+                break  # the source loop reports its own error after the current frame
+            if item is None or item.image is None or item.state is not None:
+                break
+            if not prefetch(item.image, item.frame_idx, item.t):
+                break
 
     def _auto_court_wanted(self) -> bool:
         pc = self.config.perception
@@ -1632,6 +1725,10 @@ class LiveGame:
                            league=self.court.league)
 
     def _perceive(self, image: np.ndarray, frame_idx: int, t: float) -> tuple[FrameState, dict[str, float]] | None:
+        if self.realtime:
+            from courtvision.perception.runtime import configure_live_thread
+
+            configure_live_thread()
         with self._perc_lock:
             pipe = self._ensure_perception(image, t)
             if pipe is None:

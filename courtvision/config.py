@@ -241,6 +241,9 @@ class PipelineSettings:
     # detector (perception/court_worker.py; the same fixes, about half the time per frame). For analyses that read the
     # video straight through (the Studio's analysis ahead)
     court_worker: bool = False
+    parallel_live: bool = True  # Live: track file frames ahead, or fit a stream's current frame alongside the student
+    live_lookahead_frames: int = 3  # bounded 1..3 decoded frames; use OCR waits for their raw inference in source order
+    opencv_threads: int | None = 1  # bound the native pool alongside inference/court workers; None preserves OpenCV's setting
 
 
 @dataclass

@@ -207,10 +207,12 @@ def line_orientation(resp: np.ndarray, sigma: float) -> np.ndarray:
 
 
 def court_evidence(img_bgr: np.ndarray, config: EvidenceConfig | None = None,
-                   people: list[tuple[float, float, float, float]] | None = None, lines: bool = True) -> Evidence:
+                   people: list[tuple[float, float, float, float]] | None = None, lines: bool = True,
+                   defer_floor: bool = False) -> Evidence:
     """Line evidence of one frame (see the module docstring). ``people``: person boxes (x1, y1, x2, y2), masked
     out of the floor (a body's outline is no court line). ``lines=False`` leaves the frame-wide line pixels for
-    ``with_lines`` (a tracked frame needs only ``restrict``)."""
+    ``with_lines`` (a tracked frame needs only ``restrict``). ``defer_floor=True`` also leaves the global floor
+    mask empty until ``with_lines``: local tracking uses the density and exclusions directly instead."""
     cfg = config or EvidenceConfig()
     h, w = img_bgr.shape[:2]
     s = h / 1080.0
@@ -223,7 +225,6 @@ def court_evidence(img_bgr: np.ndarray, config: EvidenceConfig | None = None,
     strong = (resp >= cfg.strong).astype(np.float32)
     k = odd(cfg.density_px * s)
     density = cv2.boxFilter(strong, -1, (k, k))
-    floor = density < cfg.max_density
     sx = w / 1920.0
     blocked = np.zeros((h, w), bool)
 
@@ -238,21 +239,31 @@ def court_evidence(img_bgr: np.ndarray, config: EvidenceConfig | None = None,
         clear(x0, y0, x0 + round(bw * sx), y0 + round(bh * s))
     for x1, y1, x2, y2 in people or ():
         clear(math.floor(x1), math.floor(y1), math.floor(x2) + 1, math.floor(y2) + 1)
-    floor &= ~blocked
-    n, lab, stats, _ = cv2.connectedComponentsWithStats(floor.astype(np.uint8), connectivity=8)
-    keep = np.zeros(n, bool)
-    keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= cfg.min_floor_frac * h * w
-    floor = keep[lab]
+    floor = np.zeros((0, 0), bool) if defer_floor else _floor_mask(density, blocked, cfg)
     ev = Evidence(resp, floor, np.zeros((0, 0), bool), np.zeros((0, 0), np.float32), 2.0 * s, raw=resp,
                   density=density, blocked=blocked)
     return with_lines(ev, cfg) if lines else ev
 
 
+def _floor_mask(density: np.ndarray, blocked: np.ndarray, cfg: EvidenceConfig) -> np.ndarray:
+    floor = (density < cfg.max_density) & ~blocked
+    h, w = floor.shape
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(floor.astype(np.uint8), connectivity=8)
+    keep = np.zeros(n, bool)
+    keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= cfg.min_floor_frac * h * w
+    return keep[lab]
+
+
 def with_lines(ev: Evidence, config: EvidenceConfig | None = None) -> Evidence:
     """``ev`` with its frame-wide line pixels, distance map and floor-masked response (computed once)."""
-    if ev.lines.shape == ev.floor.shape or ev.raw is None:
+    if ev.raw is None:
         return ev
     cfg = config or EvidenceConfig()
+    if ev.floor.shape != ev.raw.shape:
+        assert ev.density is not None and ev.blocked is not None
+        ev.floor = _floor_mask(ev.density, ev.blocked, cfg)
+    if ev.lines.shape == ev.floor.shape:
+        return ev
     ev.lines, ev.dist = _line_pixels(ev.raw, ev.floor, cfg, ev.size[1] / 1080.0)
     ev.resp = np.where(ev.floor, ev.raw, 0.0).astype(np.float32)
     return ev
@@ -791,13 +802,22 @@ def _chamfer_pass(ev: Evidence, pts: np.ndarray, x: np.ndarray, free: np.ndarray
     h = scale * 0.02  # absolute steps: scipy's diff_step is relative to |x|, so a centre at y = -62 ft would step
     #   6 ft and a pan or roll near 0 by next to nothing
 
-    def jac(p: np.ndarray) -> np.ndarray:  # central differences over the bilinear distance map
-        J = np.empty((len(P), len(p)))
-        for i, hi in enumerate(h):
-            e = np.zeros_like(p)
-            e[i] = hi
-            J[:, i] = (res(p + e) - res(p - e)) / (2.0 * hi)
-        return J
+    offsets = np.zeros((2 * len(h), len(h)))
+    offsets[::2] = np.diag(h)
+    offsets[1::2] = -np.diag(h)
+
+    def jac(p: np.ndarray) -> np.ndarray:  # the same central differences, evaluated together
+        v = np.broadcast_to(x, (len(offsets), len(x))).copy()
+        v[:, free] = p + offsets
+        gs = np.array([CameraParams.from_vector(row).G(size) for row in v])
+        # A batch of the same 2-D matrix products used by _project; keep the arithmetic order so the finite
+        # differences (and the solver's decisions) are identical. At most 14 probes, independent of video length.
+        projected = P @ gs[:, :, :2].swapaxes(-1, -2) + gs[:, None, :, 2]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            uv = projected[:, :, :2] / projected[:, :, 2:3]
+        d = _bilinear(ev.dist, uv[:, :, 0], uv[:, :, 1])
+        d = np.where((projected[:, :, 2] > 0) & np.isfinite(d), d, clip)
+        return ((d[::2] - d[1::2]) / (2.0 * h[:, None])).T
 
     sol = least_squares(res, x[free], jac=jac, loss="soft_l1", f_scale=0.25 * clip, max_nfev=40, x_scale=scale)
     out = x.copy()
@@ -828,15 +848,37 @@ def refine(ev: Evidence, court: CourtSpec, start: CameraParams, free_center: boo
         # the robust scale shrinks with the search radius: with a tight scale on a wide first pass the few lines
         # that see a pan error (across their direction) would be outliers next to the many that slide along it
         huber = max(cfg.huber_px, 0.6 * radius) * sc
+        cached_p: np.ndarray | None = None
+        cached_res: np.ndarray | None = None
 
         def res(p: np.ndarray, cp: np.ndarray = cp, ip: np.ndarray = ip) -> np.ndarray:
+            nonlocal cached_p, cached_res
             v = x.copy()
             v[free] = p
             uv, _ = _project(CameraParams.from_vector(v).G(size), cp)
-            return (uv - ip).ravel()
+            value = (uv - ip).ravel()
+            cached_p, cached_res = p.copy(), value.copy()  # SciPy may scale its own residual in place for Huber loss
+            return value
+
+        def jac(p: np.ndarray) -> np.ndarray:
+            # SciPy's unbounded float64 2-point steps, including the actual representable dx. Evaluate the same
+            # probes together; preserve the residual order, so the robust solver takes the same steps.
+            f0 = cached_res if cached_p is not None and np.array_equal(cached_p, p) else res(p)
+            h = np.finfo(np.float64).eps ** 0.5 * np.where(p >= 0, 1.0, -1.0) * np.maximum(1.0, np.abs(p))
+            probes = np.broadcast_to(p, (len(p), len(p))).copy()
+            ii = np.arange(len(p))
+            probes[ii, ii] = p + h
+            v = np.broadcast_to(x, (len(p), len(x))).copy()
+            v[:, free] = probes
+            gs = np.array([CameraParams.from_vector(row).G(size) for row in v])
+            projected = cp @ gs[:, :, :2].swapaxes(-1, -2) + gs[:, None, :, 2]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                uv = projected[:, :, :2] / projected[:, :, 2:3]
+            values = (uv - ip).reshape(len(p), -1)
+            return ((values - f0) / ((p + h) - p)[:, None]).T
 
         scale = np.array([5.0, 5.0, 5.0, 1.0, 1.0, 1.0, 0.05])[free]
-        sol = least_squares(res, x[free], loss="huber", f_scale=huber, max_nfev=cfg.max_nfev, x_scale=scale)
+        sol = least_squares(res, x[free], jac=jac, loss="huber", f_scale=huber, max_nfev=cfg.max_nfev, x_scale=scale)
         x = x.copy()
         x[free] = sol.x
         last = (cp, ip)

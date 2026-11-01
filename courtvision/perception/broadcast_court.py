@@ -166,13 +166,18 @@ class BroadcastCourtTracker:
             h = int(round(frame_bgr.shape[0] * self.scale))
             img = cv2.resize(frame_bgr, (w, h), interpolation=cv2.INTER_AREA)
             boxes = None if people is None else [tuple(v * self.scale for v in b) for b in people]  # type: ignore[misc]
-        return court_evidence(img, self.config.evidence, boxes, lines=lines)  # type: ignore[arg-type]
+        return court_evidence(img, self.config.evidence, boxes, lines=lines, defer_floor=not lines)  # type: ignore[arg-type]
 
     def update(self, frame_bgr: np.ndarray, cut: bool = False,
                people: list[tuple[float, float, float, float]] | None = None) -> CourtFix:
         cfg = self.config
-        ev = self.evidence(frame_bgr, people, lines=False)  # the frame-wide line pixels only when needed
         self._since_cut = 0 if cut else self._since_cut + 1
+        was_lost = self.status == "lost"
+        if was_lost:
+            self._lost_frames += 1
+            if not self._reacquire_due():
+                return CourtFix("lost", None)  # evidence is stateless and unused between scheduled attempts
+        ev = self.evidence(frame_bgr, people, lines=False)  # the frame-wide line pixels only when needed
         if cut and self.status != "lost" and self._last is not None:
             pred = self._predict()
             r = refine(self._local(ev, pred), self.court, pred, config=cfg.track_refine)
@@ -194,16 +199,21 @@ class BroadcastCourtTracker:
             self._lost_frames = 0
             self._loss_in_play = True
             log.debug("court lost")
-        ev = with_lines(ev, cfg.evidence)
-        self._lost_frames += 1
-        due = (self._since_cut in cfg.reacquire_after_cut or (self._lost_frames - 1) % cfg.reacquire_every == 0
-               or (self._loss_in_play and self._lost_frames in cfg.reacquire_after_loss))
-        if due and ev.floor.mean() >= cfg.min_floor_share and ev.lines.mean() >= cfg.min_line_share:
-            r = self._reacquire(ev)
-            if r is not None:
-                self._vel[:] = 0.0
-                return self._accept(r, "reacquired")
+        if not was_lost:
+            self._lost_frames += 1
+        if self._reacquire_due():
+            ev = with_lines(ev, cfg.evidence)
+            if ev.floor.mean() >= cfg.min_floor_share and ev.lines.mean() >= cfg.min_line_share:
+                r = self._reacquire(ev)
+                if r is not None:
+                    self._vel[:] = 0.0
+                    return self._accept(r, "reacquired")
         return CourtFix("lost", None)
+
+    def _reacquire_due(self) -> bool:
+        cfg = self.config
+        return (self._since_cut in cfg.reacquire_after_cut or (self._lost_frames - 1) % cfg.reacquire_every == 0
+                or (self._loss_in_play and self._lost_frames in cfg.reacquire_after_loss))
 
     def _local(self, ev: Evidence, p: CameraParams) -> Evidence:
         """The frame's evidence seen through a predicted camera (``court_search.restrict``)."""

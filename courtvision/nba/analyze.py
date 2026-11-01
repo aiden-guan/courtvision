@@ -41,6 +41,7 @@ import subprocess
 import threading
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -249,6 +250,19 @@ def probe_video(path: Path | str, timestamps: bool = True, samples: int = 5) -> 
 # --------------------------------------------------------------------------- camera
 
 
+@lru_cache(maxsize=256)
+def _turn_matrices(pan: float, tilt: float, roll: float, focal: float,
+                   size: tuple[int, int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Reusable factors of K_b R_b R_a^T K_a^-1. Key by values, not frame IDs (tracks can be edited); bound the
+    cache to a small sliding window rather than keeping matrices for a whole game. The product order is unchanged."""
+    cam = CameraParams(np.zeros(3), pan, tilt, roll, focal)
+    K, R = cam.K(size), cam.R()
+    matrices = (K @ R, R.T, np.linalg.inv(K))
+    for matrix in matrices:
+        matrix.setflags(write=False)
+    return matrices
+
+
 @dataclass
 class CameraTrack:
     """The game camera per frame (full-resolution pixels): fixed centre, per-frame pan / tilt / roll / focal.
@@ -357,10 +371,12 @@ class CameraTrack:
 
     def frame_to_frame(self, a: int, b: int) -> np.ndarray | None:
         """Image a -> image b homography of the camera's turn and zoom about its centre (exact for any point)."""
-        ca, cb = self.get(a), self.get(b)
-        if ca is None or cb is None:
+        qa, qb = self.params.get(a), self.params.get(b)
+        if qa is None or qb is None:
             return None
-        return cb.K(self.image_size) @ cb.R() @ ca.R().T @ np.linalg.inv(ca.K(self.image_size))
+        _, RaT, Ka_inv = _turn_matrices(*qa, self.image_size)
+        KbRb, _, _ = _turn_matrices(*qb, self.image_size)
+        return KbRb @ RaT @ Ka_inv
 
 
 def _smooth_runs(raw: dict[int, tuple[float, float, float, float]], k: int,

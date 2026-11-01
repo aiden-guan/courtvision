@@ -125,6 +125,27 @@ def test_score_reconcile_off_leaves_the_shots_to_the_camera(reconcile):
 # ---------------------------------------------------------------------------- the judge
 
 
+def test_rim_model_warmup_is_once_and_does_not_observe_or_judge_game_evidence(monkeypatch):
+    from courtvision.nba import rim_model
+    from courtvision.nba.rim_clips import CLIP_OFFSETS, CLIP_PX
+
+    calls = []
+
+    def predict(net, clips, config):
+        calls.append((net, clips.shape, config))
+        assert clips.dtype == np.uint8 and not clips.any()
+        return np.array([[0.5, 0.5, 0.0]])
+
+    monkeypatch.setattr(rim_model, "predict", predict)
+    net, config = object(), object()
+    judge = ShotJudge(toy_model(), rim_model=(net, config))
+    judge.warmup()
+    judge.warmup()
+    assert calls == [(net, (1, len(CLIP_OFFSETS), CLIP_PX, CLIP_PX, 3), config)]
+    assert not judge._frames and not judge._waiting and not judge._judged
+    assert ShotJudge(toy_model()).warmup() is None
+
+
 def frame(t: float, balls: list[list[float]], ball_xy: tuple[float, float] | None = None) -> FrameState:
     ball = BallState(True, image_xy=ball_xy) if ball_xy is not None else None
     return FrameState(round(t * 30), t, [], ball, [RimObservation("left", RIM)], None, (1280, 720),

@@ -230,6 +230,143 @@ def test_restrict_keeps_the_court_region_and_drops_the_stands() -> None:
 # ---------------------------------------------------------------- speed-ups that must not change a result
 
 
+@pytest.mark.parametrize("loss_in_play", [False, True])
+def test_lost_frames_only_build_evidence_at_the_unchanged_reacquisition_times(
+    monkeypatch: pytest.MonkeyPatch, loss_in_play: bool,
+) -> None:
+    tracker = BroadcastCourtTracker(COURT, SIZE, CENTER)
+    tracker._loss_in_play = loss_in_play
+    evidence = tracker.evidence
+    calls = []
+    frame_idx = 0
+
+    def record_evidence(*args, **kwargs):
+        calls.append(frame_idx)
+        return evidence(*args, **kwargs)
+
+    monkeypatch.setattr(tracker, "evidence", record_evidence)
+    blank = np.zeros((SIZE[1], SIZE[0], 3), np.uint8)
+    for frame_idx in range(100):
+        assert tracker.update(blank, cut=frame_idx == 43).status == "lost"
+    scheduled = {0, 30, 60, 90, 43, 45, 49, 58}  # regular attempts plus 0, 2, 6, 15 frames after the cut
+    if loss_in_play:
+        scheduled |= {3, 9, 19}  # 1, 4, 10, 20 lost frames since an in-play loss (frame 0 is already scheduled)
+    assert calls == sorted(scheduled)
+    assert tracker._lost_frames == 100 and tracker._since_cut == 56
+
+
+@pytest.mark.parametrize("free_center,fix_roll", [(False, False), (False, True), (True, False), (True, True)])
+def test_batched_chamfer_probes_keep_the_serial_jacobian_and_fit(
+    monkeypatch: pytest.MonkeyPatch, free_center: bool, fix_roll: bool,
+) -> None:
+    """Compare against independent scalar central differences, including probes outside the image. Both the
+    derivatives and the complete multi-pass fit must agree exactly, so solver convergence cannot hide drift."""
+    from scipy import optimize
+
+    truth = CameraParams(CENTER, 0.0, 15.5, 0.0, 2300.0)
+    ev = court_evidence(render(truth))
+    start = CameraParams(CENTER + [0.0, 1.0, 0.0], 0.8, 15.9, 0.0, 2369.0)
+    cfg = court_search.RefineConfig(fix_roll=fix_roll)
+    batched = refine(ev, COURT, start, free_center=free_center, config=cfg)
+    solve = optimize.least_squares
+    checked = []
+
+    def serial_solve(fun, x0, **kwargs):
+        if callable(kwargs.get("jac")) and kwargs.get("loss") == "soft_l1":
+            batch_jac = kwargs["jac"]
+            steps = kwargs["x_scale"] * 0.02
+
+            def serial_jac(p):
+                columns = []
+                for i, step in enumerate(steps):
+                    delta = np.zeros_like(p)
+                    delta[i] = step
+                    columns.append((fun(p + delta) - fun(p - delta)) / (2.0 * step))
+                return np.column_stack(columns)
+
+            for delta in (0.0, 0.1, 40.0):
+                p = x0.copy()
+                p[3 if free_center else 0] += delta  # pan: exercise clipped/off-image samples too
+                np.testing.assert_array_equal(batch_jac(p), serial_jac(p), strict=True)
+            checked.append(True)
+            kwargs["jac"] = serial_jac
+        return solve(fun, x0, **kwargs)
+
+    monkeypatch.setattr(optimize, "least_squares", serial_solve)
+    serial = refine(ev, COURT, start, free_center=free_center, config=cfg)
+    assert checked and batched is not None and serial is not None
+    assert batched.params.to_dict() == serial.params.to_dict()
+    assert (batched.matches, batched.inliers, batched.rmse_px, batched.coverage) == \
+        (serial.matches, serial.inliers, serial.rmse_px, serial.coverage)
+
+
+@pytest.mark.parametrize("free_center,fix_roll", [(False, False), (False, True), (True, False), (True, True)])
+def test_batched_line_match_jacobian_and_fit_equal_scipy_differences(
+    monkeypatch: pytest.MonkeyPatch, free_center: bool, fix_roll: bool,
+) -> None:
+    from scipy import optimize
+    from scipy.optimize._numdiff import approx_derivative
+
+    truth = CameraParams(CENTER, 0.0, 15.5, 0.0, 2300.0)
+    ev = court_evidence(render(truth))
+    start = CameraParams(CENTER + [0.0, 1.0, 0.0], 0.8, 15.9, 0.0, 2369.0)
+    cfg = court_search.RefineConfig(fix_roll=fix_roll)
+    batched = refine(ev, COURT, start, free_center=free_center, config=cfg)
+    solve = optimize.least_squares
+    checked = []
+
+    def scipy_solve(fun, x0, **kwargs):
+        if callable(kwargs.get("jac")) and kwargs.get("loss") == "huber":
+            # Exercise the cache both at its last residual and at a point it has not evaluated.
+            for delta in (0.0, -0.1, 0.1):
+                p = x0.copy()
+                p[0] += delta
+                reference = approx_derivative(fun, p, method="2-point")
+                np.testing.assert_array_equal(kwargs["jac"](p), reference, strict=True)
+            checked.append(True)
+            kwargs.pop("jac")  # the actual SciPy 2-point solver, not a copy of its implementation
+        return solve(fun, x0, **kwargs)
+
+    monkeypatch.setattr(optimize, "least_squares", scipy_solve)
+    serial = refine(ev, COURT, start, free_center=free_center, config=cfg)
+    assert checked and batched is not None and serial is not None
+    assert batched.params.to_dict() == serial.params.to_dict()
+    assert (batched.matches, batched.inliers, batched.rmse_px, batched.coverage) == \
+        (serial.matches, serial.inliers, serial.rmse_px, serial.coverage)
+
+
+@pytest.mark.parametrize("blank", [False, True])
+def test_deferred_global_floor_is_unused_locally_and_identical_when_needed(
+    monkeypatch: pytest.MonkeyPatch, blank: bool,
+) -> None:
+    cam = CameraParams(CENTER, 14.0, 15.5, 0.0, 2300.0)
+    img = np.zeros((SIZE[1], SIZE[0], 3), np.uint8) if blank else render(cam)
+    cfg = EvidenceConfig(exclude=[(400, 900, 1000, 160)])
+    people = [(-20.0, -10.0, 30.0, 80.0), (850.0, 100.0, 990.0, 300.0)]
+    eager = court_evidence(img, cfg, people)
+    eager_local = court_search.restrict(eager, COURT, cam, cfg)
+    floor_mask = court_search._floor_mask
+    calls = []
+
+    def count_mask(*args):
+        calls.append(True)
+        return floor_mask(*args)
+
+    monkeypatch.setattr(court_search, "_floor_mask", count_mask)
+    lazy = court_evidence(img, cfg, people, lines=False, defer_floor=True)
+    assert not calls and lazy.floor.size == lazy.lines.size == 0
+    local = court_search.restrict(lazy, COURT, cam, cfg)
+    assert not calls  # the local fit does not build the global mask
+    for field in ("resp", "floor", "lines", "dist"):
+        np.testing.assert_array_equal(getattr(local, field), getattr(eager_local, field), strict=True)
+    assert court_search.with_lines(lazy, cfg) is lazy
+    assert len(calls) == 1
+    for field in ("resp", "floor", "lines", "dist", "orient"):
+        np.testing.assert_array_equal(getattr(lazy, field), getattr(eager, field), strict=True)
+    court_search.with_lines(lazy, cfg)
+    assert len(calls) == 1  # re-acquisition and cut checks share the same materialised mask
+
+
 def _old_oriented_dist(ev, k: int, clip: float):  # noqa: ANN001, ANN202 - court_search before the speed-up
     h, w = ev.lines.shape
     hh, ww = h // k, w // k

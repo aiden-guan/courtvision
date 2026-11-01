@@ -133,12 +133,16 @@ def build_net(frames: int = 3, pretrained: bool = True) -> Any:
 BallPersonNet = build_net  # the factory doubles as the public name
 
 
-def preprocess_frames(frames_bgr: list[np.ndarray]) -> np.ndarray:
+def preprocess_frames(frames_bgr: list[np.ndarray], *, out: np.ndarray | None = None) -> np.ndarray:
     """Frames (oldest first) -> (3 * n, H, W) float32 network input (C-contiguous): scaled to fit 960x544
     (``input_scale``; 960 px wide for 16:9), padded at the bottom (and at the right for a frame taller than 16:9), RGB,
-    ImageNet-normalised (through ``_NORM_LUTS``)."""
+    ImageNet-normalised (through ``_NORM_LUTS``). ``out`` reuses a caller-owned normalisation buffer."""
     h_in, w_in = INPUT_HW
-    out = np.empty((3 * len(frames_bgr), h_in, w_in), np.float32)
+    shape = (3 * len(frames_bgr), h_in, w_in)
+    if out is None:
+        out = np.empty(shape, np.float32)
+    elif out.shape != shape or out.dtype != np.float32 or not out.flags.c_contiguous:
+        raise ValueError("preprocessing output must be C-contiguous float32 with the normal input shape")
     for i, f in enumerate(frames_bgr):
         s = input_scale(f.shape[1], f.shape[0])
         wide = s == w_in / f.shape[1]
@@ -149,7 +153,7 @@ def preprocess_frames(frames_bgr: list[np.ndarray]) -> np.ndarray:
                                      cv2.BORDER_CONSTANT)
         planes = cv2.split(np.ascontiguousarray(img[:h_in, :w_in]))
         for c in range(3):  # R, G, B: the BGR planes 2, 1, 0
-            out[3 * i + c] = cv2.LUT(planes[2 - c], _NORM_LUTS[c])
+            cv2.LUT(planes[2 - c], _NORM_LUTS[c], dst=out[3 * i + c])
     return out
 
 
@@ -242,8 +246,22 @@ def coreml_model(weights: str | Path, frames: int = 3, cache: str | Path | None 
     return ct.models.MLModel(str(path), compute_units=ct.ComputeUnit.CPU_AND_NE)
 
 
+@dataclass
+class _PrefetchedFrame:
+    image: np.ndarray
+    frame_idx: int
+    t: float
+    detections: FrameDetections
+    history: deque[np.ndarray]
+    before_raw: Any
+    raw: Any
+
+
 class StudentDetector:
     """``Detector`` running ``BallPersonNet`` on the current and previous frames (``frame_step`` apart)."""
+
+    parallel_court = True  # raw inference depends only on current/past pixels, not the fitted camera
+    max_prefetch = 3
 
     def __init__(self, config: StudentConfig | None = None, net: Any | None = None) -> None:
         self.config = config or StudentConfig()
@@ -253,6 +271,9 @@ class StudentDetector:
         # each frame's own preprocessed (3, H, W) input, so a frame is normalised once, not once per sample it is in
         self._buf: deque[np.ndarray] = deque(maxlen=(self.config.frames - 1) * max(1, self.config.frame_step) + 1)
         self.last_raw: tuple[list[tuple[float, float, float]], list[tuple[float, float, float, float, float]]] | None = None
+        self._prefetched: deque[_PrefetchedFrame] = deque()
+        self._frame_pool: list[np.ndarray] = []
+        self._input: np.ndarray | None = None
 
     @property
     def backend(self) -> str:
@@ -286,7 +307,28 @@ class StudentDetector:
         return self._ml if self._ml is not None else self._net
 
     def reset(self) -> None:
+        if self._prefetched:
+            self.last_raw = self._prefetched[0].before_raw
+            self._prefetched.clear()
         self._buf.clear()
+
+    def prefetch(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> bool:
+        """Infer up to three decoded future frames in source order during OCR waits. Only FIFO matches may be
+        consumed; a cut or skipped/replaced frame rolls all speculation back to the last committed history."""
+        if any(p.image is frame_bgr and p.frame_idx == frame_idx and p.t == t for p in self._prefetched):
+            return True
+        if len(self._prefetched) >= self.max_prefetch:
+            return False
+        history, committed_raw = self._buf.copy(), self.last_raw
+        before_raw = self._prefetched[-1].raw if self._prefetched else committed_raw
+        try:
+            fd = self._detect(frame_bgr, frame_idx, t)
+        except Exception:
+            self._buf, self.last_raw = history, committed_raw
+            return False  # do not predict beyond a missing frame; actual consumption retries/reports its error
+        self._prefetched.append(_PrefetchedFrame(frame_bgr, frame_idx, t, fd, history, before_raw, self.last_raw))
+        self.last_raw = committed_raw
+        return True
 
     def infer(self, frames_bgr: list[list[np.ndarray]]) -> list[tuple[list, list]]:
         """Batch inference: each item is a list of ``frames`` frames (oldest first)."""
@@ -298,6 +340,8 @@ class StudentDetector:
         net = self._model()
         if self._ml is not None:
             outs = [net.predict({"x": np.ascontiguousarray(x[i:i + 1], np.float32)}) for i in range(len(x))]
+            if len(outs) == 1:
+                return {k: np.asarray(outs[0][k], np.float32) for k in OUTPUTS}
             return {k: np.concatenate([np.asarray(o[k], np.float32) for o in outs]) for k in OUTPUTS}
         torch = _torch()
         t = torch.from_numpy(np.ascontiguousarray(x)).to(self._device or "cpu")
@@ -323,9 +367,30 @@ class StudentDetector:
         return decoded
 
     def detect(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> FrameDetections:
-        self._buf.append(preprocess_frames([frame_bgr]))
+        if self._prefetched:
+            pending = self._prefetched[0]
+            if pending.image is frame_bgr and pending.frame_idx == frame_idx and pending.t == t:
+                self._prefetched.popleft()
+                self.last_raw = pending.raw
+                return pending.detections
+            self._buf, self.last_raw = pending.history, pending.before_raw
+            self._prefetched.clear()
+        return self._detect(frame_bgr, frame_idx, t)
+
+    def _detect(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> FrameDetections:
+        retained = {id(a) for a in self._buf}
+        retained.update(id(a) for p in self._prefetched for a in p.history)
+        spare = next((a for a in self._frame_pool if id(a) not in retained), None)
+        if spare is None:
+            spare = np.empty((3, *INPUT_HW), np.float32)
+            self._frame_pool.append(spare)
+        self._buf.append(preprocess_frames([frame_bgr], out=spare))
         buf, step = list(self._buf), max(1, self.config.frame_step)
-        x = np.concatenate([buf[max(0, len(buf) - 1 - j * step)] for j in range(self.config.frames - 1, -1, -1)])
+        if self._input is None:
+            self._input = np.empty((3 * self.config.frames, *INPUT_HW), np.float32)
+        for i, j in enumerate(range(self.config.frames - 1, -1, -1)):
+            np.copyto(self._input[3 * i:3 * i + 3], buf[max(0, len(buf) - 1 - j * step)])
+        x = self._input
         #   oldest first; the first frames of a stream repeat the earliest one
         h, w = frame_bgr.shape[:2]
         balls, persons = self.infer_arrays(x[None], [(w, h)])[0]

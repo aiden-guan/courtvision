@@ -36,6 +36,9 @@ def test_preprocessing_is_the_float_maths_bit_for_bit() -> None:
     for f in frames:
         x = student.preprocess_frames([f])
         assert x.dtype == np.float32 and x.flags.c_contiguous and np.array_equal(x, _float_maths([f]))
+        reuse = np.empty_like(x)
+        assert student.preprocess_frames([f], out=reuse) is reuse
+        np.testing.assert_array_equal(reuse, x, strict=True)
     assert np.array_equal(student.preprocess_frames(frames[:3]), _float_maths(frames[:3]))
 
 

@@ -29,6 +29,7 @@ from courtvision.geometry.court import CourtSpec, court_for
 from courtvision.geometry.homography import Calibration, Homography
 from courtvision.types import (
     Detection,
+    FrameDetections,
     FrameState,
     ObjClass,
     PlayerState,
@@ -196,10 +197,11 @@ class PerceptionPipeline:
             warp(M)
         self.ball_tracker.warp(M)
 
-    def process(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> FrameState:
+    def process(self, frame_bgr: np.ndarray, frame_idx: int, t: float,
+                *, detections: FrameDetections | None = None) -> FrameState:
         """Run perception on one BGR frame."""
         h, w = frame_bgr.shape[:2]
-        fd = self.detector.detect(frame_bgr, frame_idx, t)
+        fd = self.detector.detect(frame_bgr, frame_idx, t) if detections is None else detections
         people = [d for d in fd.detections if d.cls in (ObjClass.PLAYER, ObjClass.REFEREE)]
         self._embed(frame_bgr, people)
         tracks = [tr for tr in self._track(people, frame_idx, frame_bgr, t) if tr.track_id not in self._suppressed]

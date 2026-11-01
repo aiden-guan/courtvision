@@ -22,6 +22,9 @@ wraps it for broadcast footage:
 * **Scorebug** (``ScorebugReader``): read at ``scoreboard_hz`` (D14: 5 Hz) on live frames, on a thread of its own
   while the wrapped pipeline detects and tracks the players of the same frame (Vision OCR waits about 80 ms for
   another process); the frame's state gets the read as before.
+* **Live overlap.** A causal court worker can fit the current frame while the student runs its raw inference.
+  Prepared OCR is applied only on accepted live frames. While awaiting OCR, at most one decoded next frame may
+  be inferred; its court gate and box rectification still run in order, and a cut discards its cached inference.
 
 Thresholds are design choices tuned on simulator broadcast renders (``sim/broadcast.py``).
 """
@@ -29,6 +32,7 @@ Thresholds are design choices tuned on simulator broadcast renders (``sim/broadc
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
@@ -42,6 +46,7 @@ from courtvision.types import BBox, FrameState
 from .court_tracker import CourtTracker, CourtTrackerConfig, TrackResult, _camera, _rotation
 from .pipeline import PerceptionPipeline
 from .scorebug import ScorebugReader
+from .runtime import configure_live_thread
 
 __all__ = ["BroadcastPerception", "BroadcastPerceptionConfig", "GateState", "ShotBoundaryDetector"]
 
@@ -77,14 +82,27 @@ class ShotBoundaryDetector:
         self._prev: np.ndarray | None = None
 
     def update(self, frame_bgr: np.ndarray) -> bool:
+        hist = self._histogram(frame_bgr)
+        changed = self._changed(hist)
+        self._prev = hist
+        return changed
+
+    def peek(self, frame_bgr: np.ndarray) -> bool:
+        """Compare an arrived next frame without advancing the current frame's cut history."""
+        return self._changed(self._histogram(frame_bgr))
+
+    @staticmethod
+    def _histogram(frame_bgr: np.ndarray) -> np.ndarray:
         small = cv2.resize(frame_bgr, (160, 90), interpolation=cv2.INTER_AREA)
         hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
         hist = cv2.calcHist([hsv], [0, 1], None, [16, 8], [0, 180, 0, 256])
         cv2.normalize(hist, hist)
-        prev, self._prev = self._prev, hist
-        if prev is None:
+        return hist
+
+    def _changed(self, hist: np.ndarray) -> bool:
+        if self._prev is None:
             return False
-        return float(cv2.compareHist(prev, hist, cv2.HISTCMP_BHATTACHARYYA)) > self.threshold
+        return float(cv2.compareHist(self._prev, hist, cv2.HISTCMP_BHATTACHARYYA)) > self.threshold
 
 
 class BroadcastPerception:
@@ -95,7 +113,9 @@ class BroadcastPerception:
     scoreboard reads and no scorebug gate)."""
 
     def __init__(self, inner: PerceptionPipeline, calibration: Calibration, scorebug: Any | None = None,
-                 config: BroadcastPerceptionConfig | None = None, court_tracker: Any | None = None) -> None:
+                 config: BroadcastPerceptionConfig | None = None, court_tracker: Any | None = None,
+                 prefetch_next: Callable[[Future[Any]], None] | None = None,
+                 prefetch_court: Callable[[], None] | None = None) -> None:
         self.inner = inner
         inner.config.foot_direct = True  # a new homography every frame: no per-frame correction table
         self.config = config or BroadcastPerceptionConfig()
@@ -108,6 +128,9 @@ class BroadcastPerception:
         self.cuts = ShotBoundaryDetector(self.config.cut_threshold)
         self.scorebug = scorebug
         self._reader: ThreadPoolExecutor | None = None  # reads the scorebug alongside ``inner.process``
+        self._detector_worker: ThreadPoolExecutor | None = None
+        self._prefetch_next = prefetch_next
+        self._prefetch_court = prefetch_court
         self._last_read_t: float | None = None
         self._was_live = True
         self._prev_ptz: tuple[float, float, float] | None = None
@@ -153,9 +176,12 @@ class BroadcastPerception:
                     rims[side] = box
         return Calibration(homography=hom, image_size=self.base.image_size, league=self.base.league, rims=rims)
 
-    def gate(self, frame_bgr: np.ndarray, frame_idx: int | None = None) -> GateState:
+    def gate(self, frame_bgr: np.ndarray, frame_idx: int | None = None,
+             before_wait: Callable[[], None] | None = None) -> GateState:
         cut = self.cuts.update(frame_bgr)
         if self.auto is not None:
+            if before_wait is not None and not cut:
+                before_wait()  # inference on this same frame while the causal court worker fits it
             if getattr(self.auto, "wants_frame_idx", False):  # a tracker working ahead (court_worker.py)
                 fix = self.auto.update(frame_bgr, cut=cut, frame_idx=frame_idx)
             else:
@@ -178,7 +204,46 @@ class BroadcastPerception:
 
     def process(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> FrameState:
         h, w = frame_bgr.shape[:2]
-        g = self.gate(frame_bgr, frame_idx)
+        future, fields_future = None, None
+        raw_detector = self.inner.detector
+        if isinstance(raw_detector, _Rectifying):
+            raw_detector = raw_detector.inner
+
+        def start_detection() -> None:
+            nonlocal future, fields_future
+            if self._detector_worker is None:
+                self._detector_worker = ThreadPoolExecutor(1, thread_name_prefix="live-detector",
+                                                           initializer=configure_live_thread)
+            future = self._detector_worker.submit(raw_detector.detect, frame_bgr, frame_idx, t)
+            reader = self.scorebug
+            if (reader is not None and callable(getattr(reader, "read_prepared", None))
+                    and self._scoreboard_due(t) and reader.present(frame_bgr)):
+                if self._reader is None:
+                    self._reader = ThreadPoolExecutor(1, thread_name_prefix="scorebug")
+                fields_future = self._reader.submit(reader.read_fields, frame_bgr)
+
+        parallel = (self._was_live and getattr(self.auto, "parallel_detection", False)
+                    and getattr(raw_detector, "parallel_court", False))
+        try:
+            g = self.gate(frame_bgr, frame_idx, before_wait=start_detection) if parallel else self.gate(frame_bgr, frame_idx)
+        except BaseException:
+            for pending in (future, fields_future):
+                if pending is None:
+                    continue
+                # Never let an inference from a failed gate race the next frame's history/reset.
+                try:
+                    pending.result()
+                except Exception:
+                    pass
+            raise
+        if self._prefetch_court is not None:
+            self._prefetch_court()  # actual arrived pixels only; the next camera is not published by this gate
+        prefetched, detection_error = None, None
+        if future is not None:
+            try:
+                prefetched = future.result()
+            except Exception as exc:
+                detection_error = exc  # discard on a non-live frame; surface at the normal inference stage otherwise
         self.last_gate = g
         st = self.stats
         st["frames"] += 1
@@ -191,6 +256,11 @@ class BroadcastPerception:
                 reset()
         self._was_live = g.live
         if not g.live:
+            if fields_future is not None:
+                try:
+                    fields_future.result()  # drain before another frame changes the reader's cached profile
+                except Exception:
+                    pass  # the old path did not read this non-live frame
             self._prev_ptz = None
             self._prev_params = None
             st[g.reason] = st.get(g.reason, 0) + 1
@@ -215,13 +285,32 @@ class BroadcastPerception:
             if not isinstance(det, _Rectifying):
                 det = self.inner.detector = _Rectifying(det)
             det.camera, det.size = params, self.base.image_size
-        read = self._start_scoreboard_read(frame_bgr, t)  # the scorebug is read while the players are detected
-        state = self.inner.process(frame_bgr, frame_idx, t)
+        if fields_future is not None:
+            self._last_read_t = t
+            read = None
+        else:
+            read = self._start_scoreboard_read(frame_bgr, t)  # the scorebug is read while the players are detected
+        if detection_error is not None:
+            if fields_future is not None:
+                self.scorebug.read_prepared(frame_bgr, t, fields_future.result())
+            raise detection_error
+        if prefetched is not None:
+            if isinstance(self.inner.detector, _Rectifying):
+                prefetched = self.inner.detector.rectify(prefetched)
+            state = self.inner.process(frame_bgr, frame_idx, t, detections=prefetched)
+        else:
+            state = self.inner.process(frame_bgr, frame_idx, t)
         if self.config.rim_crops and self.inner.calibration.rims:
             from courtvision.nba.rim_clips import crop_rim
 
             state.rim_crops = {side: crop_rim(frame_bgr, box) for side, box in self.inner.calibration.rims.items()}
-        state.scoreboard = read.result() if read is not None else None
+        pending_read = fields_future if fields_future is not None else read
+        if self._prefetch_court is not None:
+            self._prefetch_court()  # another chance if the next source frame arrived during detection/tracking
+        if pending_read is not None and not pending_read.done() and self._prefetch_next is not None:
+            self._prefetch_next(pending_read)  # raw inference only; gates/rectification still run in order
+        state.scoreboard = (self.scorebug.read_prepared(frame_bgr, t, fields_future.result())
+                            if fields_future is not None else read.result() if read is not None else None)
         center = self.auto.center if self.auto is not None else self.tracker.center
         if center is not None:
             state.camera_xyz = (float(center[0]), float(center[1]), float(center[2]))
@@ -232,16 +321,22 @@ class BroadcastPerception:
         an OCR reader waits tens of ms for text recognition (another process), which then overlaps the detector."""
         if self.scorebug is None:
             return None
-        hz = self.config.scoreboard_hz
-        if self._last_read_t is not None and hz > 0 and t - self._last_read_t < 1.0 / hz - 1e-9:
+        if not self._scoreboard_due(t):
             return None
         self._last_read_t = t
         if self._reader is None:
             self._reader = ThreadPoolExecutor(1, thread_name_prefix="scorebug")
         return self._reader.submit(self.scorebug.read, frame_bgr, t)
 
+    def _scoreboard_due(self, t: float) -> bool:
+        hz = self.config.scoreboard_hz
+        return self._last_read_t is None or hz <= 0 or t - self._last_read_t >= 1.0 / hz - 1e-9
+
     def close(self) -> None:
         """Finish outstanding reads and release this game's OCR worker and helper process."""
+        if self._detector_worker is not None:
+            self._detector_worker.shutdown(wait=True, cancel_futures=True)
+            self._detector_worker = None
         if self._reader is not None:
             self._reader.shutdown(wait=True, cancel_futures=True)
             self._reader = None
@@ -268,10 +363,12 @@ class _Rectifying:
         return getattr(self.inner, name)
 
     def detect(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> Any:
+        return self.rectify(self.inner.detect(frame_bgr, frame_idx, t))
+
+    def rectify(self, fd: Any) -> Any:
         from courtvision.nba.analyze import rectify_box
         from courtvision.types import Detection, ObjClass
 
-        fd = self.inner.detect(frame_bgr, frame_idx, t)
         if self.camera is None:
             return fd
         out = []

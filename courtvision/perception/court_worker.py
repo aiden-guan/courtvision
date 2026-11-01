@@ -13,8 +13,8 @@ carries a checksum of its frame and the worker's cut flag; when either differs f
 analysis has (or when the worker fails, or the operator recalibrates), the tracker falls back to running in process
 from the last fix, and says so in the log.
 
-Used for analyses ahead (``server/preanalysis.py``), where nothing moves the video under the analysis; Live keeps the
-tracker in process.
+Used for file analyses, including Live's sequential playback. Camera/stream frames use
+``live_court_worker.LiveCourtTrackerProcess`` instead of opening a second source.
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ def _work(args: dict[str, Any], out: Any, stop: Any) -> None:
     from .broadcast import ShotBoundaryDetector
 
     try:
+        cv2.setNumThreads(1)  # avoid nested OpenCV pools competing with the detector and court-search pool
         cap = cv2.VideoCapture(args["video"])
         if args["start_s"] > 0:
             cap.set(cv2.CAP_PROP_POS_MSEC, args["start_s"] * 1000.0)

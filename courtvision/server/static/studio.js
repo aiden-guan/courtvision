@@ -232,7 +232,7 @@
     if (!vision.calibrated) setVision("vision-court", "Needs setup", "warn");
     else if (vision.gate && vision.gate !== "live") setVision("vision-court", "Out of view", "warn");
     else setVision("vision-court", "Mapped", "good");
-    const fps = workspace?.active?.fps;
+    const fps = vision.source_fps ?? workspace?.active?.fps;
     text("studio-throughput", !Number.isFinite(vision.fps) ? "Analysing" : fps > 0 ?
       `Analysing at ${(vision.fps / fps).toFixed(2)}× real time` : `Analysing ${vision.fps.toFixed(1)} frames a second`);
     $("studio-throughput").title = Number.isFinite(vision.fps) ? `${vision.fps.toFixed(1)} frames a second · ${Math.round(vision.inference_ms)} ms a frame` : "";

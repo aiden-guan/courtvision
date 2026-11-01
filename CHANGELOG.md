@@ -5,6 +5,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Parallel Live processing with unchanged frame evidence
+
+- Live now enables parallel court tracking for video playback by default (`pipeline.parallel_live`). Camera/stream
+  input can use a bounded shared-memory worker that receives only arrived frames and overlaps the student
+  detector with its court fit. Both workers validate frame identity and fall back locally on failure.
+- The camera worker can also fit one already-arrived next frame while the current frame finishes. Its result
+  stays private until consumed; skipped/replaced frames restore the full prior tracker state, including velocity
+  and reacquisition history, before fitting the actual frame.
+- Decode up to three frames ahead in Live (`pipeline.live_lookahead_frames`, bounded 1–3). During an OCR wait the
+  student may infer already-decoded frames in source order, stopping when OCR completes. Cuts discard cached
+  inference; skipped/replaced frames restore history from the last consumed frame. Court gates, camera-based
+  box rectification, event processing and scorebug readings retain their original order.
+- Prepare stateless OCR alongside causal court fitting, applying its state only on accepted live frames. Warm the
+  rim model before playback to avoid first-use GPU compilation during a shot. Reuse detector input buffers and
+  avoid copying single-sample Core ML outputs, retaining the same pixels and model outputs.
+- Batch the line-match fitter's forward differences with exactly SciPy's float64 steps; no solver tolerance or
+  sampling change. Tests compare derivatives and final fits directly against SciPy.
+- Add a full Studio-pipeline benchmark with paced runs, sustained-rate measurements, error/drop checks and frame
+  audits. Measurements and current resource limits: [analysis speed](docs/research/analysis_speed.md#7-live-processing-2026-10-31).
+- Report Live throughput over a rolling completion window, including time between frames, and compare against the
+  analysed source rate so cached inference and 60-to-30 fps playback do not misstate real-time performance.
+
+---
+
+## [Unreleased] — Less repeated work in video analysis
+
+- Batch the court fitter's central-difference probes while preserving its arithmetic, numerical steps and solver
+  settings. Build the separate global floor mask only when a cut check or re-acquisition needs it, and skip unused
+  court evidence between the unchanged re-acquisition attempts while lost.
+- Reuse camera rotations and inverse intrinsics during offline ball linking in a bounded, value-keyed cache.
+  Calibration edits and image-size changes select fresh factors; returned homographies remain independent.
+- Add exact-output regression tests and `tools/court_processing_bench.py`, which compares against a Git revision
+  and fails on changed court results. Measurements and scope: [analysis speed](docs/research/analysis_speed.md#6-less-repeated-work-2026-10-31).
+
+---
+
 ## [Unreleased] — README rebuilt around the real Studio on a real broadcast
 
 - **Real screenshots replace the mockup hero.** `assets/readme/hero.png` (an illustration with invented numbers) is

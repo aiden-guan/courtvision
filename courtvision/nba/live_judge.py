@@ -96,6 +96,18 @@ class ShotJudge:
         self._frames: deque[_Frame] = deque()
         self._waiting: dict[str, Event] = {}  # shot id -> the latest revision of its result
         self._judged: set[str] = set()
+        self._warmed = False
+
+    def warmup(self) -> None:
+        """Compile the rim model's normal inference shapes before playback, without observing game evidence.
+        The model is in evaluation mode; probabilities are discarded and no shot/history state changes."""
+        if self._warmed or self.rim_model is None:
+            return
+        from .rim_model import predict
+
+        net, cfg = self.rim_model
+        predict(net, np.zeros((1, len(CLIP_OFFSETS), CLIP_PX, CLIP_PX, 3), np.uint8), cfg)
+        self._warmed = True
 
     @property
     def wants_crops(self) -> bool:

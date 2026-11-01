@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from typing import Any
 
 import cv2
@@ -34,6 +35,17 @@ class StudioGame(LiveGame):
         self._vision_t = -1.0
         self._consecutive_failures = 0
         self._jpeg_cache: dict[tuple[float, bool, str], bytes] = {}
+        self._rate_start: float | None = None
+        self._rate_times: deque[float] = deque()
+
+    def _analysis_fps(self, started: float, ended: float) -> float:
+        if self._rate_start is None:
+            self._rate_start = started
+        self._rate_times.append(ended)
+        cutoff = max(self._rate_start, ended - 2.0)
+        while self._rate_times and self._rate_times[0] < cutoff:
+            self._rate_times.popleft()
+        return len(self._rate_times) / max(ended - cutoff, 0.001)
 
     def _perceive(self, image: np.ndarray, frame_idx: int, t: float) -> Any:
         started = time.perf_counter()
@@ -62,14 +74,16 @@ class StudioGame(LiveGame):
             if frame.ball is not None and frame.ball.visible and frame.ball.image_xy is not None:
                 u, v = frame.ball.image_xy
                 boxes.append({"box": (u - 9, v - 9, u + 9, v + 9), "label": "Ball", "team": "ball"})
-        ms = (time.perf_counter() - started) * 1000
+        ended = time.perf_counter()
+        ms = (ended - started) * 1000
+        fps = self._analysis_fps(started, ended)
         if result is None:
             self._lat.perception_ms.append(ms)
         self._consecutive_failures = 0
         self.visual = (image, boxes, t)
         self.vision = {"type": "vision", "t": t, "people": sum(b["team"] != "ball" for b in boxes),
                        "ball_visible": any(b["team"] == "ball" for b in boxes),
-                       "inference_ms": round(ms, 1), "fps": round(1000 / max(ms, 1), 1),
+                       "inference_ms": round(ms, 1), "fps": round(fps, 1), "source_fps": self.source.fps,
                        "calibrated": result is not None, "gate": gate.reason if gate else None,
                        "tracks": [{"id": b["label"], "team": b["team"],
                                    "confidence": b.get("confidence")}

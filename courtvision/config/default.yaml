@@ -1005,6 +1005,9 @@ pipeline:
   hub_decisions: 40  # newest decision grades per hub stats message, slimmed (stats.json keeps all)
   shot_judge: null  # The shot judge's model (nba/live_judge.py, fitted by tools/nba_live_judge.py): made or missed decided again...
   court_worker: false  # Broadcast court tracking of a video file in a worker process that reads the video itself and works ahead of...
+  parallel_live: true  # Live: track file frames ahead, or fit a stream's current frame alongside the student
+  live_lookahead_frames: 3  # bounded 1..3 decoded frames; use OCR waits for their raw inference in source order
+  opencv_threads: 1  # bound the native pool alongside inference/court workers; None preserves OpenCV's setting
 
 # eval: truth comparison (sim sources)
 eval:
