@@ -1,4 +1,5 @@
-# Vercel Container Runtime image: shared simulator plus private browser video detection.
+# Optional Studio container. Vercel serves showcase/ as static files through vercel.json;
+# this image and the Python/model/browser-inference files are not part of that deployment.
 FROM python:3.12-slim
 
 # opencv-python links against libGL and glib even when no window is opened.

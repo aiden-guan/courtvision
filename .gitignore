@@ -17,7 +17,8 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
-# Run outputs, footage and model weights (never commit footage or weights: rights-cleared data only, see docs/TRAINING.md)
+# Local source footage, run outputs and model weights.
+# The public showcase includes only its short, annotated recording below.
 runs/
 data/
 *.mp4
@@ -25,6 +26,7 @@ data/
 *.pt
 *.pth
 *.onnx
+!showcase/media/nba-analysis-*.mp4
 # Published browser inference asset: exported from the existing NBA checkpoint, not source training data.
 !courtvision/server/static/nba-student.onnx
 *.mlpackage/
@@ -35,3 +37,4 @@ data/
 
 # Local editor/agent config
 .claude/
+.vercel/

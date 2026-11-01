@@ -1,0 +1,24 @@
+{
+  "game": "Lakers @ Warriors, 2024-12-25 (ESPN)",
+  "source_start_s": 981.0133666666667,
+  "duration_s": 29.996633333333335,
+  "frames": 899,
+  "fps": 29.97002997002997,
+  "analysis_tag": "full",
+  "detector": {
+    "adopted": true,
+    "note": "declared by nba_loop.py adopt: made by these weights, over the whole game",
+    "student": "s001",
+    "time": "2026-10-29T10:13:00+00:00",
+    "weights": "runs/models/student/s001/best.pt",
+    "weights_sha256": "8bdf229ae53c773e4a5993dc7379b832b7f5ce9e102ca6079c6f4ed1c8c425c4"
+  },
+  "video": "showcase/media/nba-analysis-d3cba22fd375.mp4",
+  "video_sha256": "d3cba22fd3754f2a9a355942fc286a2f7b643d6902d4f3b664c7bbd961b38b39",
+  "poster": "showcase/media/nba-analysis-d3cba22fd375.webp",
+  "audio": false,
+  "detection_caches": {
+    "runs/nba/2024-12-25-LAL-GSW/detections-full/0017795-0035581.npz": "e0345dfd61e631fa92c118d2035b8d6424cb6dc67657f3225126c3741e86d608"
+  },
+  "timeline_sha256": "2f65b12574248980a696941e179191bff88921d68e15f423a786f7e96a9ebd34"
+}

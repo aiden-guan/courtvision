@@ -1,0 +1,4 @@
+# The public deployment is an allowlist of static showcase files.
+/*
+!vercel.json
+!showcase

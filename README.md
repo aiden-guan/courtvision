@@ -4,7 +4,7 @@
 
 **Turns basketball video into plays, possessions and box scores, on your own Mac, from the pixels alone.**
 
-[Live demo](https://courtvision-beta.vercel.app) · [How it works](#how-it-works) · [Results](#results-on-real-nba-broadcasts) · [Engineering](#interesting-engineering) · [Quickstart](#quickstart) · [Limits](#limitations)
+[Video demo](https://courtvision-beta.vercel.app) · [How it works](#how-it-works) · [Results](#results-on-real-nba-broadcasts) · [Engineering](#interesting-engineering) · [Quickstart](#quickstart) · [Limits](#limitations)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
@@ -36,6 +36,8 @@ accuracy is measured on two NBA games so far, and the numbers below say exactly 
 ## What you get
 
 The Studio is the app: a local web workspace served by `courtvision studio`.
+The [public demo](https://courtvision-beta.vercel.app) is a 30-second recording of its NBA analysis: a static video
+showcase with no uploads, model downloads, live simulation, API requests or server inference.
 
 <img src="assets/readme/studio-nba-replay.png" alt="CourtVision Studio replaying its analysis of Lakers at Warriors, 2024-12-25: tracked players, the team with the ball decided from the video, and a missed Lakers three called at P(made) 0.27" width="100%"/>
 
@@ -342,8 +344,9 @@ single-camera limits (below).
 - **Speed.** Live analysis of 1080p broadcasts runs below real time on an M3 Pro (0.6–0.72× measured); **Replay**
   prepares the full analysis in the background instead.
 - **Fouls, timeouts and substitutions** come from the operator, not from vision.
-- **Footage rights.** NBA footage and statistics are used for research and evaluation only; they are not shipped,
-  and the public site offers a simulator plus on-device browser detection with no API keys ([docs/DEPLOY_VERCEL.md](docs/DEPLOY_VERCEL.md)).
+- **Public footage.** The public site includes a short, annotated Lakers–Warriors excerpt. Full source recordings,
+  training data and model files stay out of the public deployment. NBA footage belongs to its respective rights
+  holders ([docs/DEPLOY_VERCEL.md](docs/DEPLOY_VERCEL.md)).
 
 ---
 
