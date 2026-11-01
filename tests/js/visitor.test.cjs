@@ -7,7 +7,7 @@ const source = readFileSync(resolve(__dirname, "../../courtvision/server/static/
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 function harness(detector, duration = 30) {
-  let now = 0, serial = 0, rendered, detectCalls = 0;
+  let now = 0, serial = 0, rendered, detectCalls = 0, analysis;
   const elements = new Map(), timers = new Map(), requests = [], messages = [], revoked = [], blobs = new Map();
   const element = id => {
     if (!elements.has(id)) {
@@ -22,6 +22,7 @@ function harness(detector, duration = 30) {
         removeAttribute(name) { delete this[name]; }, setAttribute() {}, closest() { return null; }, close() { this.open = false; },
         classList: { add() {}, remove() {} },
         focus() {}, getContext: () => ({ drawImage() {}, strokeRect() {}, fillRect() {}, fillText() {}, measureText: () => ({ width: 30 }),
+          beginPath() {}, arc() {}, ellipse() {}, stroke() {}, moveTo() {}, lineTo() {}, putImageData() {},
           getImageData: () => ({ data: new Uint8ClampedArray(960 * 544 * 4) }) }),
         click() {},
       };
@@ -33,8 +34,21 @@ function harness(detector, duration = 30) {
     status: { t: 1, paused: false }, frame: null, model: { state: "idle" }, videos: [] };
   const window = {
     addEventListener() {},
-    CVNBACore: require("../../courtvision/server/static/nba-core.js"),
-    CVNBA: { load: async () => ({ checkpoint: "original-nba-weights", detect: async (...args) => { detectCalls++; return detector ? detector(...args) : []; } }) },
+    CVNBA: { load: async () => ({ checkpoint: "original-nba-weights", dispose() {} }) },
+    CVNBAClip: { create: (video, model, callbacks) => {
+      analysis = { paused: false, records: [],
+        pause() { this.paused = true; callbacks.state(); }, resume() { this.paused = false; callbacks.state(); }, close() {},
+        at: () => analysis.records[0],
+        async run() {
+          detectCalls++;
+          const result = await (detector ? detector() : new Promise(() => {}));
+          this.records.push(result);
+          callbacks.frame(result, { width: 1280, height: 720 }, result.t);
+        },
+        complete() { callbacks.complete(this.records); },
+      };
+      return analysis;
+    } },
     CourtLens: class { clear() {} setGeometry() {} resize() {} setFrame() {} readColors() {} },
     CV: { dispatch: msg => messages.push(msg), selectView() {}, reconnect() {}, toast() {}, courtGeometry: () => ({}),
       S: { court: {}, events: new Map() }, api: async (path, body) => { requests.push({ path, body }); return apiData; } },
@@ -44,13 +58,14 @@ function harness(detector, duration = 30) {
     document: { hidden: false, body: { dataset: {} }, getElementById: element, createElement: tag => element(`new-${tag}-${++serial}`),
       querySelector: element, querySelectorAll: () => [] },
     URL: { createObjectURL: obj => { const url = `blob:${++serial}`; blobs.set(url, obj); return url; }, revokeObjectURL: url => revoked.push(url) },
-    Blob, performance: { now: () => now },
+    Blob, AbortController, performance: { now: () => now },
     setTimeout: (fn, ms) => { const id = ++serial; timers.set(id, { fn, at: now + ms }); return id; }, clearTimeout: id => timers.delete(id),
   });
   const visitor = window.CVVisitor;
   visitor.workspaceUpdate(apiData);
   return { visitor, element, requests, messages, revoked, blobs,
     get rendered() { return rendered; }, get detectCalls() { return detectCalls; },
+    get analysis() { return analysis; },
     async advance(ms) { now += ms; for (const [id, task] of [...timers]) if (task.at <= now) { timers.delete(id); task.fn(); } await settle(); },
   };
 }
@@ -130,22 +145,28 @@ test("in-flight detections from a closed video cannot enter the next video's res
   await h.advance(200);
   assert.equal(h.detectCalls, 1);
   await h.visitor.openFile({ name: "Second.mp4" });
-  resolveDetection([{ class: "person", score: .9, bbox: [10, 10, 30, 40] }]); await settle();
+  resolveDetection({ t: 0, detections: [{ id: "old-track", class: "person", confidence: .9, bbox: [10, 10, 30, 40] }] }); await settle();
   assert.equal(h.element("local-samples").textContent, 0);
   assert.equal(h.rendered.vision, null);
 });
 
-test("seeking invalidates an in-flight detection and the next frame can be analysed", async () => {
+test("analysis pause controls the ordered processor; replay seeking uses recorded tracks", async () => {
   let resolveDetection;
   const h = harness(() => new Promise(resolve => { resolveDetection = resolve; }));
   await h.visitor.openFile({ name: "Game.mp4" }); h.element("local-video").emit("loadedmetadata"); await settle();
-  await h.advance(200); h.element("local-video").emit("seeking");
-  resolveDetection([{ class: "person", score: .9, bbox: [10, 10, 30, 40] }]); await settle();
-  assert.equal(h.element("local-samples").textContent, 0);
-  h.element("local-video").currentTime = 5;
-  await h.advance(200);
-  assert.equal(h.detectCalls, 2);
-  resolveDetection([{ class: "person", score: .9, bbox: [10, 10, 30, 40] }]); await settle();
+  await h.visitor.togglePlay();
+  assert.equal(h.analysis.paused, true);
+  await h.visitor.togglePlay();
+  assert.equal(h.analysis.paused, false);
+  resolveDetection({ t: 5, detections: [{ id: "home-t1", class: "person", confidence: .9, bbox: [10, 10, 30, 40] }] }); await settle();
   assert.equal(h.element("local-samples").textContent, 1);
   assert.equal(h.rendered.vision.people, 1);
+  h.analysis.complete();
+  h.element("local-video").currentTime = 5;
+  h.element("local-video").emit("seeked");
+  assert.equal(h.rendered.vision.tracks[0].id, "home-t1");
+  assert.equal(h.detectCalls, 1);
+  h.element("local-video").currentTime = 10;
+  h.element("local-video").emit("seeked");
+  assert.equal(h.rendered.vision.people, 0); // no stale boxes on a different source frame
 });

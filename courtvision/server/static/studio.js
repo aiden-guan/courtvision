@@ -306,7 +306,7 @@
                         "studio-calibrate", "pre-stride", "pre-action", "poss-watch"]) if ($(id)) $(id).hidden = true;
       for (const id of ["tab-operator", "tab-calibration", "tab-roi", "tab-lab", "btn-add-event", "ask-open", "board-ask"]) if ($(id)) $(id).hidden = true;
       text("studio-cloud", "On-device analysis · No video uploads");
-      text("studio-model-note", "Uses the existing NBA-trained model. First use downloads about 75 MB. Clips must be 30 seconds or shorter; MP4 (H.264) or WebM recommended. Nothing is uploaded.");
+      text("studio-model-note", "Uses the existing NBA model and local vision pipeline. First use downloads the model and Python runtime. Analysis can take a few minutes. Up to 30 seconds; nothing is uploaded.");
     }
   }
   function renderRecent(data) {

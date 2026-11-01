@@ -1,6 +1,6 @@
 /* Public-site sessions. Video bytes are only read by a blob URL and a local canvas.
  * The server's shared simulator is buffered per viewer; it never controls another visitor's playback.
- * Browser detection is deliberately image-space only: no invented game stats or court coordinates. */
+ * Original Python perception runs in the worker; overlays replay recorded results on their source frames. */
 (() => {
   "use strict";
   const $ = id => document.getElementById(id);
@@ -8,15 +8,13 @@
   const cv = () => window.CV;
   const video = () => $("local-video");
   const text = (id, value) => { $(id).textContent = value; };
-  let enabled = false, base = null, view = null, mode = "idle", epoch = 0, sampleEpoch = 0;
+  let enabled = false, base = null, view = null, mode = "idle", epoch = 0;
   let url = null, model = null, modelPromise = null, detectorState = "idle", detectorError = "";
   let lens = null, demoPaused = false, delay = 0, pausedAt = 0, buffer = [], bufferTimer = 0;
-  let sampleTimer = 0, inferenceBusy = false, lastSample = -1, nextTrack = 1, tracks = [];
+  let modelController = null;
   let samples = [], totalSamples = 0, peak = 0, ballSamples = 0, lastBoxes = [];
   let autoPlayPending = false;
-  let frameHistory = [], captureHandle = 0, choice = 0;
-  const MAX_SAMPLES = 3600; // bounded exports, including for multi-hour recordings
-  const input = document.createElement("canvas");
+  let captureHandle = 0, choice = 0, clip = null, analysing = false, analysisT = 0, highlight = "";
 
   function render() {
     if (!view) return;
@@ -24,7 +22,8 @@
     document.body.dataset.visitor = mode;
     $("local-summary").hidden = mode !== "video";
     $("demo-canvas").hidden = mode !== "demo";
-    $("local-video").hidden = mode !== "video";
+    $("local-video").hidden = mode !== "video" || analysing;
+    $("local-analysis-frame").hidden = mode !== "video" || !analysing;
     $("local-overlay").hidden = mode !== "video" || !$("studio-overlay").checked;
     if (mode !== "idle") { $("studio-frame").hidden = true; $("studio-loading").hidden = true; }
     $("studio-speed").hidden = mode !== "video";
@@ -32,10 +31,21 @@
     if (mode === "video") {
       text("monitor-badge", "ON-DEVICE DETECTION");
       text("monitor-source", "Stays on your device");
-      text("studio-session-label", video().ended ? "Video ended" : video().paused ? "Paused" : "Analysing locally");
-      text("studio-throughput", detectorState === "ready" ? "On-device detection" : detectorState === "loading" ? "Loading detector…" : "Video preview");
+      text("studio-session-label", analysing ? (clip?.paused ? "Analysis paused" : "Analysing locally") : video().ended ? "Video ended" : video().paused ? "Paused" : "Replay");
+      text("studio-throughput", analysing ? "30 fps · local pipeline" : detectorState === "ready" ? "Recorded analysis" : detectorState === "loading" ? "Loading detector…" : "Video preview");
+      video().controls = !analysing && detectorState !== "loading";
       $("studio-play").setAttribute("aria-label", video().ended ? "Replay video" : video().paused ? "Play video" : "Pause video");
-      text("vision-court", "Image-space only");
+      text("vision-court", view.vision?.calibrated ? "Mapped locally" : "Image-space tracking");
+      if (analysing) {
+        const paused = !!clip?.paused;
+        $("studio-play").dataset.state = paused ? "play" : "pause";
+        $("studio-play").dataset.label = paused ? "Resume" : "Pause";
+        $("studio-play").setAttribute("aria-label", paused ? "Resume analysis" : "Pause analysis");
+      }
+      $("studio-play").disabled = detectorState === "loading";
+      $("studio-speed").disabled = analysing || detectorState === "loading";
+      text("track-instruction", "Select a track to highlight it in the feed.");
+      text("track-foot-note", "Original local tracking · provisional identities");
     }
     text("sys-detector-label", mode === "video" ? detectorState === "ready" ? "NBA model ready" : detectorState === "error" ? "NBA model unavailable" : "Loading NBA model…" : "NBA model · loads on demand");
   }
@@ -78,15 +88,20 @@
   }
 
   function clearSession() {
-    epoch++; sampleEpoch++; choice++; autoPlayPending = false;
+    epoch++; choice++; autoPlayPending = false;
     if (captureHandle && video().cancelVideoFrameCallback) video().cancelVideoFrameCallback(captureHandle);
-    captureHandle = 0; frameHistory = [];
-    clearTimeout(bufferTimer); clearTimeout(sampleTimer);
+    captureHandle = 0;
+    clip?.close(); clip = null;
+    if (analysing || detectorState === "loading") {
+      modelController?.abort(); model?.dispose?.(); model = null; modelPromise = null; detectorState = "idle";
+    }
+    analysing = false; analysisT = 0; highlight = "";
+    clearTimeout(bufferTimer);
     buffer = []; delay = 0; demoPaused = false;
     video().pause(); video().removeAttribute("src"); video().load();
     if (url) URL.revokeObjectURL(url);
     url = null; mode = "idle";
-    tracks = []; nextTrack = 1; lastSample = -1; lastBoxes = [];
+    lastBoxes = [];
     samples = []; totalSamples = 0; peak = 0; ballSamples = 0;
     if (lens) lens.clear();
     cv().dispatch({ type: "reset", t: 0 });
@@ -163,6 +178,10 @@
 
   async function control(action, value) {
     if (mode === "video") {
+      if (analysing && (action === "pause" || action === "resume")) {
+        if (action === "pause") clip.pause(); else clip.resume();
+        localStatus(); return true;
+      }
       if (action === "pause") video().pause();
       else if (action === "resume") { try { await video().play(); } catch { cv().toast("Press play on the video to continue."); } }
       else if (action === "speed") video().playbackRate = value;
@@ -184,14 +203,22 @@
   async function togglePlay() {
     if (mode === "demo" && view?.status?.finished) return startDemo();
     if (mode === "video" && video().ended) video().currentTime = 0;
-    return control((mode === "demo" ? demoPaused : video().paused) ? "resume" : "pause");
+    return control((mode === "demo" ? demoPaused : analysing ? clip?.paused : video().paused) ? "resume" : "pause");
   }
 
   async function loadDetector() {
     if (model) return model;
-    if (!modelPromise) modelPromise = window.CVNBA.load();
-    try { model = await modelPromise; return model; }
-    finally { modelPromise = null; }
+    if (!modelPromise) {
+      modelController = new AbortController();
+      const generation = epoch;
+      modelPromise = window.CVNBA.load({ signal: modelController.signal, progress: message => {
+        if (generation === epoch && mode === "video") text("local-analysis-note", message);
+      } });
+    }
+    const pending = modelPromise;
+    const ready = await pending;
+    if (modelPromise === pending) { model = ready; modelPromise = null; }
+    return ready;
   }
 
   async function prepareDetector() {
@@ -203,15 +230,13 @@
       await loadDetector();
       if (generation !== epoch || mode !== "video") return;
       detectorState = "ready";
-      text("local-analysis-note", "NBA-trained model active. Play or seek to inspect your clip; pause to review detections.");
-      render(); scheduleSample();
-      if (autoPlayPending) {
-        autoPlayPending = false;
-        video().play().catch(() => { text("local-analysis-note", "Detector ready. Press play to analyse your video on this device."); });
-      }
+      text("local-analysis-note", "Preparing the original local analysis pipeline…");
+      render();
+      if (autoPlayPending) { autoPlayPending = false; startAnalysis(); }
     } catch (error) {
       if (generation !== epoch || mode !== "video") return;
       detectorState = "error"; detectorError = error.message;
+      modelPromise = null;
       console.error("NBA detector initialization failed", error);
       text("local-analysis-note", "Detector unavailable. You can still watch your video. Check your connection and retry.");
       $("local-retry").hidden = false; render();
@@ -275,127 +300,123 @@
 
   function localStatus() {
     if (mode !== "video" || !view?.active) return;
-    view.status = { t: video().currentTime, paused: video().paused, finished: video().ended,
+    view.status = { t: analysing ? analysisT : video().currentTime,
+      paused: analysing ? !!clip?.paused : video().paused, finished: !analysing && video().ended,
       speed: video().playbackRate, muted: video().muted };
     cv().dispatch({ type: "status", ...view.status });
     render();
   }
 
-  function overlap(a, b) {
-    const [x, y, w, h] = a, [xx, yy, ww, hh] = b;
-    const area = Math.max(0, Math.min(x + w, xx + ww) - Math.max(x, xx)) * Math.max(0, Math.min(y + h, yy + hh) - Math.max(y, yy));
-    return area / Math.max(1, w * h + ww * hh - area);
-  }
-
-  function associate(predictions, t) {
-    const available = tracks.filter(track => Math.abs(t - track.t) < 1.5);
-    const next = predictions.filter(p => p.class === "person" || p.class === "sports ball").map(p => {
-      let match = null, best = 0.2;
-      for (const track of available) {
-        const score = track.class === p.class ? overlap(track.bbox, p.bbox) : 0;
-        if (score > best) { match = track; best = score; }
-      }
-      if (match) available.splice(available.indexOf(match), 1);
-      return { id: match?.id || `${p.class === "person" ? "Person" : "Ball"} ${nextTrack++}`, class: p.class,
-        bbox: p.bbox, confidence: p.score, t };
-    });
-    tracks = next;
-    return next;
-  }
-
   function drawOverlay() {
     const canvas = $("local-overlay"), v = video();
     if (mode !== "video" || !v.videoWidth) return;
-    // The canvas has the same intrinsic aspect ratio and object-fit as the video, including portrait clips.
     canvas.width = v.videoWidth; canvas.height = v.videoHeight;
-    const ctx = canvas.getContext("2d"), scale = 1 / Math.min(960 / v.videoWidth, 544 / v.videoHeight);
-    ctx.lineWidth = Math.max(2, v.videoWidth / 500);
-    ctx.font = `${Math.max(14, v.videoWidth / 65)}px sans-serif`;
+    const ctx = canvas.getContext("2d"), scale = Math.max(1, v.videoWidth / 1440);
+    ctx.lineWidth = 2 * scale;
+    ctx.font = `${14 * scale}px sans-serif`;
     for (const box of lastBoxes) {
-      const [x, y, w, h] = box.bbox.map(n => n * scale);
-      ctx.strokeStyle = box.class === "person" ? "#74b5ff" : "#ffb65c";
-      ctx.fillStyle = ctx.strokeStyle;
-      ctx.strokeRect(x, y, w, h);
-      const label = `${box.id} · ${Math.round(box.confidence * 100)}%`;
-      const textY = Math.max(18, y - 5);
-      ctx.fillStyle = "rgba(0,0,0,.8)";
-      ctx.fillRect(x, textY - Math.max(16, v.videoWidth / 60), ctx.measureText(label).width + 8, Math.max(20, v.videoWidth / 50));
-      ctx.fillStyle = ctx.strokeStyle; ctx.fillText(label, x + 4, textY);
+      const [bx,by,bw,bh] = box.bbox;
+      const x = Math.max(0,Math.min(v.videoWidth-1,bx)), y = Math.max(0,Math.min(v.videoHeight-1,by));
+      const w = Math.max(0,Math.min(v.videoWidth-1,bx+bw))-x, h = Math.max(0,Math.min(v.videoHeight-1,by+bh))-y;
+      if (w <= 0 || h <= 0) continue;
+      const ball = box.class === "sports ball", muted = highlight && highlight !== box.id && !ball;
+      ctx.lineWidth = (highlight === box.id ? 3 : 2) * scale;
+      ctx.strokeStyle = muted ? "#6a706e" : ball ? "#f8e069" : box.team === "home" ? "#78bbed" : box.team === "away" ? "#f6bf75" : "#d1eb97";
+      if (ball) {
+        const cx = x+w/2, cy = y+h/2;
+        ctx.beginPath(); ctx.arc(cx,cy,Math.max(9*scale,w/2+4*scale),0,Math.PI*2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx-4*scale,cy); ctx.lineTo(cx+4*scale,cy); ctx.moveTo(cx,cy-4*scale); ctx.lineTo(cx,cy+4*scale); ctx.stroke();
+        continue;
+      }
+      const len = Math.max(3, Math.min(20*scale,w/3,h/4));
+      for (const [xx,dx] of [[x,1],[x+w,-1]]) for (const [yy,dy] of [[y,1],[y+h,-1]]) {
+        ctx.beginPath(); ctx.moveTo(xx,yy+dy*len); ctx.lineTo(xx,yy); ctx.lineTo(xx+dx*len,yy); ctx.stroke();
+      }
+      if (muted) continue;
+      ctx.beginPath(); ctx.ellipse(x+w/2,y+h,Math.max(6*scale,w/3),4*scale,0,0,Math.PI*2); ctx.stroke();
+      const label = `${box.id}${Number.isFinite(box.confidence) ? ` / ${Math.round(box.confidence*100)}%` : ""}`;
+      const tw = ctx.measureText(label).width + 12*scale, xx = Math.max(0,Math.min(x,v.videoWidth-tw));
+      const yy = Math.max(24*scale,y-5*scale);
+      ctx.fillStyle = "#181e1b"; ctx.fillRect(xx,yy-22*scale,tw,24*scale);
+      ctx.fillStyle = ctx.strokeStyle; ctx.fillText(label,xx+6*scale,yy-5*scale);
     }
   }
 
-  function scheduleSample() {
-    clearTimeout(sampleTimer);
-    if (mode === "video" && detectorState === "ready") sampleTimer = setTimeout(sample, 200);
+  function showFrame(result) {
+    lastBoxes = result?.detections || [];
+    const people = lastBoxes.filter(p => p.class === "person"), ball = lastBoxes.some(p => p.class === "sports ball");
+    view.vision = { people: people.length, ball_visible: ball, calibrated: !!result?.calibrated,
+      gate: result?.gate, tracks: people };
+    drawOverlay();
   }
 
-  function captureFrame(t = video().currentTime) {
-    const v = video();
-    if (mode !== "video" || v.readyState < 2 || v.seeking || !v.videoWidth) return;
-    const scale = Math.min(960 / v.videoWidth, 544 / v.videoHeight);
-    if (input.width !== 960 || input.height !== 544) { input.width = 960; input.height = 544; }
-    const ctx = input.getContext("2d", { willReadFrequently: true });
-    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 960, 544);
-    ctx.drawImage(v, 0, 0, Math.round(v.videoWidth * scale), Math.round(v.videoHeight * scale));
-    frameHistory.push({ t, rgba: ctx.getImageData(0, 0, 960, 544).data });
-    if (frameHistory.length > 12) frameHistory.shift();
+  function replayFrame(t = video().currentTime) {
+    if (mode !== "video" || analysing) return;
+    const record = clip?.at(t);
+    showFrame(record && Math.abs(record.t-t) < .075 ? record : null);
+    localStatus();
   }
 
-  function captureLoop() {
-    if (mode !== "video" || !video().requestVideoFrameCallback) return;
-    captureHandle = video().requestVideoFrameCallback((_, metadata) => {
-      if (!document.hidden) captureFrame(metadata.mediaTime);
-      captureLoop();
+  function replayLoop() {
+    if (mode !== "video" || analysing || !video().requestVideoFrameCallback) return;
+    captureHandle = video().requestVideoFrameCallback((_, metadata) => { replayFrame(metadata.mediaTime); replayLoop(); });
+  }
+
+  function startAnalysis() {
+    const generation = epoch;
+    video().pause();
+    analysing = true; analysisT = 0; samples = []; totalSamples = 0; peak = 0; ballSamples = 0;
+    clip?.close();
+    clip = window.CVNBAClip.create(video(), model, {
+      state: () => { if (generation === epoch) localStatus(); },
+      phase: message => { if (generation === epoch) text("local-analysis-note", message); },
+      preview: pixels => {
+        if (generation !== epoch) return;
+        const canvas = $("local-analysis-frame");
+        canvas.width = pixels.width; canvas.height = pixels.height;
+        canvas.getContext("2d").putImageData(pixels,0,0);
+      },
+      frame: (result, pixels, through) => {
+        if (generation !== epoch) return;
+        const canvas = $("local-analysis-frame");
+        canvas.width = pixels.width; canvas.height = pixels.height;
+        canvas.getContext("2d").putImageData(pixels,0,0);
+        analysisT = through; showFrame(result);
+        const people = lastBoxes.filter(p => p.class === "person").length, ball = lastBoxes.some(p => p.class === "sports ball");
+        samples.push({ ...result, people, ball_visible: ball });
+        totalSamples++; peak = Math.max(peak,people); if (ball) ballSamples++;
+        text("local-samples",totalSamples); text("local-peak",peak); text("local-ball",ballSamples);
+        localStatus();
+      },
+      complete: () => {
+        if (generation !== epoch) return;
+        analysing = false;
+        text("local-analysis-note", "Analysis complete. Playback uses the original pipeline’s recorded frame-by-frame results.");
+        video().currentTime = 0; replayFrame(0); replayLoop();
+        video().play().catch(() => { text("local-analysis-note", "Analysis complete. Press play to view the recorded results."); });
+      },
+      error: error => {
+        if (generation !== epoch) return;
+        analysing = false; lastBoxes = []; drawOverlay();
+        detectorState = "error"; detectorError = error.message;
+        console.error("Original NBA pipeline failed", error);
+        text("local-analysis-note", "Analysis stopped on this device. Retry the analysis or choose another clip.");
+        $("local-retry").hidden = false; localStatus();
+      },
     });
-  }
-
-  async function sample() {
-    if (mode !== "video" || detectorState !== "ready") return;
-    const v = video(), generation = epoch, seek = sampleEpoch;
-    if (inferenceBusy || document.hidden || v.readyState < 2 || v.seeking ||
-        (v.paused && Math.abs(lastSample - v.currentTime) < 0.15)) { scheduleSample(); return; }
-    if (!v.requestVideoFrameCallback || !frameHistory.length || v.paused) captureFrame();
-    const latest = frameHistory.at(-1), t = latest?.t ?? v.currentTime;
-    if (!latest || Math.abs(lastSample - t) < 0.15) { scheduleSample(); return; }
-    inferenceBusy = true;
-    try {
-      const scale = Math.min(960 / v.videoWidth, 544 / v.videoHeight);
-      const start = performance.now();
-      const predictions = await model.detect(window.CVNBACore.history(frameHistory, t), Math.round(v.videoHeight * scale));
-      if (generation !== epoch || seek !== sampleEpoch || mode !== "video") return;
-      const elapsed = performance.now() - start;
-      lastSample = t;
-      lastBoxes = associate(predictions, t);
-      const people = lastBoxes.filter(p => p.class === "person"), ball = lastBoxes.some(p => p.class === "sports ball");
-      const entry = { t, people: people.length, ball_visible: ball, detections: lastBoxes.map(({ t: _, ...box }) => ({
-        ...box, bbox: box.bbox.map(n => n / scale),
-      })) };
-      samples.push(entry); if (samples.length > MAX_SAMPLES) samples.shift();
-      totalSamples++; peak = Math.max(peak, people.length); if (ball) ballSamples++;
-      text("local-samples", totalSamples); text("local-peak", peak); text("local-ball", ballSamples);
-      view.vision = { people: people.length, ball_visible: ball, calibrated: false, fps: 1000 / Math.max(1, elapsed),
-        inference_ms: elapsed, tracks: people };
-      studio().receiveVision(view.vision);
-      text("track-instruction", "People detected in the image. Track numbers are provisional.");
-      text("track-foot-note", "On-device detection · no identity or team assignment");
-      for (const row of $("track-list").children) row.disabled = true;
-      drawOverlay(); localStatus();
-    } catch (error) {
-      if (generation !== epoch || mode !== "video") return;
-      detectorState = "error"; detectorError = error.message;
-      console.error("NBA detector inference failed", error);
-      text("local-analysis-note", "Detection stopped on this device. Video playback still works. Try the detector again.");
-      $("local-retry").hidden = false; render();
-    } finally { inferenceBusy = false; scheduleSample(); }
+    localStatus(); clip.run();
   }
 
   function exportJson() {
     if (mode === "idle") return;
     const data = mode === "video" ? {
-      source: "on-device-browser-detection", video: view.active, detector: "NBA-trained BallPersonNet (original weights)",
-      summary: { frames_sampled: totalSamples, peak_people: peak, ball_detections: ballSamples },
+      source: "on-device-browser-detection", video: view.active, detector: "NBA-trained BallPersonNet + original Python perception pipeline",
+      summary: { frames_analysed: totalSamples, peak_people: peak, ball_detections: ballSamples },
       checkpoint_sha256: model?.checkpoint, backend: model?.backend,
-      coordinates: "Source video pixels: [x, y, width, height]", retained_sample_limit: MAX_SAMPLES,
+      backend_reference_checked: !!model?.validated,
+      pipeline: "Original Python preprocessing, court registration, ByteTrack and BallTracker",
+      pipeline_sha256: model?.source, analysis_fps: 29.97,
+      coordinates: "Source video pixels: [x, y, width, height]",
       samples, error: detectorError || null,
     } : { source: "synthetic-demo", meta: cv().S.meta, frame: cv().S.frame, stats: cv().S.stats,
       events: [...cv().S.events.values()] };
@@ -414,24 +435,29 @@
     if (video().duration > 30) { clearSession(); studio().openDialog(); text("studio-upload-status", "Clips must be 30 seconds or shorter."); return; }
     Object.assign(view.active, { duration_s: video().duration, width: video().videoWidth, height: video().videoHeight });
     cv().dispatch({ type: "meta", t: 0, teams: { home: "Home", away: "Away" }, roster: [], court: {}, rules: null });
-    localStatus(); captureLoop(); prepareDetector();
+    localStatus(); prepareDetector();
   });
   for (const name of ["play", "pause", "ended", "timeupdate", "ratechange", "volumechange"]) video().addEventListener(name, localStatus);
-  video().addEventListener("play", () => { autoPlayPending = false; });
   video().addEventListener("seeking", () => {
-    sampleEpoch++; tracks = []; lastBoxes = []; lastSample = -1; frameHistory = []; drawOverlay();
+    if (!analysing) replayFrame();
   });
-  video().addEventListener("seeked", scheduleSample);
+  video().addEventListener("seeked", () => { if (!analysing) replayFrame(); });
   video().addEventListener("error", () => {
     if (mode !== "video") return;
-    sampleEpoch++; clearTimeout(sampleTimer);
     text("local-analysis-note", "This browser cannot decode this video. Try MP4 (H.264) or WebM, or choose a different clip.");
     cv().toast("Video could not open. Try an MP4 (H.264) or WebM clip.", "error");
   });
-  $("local-retry").addEventListener("click", () => { lastSample = -1; prepareDetector(); });
+  $("local-retry").addEventListener("click", () => {
+    video().pause();
+    clip?.close(); modelController?.abort(); model?.dispose?.(); model = null; modelPromise = null;
+    analysing = false;
+    autoPlayPending = true; prepareDetector();
+  });
+  window.addEventListener("cv-focus", event => { highlight = event.detail.id || ""; drawOverlay(); });
+  video().addEventListener("timeupdate", () => { if (!analysing && !video().requestVideoFrameCallback) replayFrame(); });
   $("studio-dialog").addEventListener("close", () => { choice++; });
   $("studio-overlay").addEventListener("change", () => { if (enabled) render(); });
-  window.addEventListener("pagehide", () => { clearTimeout(sampleTimer); clearTimeout(bufferTimer); video().pause(); if (url) URL.revokeObjectURL(url); });
+  window.addEventListener("pagehide", () => { clip?.close(); clearTimeout(bufferTimer); video().pause(); if (url) URL.revokeObjectURL(url); });
   window.CVVisitor = { get enabled() { return enabled; }, get mode() { return mode; },
     workspaceUpdate, receive, control, startDemo, togglePlay, openFile, exit, exportJson };
 })();

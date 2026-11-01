@@ -13,40 +13,77 @@ showcase with private, on-device video detection (`courtvision studio --public-d
 - Choose a local video **up to 30 seconds**, play, pause, seek, change speed, and inspect
   people/ball detections from the **existing NBA-trained BallPersonNet**. Video metadata is
   checked before loading the model; longer, unreadable or unsupported clips are rejected.
-  The file is opened through a blob URL. Pixels are processed in a browser worker using
-  ONNX Runtime Web, with WebGPU when available and a WebAssembly CPU fallback. Neither
-  footage nor detections are uploaded. MP4 (H.264) and WebM are recommended.
-- Export sampled browser detections as JSON, including the source-checkpoint SHA-256,
-  backend, source-video pixel boxes, and summary counts. Detection runs while viewing;
-  seeking skips intervening frames. Exports retain the latest 3,600 sampled frames.
+  The file is opened through a blob URL and analysed in order before playback. A browser
+  worker runs the original Python vision pipeline and ONNX Runtime Web. Neither footage
+  nor detections are uploaded. MP4 (H.264) and WebM are recommended.
+- Export recorded browser detections as JSON, including the source-checkpoint and Python
+  bundle SHA-256 hashes, backend, source-video pixel boxes, timestamps and summary counts.
 
 Server writes remain refused with 403: uploads, server detector setup, shared game controls,
 manual events, calibration, scoreboard setup, the video library, replays, the model lab and
-Ask. Browser inference uses no API keys. Teams, identities, scoring and court mapping still
-use the full desktop pipeline, available through `courtvision studio --open`.
+Ask. Browser inference uses no API keys. Scoring, roster identities and game statistics
+remain desktop features, available through `courtvision studio --open`.
 
-## The same NBA-trained model, exported for the browser
+## The original NBA model and Python vision pipeline in the browser
 
 `static/nba-student.onnx` is an fp32 ONNX export of `runs/studio/models/nba-student.pt`.
-There is no retraining, replacement detector or quantization. The model keeps its 960×544
-input, three RGB frames approximately 33 ms apart, ImageNet normalization, five output
-heads and desktop thresholds (ball .08, person .3). The browser retains decoded frame history
-and runs inference in a worker so controls stay responsive. Seeking resets temporal history,
-as it does in the desktop detector.
+There is no retraining, replacement detector or quantization. ONNX Runtime Web runs the
+neural forward pass on WebGPU, with WASM as a fallback. It uses the pinned 1.31.1 JSEP
+bundle: the native WebGPU bundle gave incorrect outputs in matched-frame testing.
+Before accepting a backend, the worker runs a deterministic input against 640 CPU reference
+probes in `nba-validation.json`. A GPU failure falls back to CPU; a CPU mismatch stops
+analysis. This checks numerical behavior as well as downloaded weight hashes.
 
-`static/nba-student.json` records checkpoint/export SHA-256 hashes and numerical parity checks
-on the Lakers–Warriors NBA clip. To reproduce the export (requires torch, torchvision, onnx
-and onnxruntime):
+Pyodide runs the **original Python modules** for OpenCV area resizing and normalization,
+three-frame history, decoding, automatic court registration, box correction, ByteTrack,
+team clustering and single-ball tracking. `courtvision/browser/runtime.py` adapts the
+asynchronous forward pass; it does not replace those algorithms with JavaScript versions.
+`python -m courtvision.browser.build` packages the current sources into `browser-python.zip`
+and records every source hash in `browser-python.json`. The Docker build regenerates it.
+The worker verifies both the ONNX and Python bundle hashes before running them.
+
+The browser checks the 30-second duration limit before loading the model. It advances a
+paused decoder in source order at approximately 30 analysis frames per second, retains
+results for the clip, then replays them against their recorded timestamps. During analysis,
+the displayed frame is the exact pixel snapshot sent to inference. Pause suspends further
+frames; Close terminates an active worker and releases the video. Seeking during replay
+reads recorded results instead of starting a new detector history. Footage never leaves the
+device. Camera registration and analysis can take several minutes, depending on the device.
+If no camera can be registered, the same original image-space trackers provide a preview;
+the interface reports that the court is not mapped. Track IDs and team groups are provisional.
+
+`static/nba-student.json` records checkpoint/export SHA-256 hashes and raw neural output
+checks. Reproduce the export with torch, torchvision, onnx and onnxruntime installed:
 
 ```sh
-python tools/export_student_browser.py --video runs/nba/2024-12-25-LAL-GSW/videos/full_981-1001.mp4
+python tools/export_student_browser.py --video /path/to/clean-nba-clip.mp4
+python -m courtvision.browser.build
 ```
 
-ONNX Runtime Web 1.31.1 is vendored from its npm package, with its MIT licence. The worker
-and model are served from this site; no third-party model download is used. First use loads
-about 75 MB of model/runtime assets, which the browser can cache. The worker verifies the
-model's SHA-256 before inference. CSP allows same-origin workers, blob video, and WASM
-compilation (`wasm-unsafe-eval`); it does not allow JavaScript `unsafe-eval` or inline scripts.
+ONNX Runtime Web 1.31.1 is vendored with its MIT licence. The Python runtime and its numpy,
+scipy and OpenCV packages load from the official pinned Pyodide 314.0.7 distribution on
+jsDelivr. The first visit downloads these assets as well as the 47 MB NBA model; later
+visits can use the browser cache. The CDN receives runtime downloads, never video frames.
+CSP permits this pinned runtime path, same-origin workers, blob video and WASM compilation
+(`wasm-unsafe-eval`); it does not permit JavaScript `unsafe-eval` or inline scripts.
+
+The browser does not run the desktop scorebug OCR, shot models, event/statistics engine,
+roster identification or narration. Those remain desktop features; no synthetic game
+statistics are presented as video analysis.
+
+### Browser verification
+
+On the clean 1080p Lakers–Warriors source, a matched-pixel 12-frame comparison against
+the original CPU desktop pipeline preserved every detection count, track ID and team group.
+Maximum confidence difference was 0.00000066; maximum box-coordinate difference was
+1.59 source pixels (median 0.12 pixels). The neural input tensor was byte-identical and
+WebGPU raw outputs differed by at most 0.000011 from CPU ONNX outputs. The replaced native
+WebGPU bundle differed by up to 9.97 on the same ball logits despite identical input.
+
+An 8.008-second clean NBA clip completed all 240 ordered analysis frames in the browser,
+with a single ball identity, pause/resume and timestamped replay. A readable 31-second
+clip was rejected before model loading. These checks verify the browser implementation;
+they do not establish detection accuracy on arbitrary broadcasts.
 
 ## No API keys: the local engine only
 

@@ -10,19 +10,19 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308090a'/%3E%3Cpath d='M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5' fill='none' stroke='%23edeef0' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='3.8' fill='%23ff7a2f'/%3E%3C/svg%3E">
   <link rel="preload" href="static/archivo.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="static/ibm-plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="static/styles.css?v=20261031-nba1">
-  <script src="static/lens.js?v=20261031-nba1" defer></script>
-  <script src="static/app.js?v=20261031-nba1" defer></script>
-  <script src="static/studio.js?v=20261031-nba1" defer></script>
-  <script src="static/nba-core.js?v=20261031-nba1" defer></script>
-  <script src="static/nba-browser.js?v=20261031-nba1" defer></script>
-  <script src="static/visitor.js?v=20261031-nba1" defer></script>
-  <script src="static/playback.js?v=20261031-nba1" defer></script>
-  <script src="static/possession.js?v=20261031-nba1" defer></script>
-  <script src="static/replay.js?v=20261031-nba1" defer></script>
-  <script src="static/genui.js?v=20261031-nba1" defer></script>
-  <script src="static/lab.js?v=20261031-nba1" defer></script>
-  <script src="static/shell.js?v=20261031-nba1" defer></script>
+  <link rel="stylesheet" href="static/styles.css?v=20261031-pipeline2">
+  <script src="static/lens.js?v=20261031-pipeline2" defer></script>
+  <script src="static/app.js?v=20261031-pipeline2" defer></script>
+  <script src="static/studio.js?v=20261031-pipeline2" defer></script>
+  <script src="static/nba-browser.js?v=20261031-pipeline2" defer></script>
+  <script src="static/nba-clip.js?v=20261031-pipeline2" defer></script>
+  <script src="static/visitor.js?v=20261031-pipeline2" defer></script>
+  <script src="static/playback.js?v=20261031-pipeline2" defer></script>
+  <script src="static/possession.js?v=20261031-pipeline2" defer></script>
+  <script src="static/replay.js?v=20261031-pipeline2" defer></script>
+  <script src="static/genui.js?v=20261031-pipeline2" defer></script>
+  <script src="static/lab.js?v=20261031-pipeline2" defer></script>
+  <script src="static/shell.js?v=20261031-pipeline2" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -150,6 +150,7 @@
                 <img id="studio-frame" alt="Current processed game frame with player and ball tracking" hidden>
                 <canvas id="demo-canvas" aria-label="Simulated basketball game" hidden></canvas>
                 <video id="local-video" playsinline preload="metadata" controls hidden aria-label="Your video, analysed on this device"></video>
+                <canvas id="local-analysis-frame" aria-label="Current analysed frame" hidden></canvas>
                 <canvas id="local-overlay" aria-hidden="true" hidden></canvas>
                 <video id="watch-video" playsinline preload="metadata" controls controlslist="nofullscreen noremoteplayback" disablepictureinpicture hidden></video>
                 <canvas id="replay-canvas" aria-hidden="true" hidden></canvas>
@@ -221,8 +222,8 @@
 
             <section class="local-summary device" id="local-summary" aria-labelledby="local-summary-title" hidden>
               <div class="local-summary-head"><div><h2 id="local-summary-title">On-device analysis</h2><p id="local-analysis-note" role="status">Preparing your video…</p></div><button type="button" class="btn btn-sm" id="local-retry" hidden>Retry detector</button></div>
-              <div class="local-metrics"><div><strong id="local-samples">0</strong><span>Frames sampled</span></div><div><strong id="local-peak">—</strong><span>Most people in view</span></div><div><strong id="local-ball">0</strong><span>Ball detections</span></div></div>
-              <p class="hint">The NBA-trained model detects people and the ball. Teams, identities, scoring and court positions need the full desktop pipeline. Export saves detections, not your video.</p>
+              <div class="local-metrics"><div><strong id="local-samples">0</strong><span>Frames analysed</span></div><div><strong id="local-peak">—</strong><span>Most people in view</span></div><div><strong id="local-ball">0</strong><span>Ball detections</span></div></div>
+              <p class="hint">The original local pipeline tracks people and one ball, and maps the court when it can. Track IDs and team groups are provisional. Export saves results, not your video.</p>
             </section>
 
             <div class="vision-strip" role="group" aria-label="Tracking status">

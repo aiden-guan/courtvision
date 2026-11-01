@@ -624,7 +624,7 @@
     const st = window.CVStudio || {}, ws = st.workspace, status = st.status || {}, vision = st.vision || {};
     const active = ws && ws.active, out = [];
     if (ws?.public_demo && active?.browser) {
-      return [["browser", spec("NBA model, on your device", "The existing NBA-trained model detects people and the ball in your clip. Open People, pause or seek to inspect the results, then export. Teams and scoring require the full desktop pipeline.", [
+      return [["browser", spec("NBA model, on your device", "The existing NBA model and original local tracking pipeline analyse your clip first, then replay the results in sync. Pause or close analysis at any time. Select a person to highlight their track.", [
         { type: "actions", items: [{ label: "Choose another video", command: "footage:load", primary: true }, { label: "Export detections", command: "footage:export" }] },
       ], { icon: "film", tone: "info" })]];
     }

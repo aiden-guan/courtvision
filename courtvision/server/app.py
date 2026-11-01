@@ -433,8 +433,9 @@ class _GuardMiddleware:
             return
         host = headers.get("host", "")
         csp = (
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; "
-            f"connect-src 'self' ws://{host} wss://{host}; "
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net/pyodide/v314.0.7/full/; "
+            "style-src 'self'; img-src 'self' data: blob:; "
+            f"connect-src 'self' ws://{host} wss://{host} https://cdn.jsdelivr.net/pyodide/v314.0.7/full/; "
             "worker-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'none'; "
             "frame-ancestors 'none'; form-action 'self'"
         )

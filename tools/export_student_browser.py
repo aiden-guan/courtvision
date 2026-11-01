@@ -22,6 +22,21 @@ import torch
 from courtvision.perception.student import INPUT_HW, OUTPUTS, build_net, decode, input_scale, preprocess_frames
 
 
+def write_browser_reference(session, output: Path, model_hash: str) -> None:
+    """A deterministic, non-video CPU reference to verify every visitor's inference backend."""
+    indices = np.arange(9 * 544 * 960, dtype=np.uint32)
+    x = (((indices * 13 + (indices >> 10) * 7) % 251).astype(np.float32) - 125) / 128
+    outputs = session.run(None, {"frames": x.reshape(1, 9, *INPUT_HW)})
+    heads = {}
+    for name, value in zip(OUTPUTS, outputs, strict=True):
+        flat = value.ravel()
+        probes = [j * 9973 % len(flat) for j in range(128)]
+        heads[name] = {"indices": probes, "values": [float(flat[i]) for i in probes]}
+    reference = {"onnx_sha256": model_hash, "input": "((i*13+(i>>>10)*7)%251-125)/128",
+                 "input_sha256": hashlib.sha256(x.tobytes()).hexdigest(), "tolerance": .003, "outputs": heads}
+    output.with_name("nba-validation.json").write_text(json.dumps(reference, separators=(",", ":")) + "\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--weights", type=Path, default=Path("runs/studio/models/nba-student.pt"))
@@ -83,6 +98,7 @@ def main() -> None:
                 "temporal_spacing_s": 1 / 29.97, "ball_threshold": .08, "person_threshold": .3,
                 "validation_clip": args.video.name, "parity": checks}
     args.output.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n")
+    write_browser_reference(session, args.output, manifest["onnx_sha256"])
     print(json.dumps(manifest, indent=2))
 
 

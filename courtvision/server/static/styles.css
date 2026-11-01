@@ -734,7 +734,7 @@ body.watching .poss-feed { bottom: 72px; }  /* above the video's own controls */
 .play-control[data-state="restart"] .i-restart { display: block; fill: none; }
 .play-control { display: flex; justify-content: center; gap: 7px; width: auto; min-width: 84px; padding: 0 10px; border-radius: 8px; font: 600 12px var(--display); }
 .play-control::after { content: attr(data-label); }
-#demo-canvas, #local-video, #local-overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+#demo-canvas, #local-video, #local-analysis-frame, #local-overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 #demo-canvas { background: var(--bg); }
 #local-video { background: #000; }
 #local-overlay { pointer-events: none; }
@@ -1390,6 +1390,7 @@ dialog[open] { animation: dialog-in 220ms var(--ease); }
 
 @media (max-width: 1360px) {
   :root { --rail-w: 332px; }
+  .head-meta { display: none; }
   .live-lower { grid-template-columns: minmax(0, 1fr); }
   .lab-grid > .span-4, .lab-grid > .span-5, .lab-grid > .span-7, .lab-grid > .span-8 { grid-column: span 6; }
 }

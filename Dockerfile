@@ -9,7 +9,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY courtvision ./courtvision
-RUN pip install --no-cache-dir .
+RUN python -m courtvision.browser.build && pip install --no-cache-dir .
 
 ENV PYTHONUNBUFFERED=1 PORT=80
 # Function instances have no persistent disk: footage and analyses live in /tmp for the instance's life.
