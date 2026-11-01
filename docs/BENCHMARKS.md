@@ -120,4 +120,3 @@ The studio displays vision-stage time and inference rate (excluding decoding and
 every frame; slower hardware can fall behind source time. RF-DETR Nano starter detections were exercised
 on the [Supervision basketball sample](https://supervision.roboflow.com/latest/assets/), without a labelled
 event-accuracy evaluation. See [video workspace validation](STUDIO.md) for the exact scope.
-
