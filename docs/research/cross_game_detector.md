@@ -277,3 +277,40 @@ recipe with the person labels swapped to the four NCAA and FIBA broadcasts (`val
 Recall by broadcast: Warriors at Oracle 0.689, 0.690, 0.706; Lakers at New Orleans (a re-streamed local feed) 0.467,
 0.508, **0.787**. With the trunk free to change, footage of other leagues lifts NBA player detection far more than the
 retrained heads did; the broadcast that was already handled best gains little.
+
+## 9. Round 3: NBA human labels and temporal dropout
+
+T4 is T2's recipe on all seven SportsMOT broadcasts (`train` and `val`) plus the round-2 ball labels, so no SportsMOT
+broadcast is held out of it. T5 adds human labels of 3 NBA games of Roboflow Universe's "basketball-player-detection-2"
+set (CC BY 4.0; Hugging Face `koppolusameer/basketball-coco-player-detection`; `prep-coco`: 1,071 single frames,
+players boxed and the ball where labelled, referees left out) and *temporal dropout*: for a quarter of the samples the
+two earlier input frames are replaced by the current one (`--static-p 0.25`), so the network also learns to work
+without motion. 4,000 steps; the four data folders are sampled equally often.
+
+**Held-out NBA games, human labels.** 5 other games of the same set (211 frames of 7 clips; 1,961 player boxes,
+2,467 with the referees; the ball labelled on 194 frames), never trained on (`tools/detector_bench.py --coco`; IoU
+0.5, recall and precision at 0.3; ball within 15 px of 1080 lines of frame height). The frames are sampled sparsely
+from their clips, so each one is fed as its own history (the frame three times):
+
+| Model | Players AP50 | Recall | Precision | Players and referees AP50 | Ball hit | vs published (only it / only published, p) |
+|---|---:|---:|---:|---:|---:|---|
+| Published student | 0.396 | 0.396 | 0.691 | 0.505 | 22.7 % | |
+| Round 1, full fine-tune | 0.743 | 0.710 | 0.796 | 0.689 | 33.5 % | 26 / 5, p 1.9e-4 |
+| T2 (round 2, [`student-ft-r2`](../../models/research/README.md)) | 0.761 | 0.733 | 0.820 | 0.687 | 34.5 % | 29 / 6, p 1.2e-4 |
+| T3 (no NBA player label) | 0.748 | 0.691 | 0.846 | 0.632 | 34.5 % | 29 / 6, p 1.2e-4 |
+| T4 (all seven SportsMOT broadcasts) | 0.770 | 0.725 | 0.850 | 0.674 | 34.5 % | 31 / 8, p 2.9e-4 |
+| T5 (+3 NBA games' human labels, temporal dropout; [`student-ft-r3`](../../models/research/README.md)) | **0.870** | **0.821** | **0.913** | **0.768** | **68.0 %** | 90 / 2, p 1.7e-24 |
+| T5, int8 | 0.869 | 0.821 | 0.914 | 0.767 | 67.5 % | 90 / 3, p 2.7e-23 |
+
+T5's ball gain here is mostly about the missing motion: only T5 trained on repeated frames, and the earlier models'
+ball heads lean on the difference between frames, which these inputs do not have. Its 3 human-labelled games also come
+from the same set as the 5 held-out ones (other games, the same labelling), which favours it over models that never
+saw this set's labels. The player gain over T4 (AP50 0.770 to 0.870, precision 0.850 to 0.913) is the clearer
+evidence, though the shared labelling still favours T5 there. On the ball T5 hits 68 frames T4 misses against 3 (p
+5.1e-17). The person head was taught to leave referees alone, so with them counted as people (2,467 boxes) recall stays
+lower (T5 0.663).
+
+**Video.** On the 1,153 BARD frames, with three real frames: T4 89.4 %, T5 89.5 % (T2 89.1 %; T5 against T2 27 frames
+to 22, p 0.57; against T4 23 to 22, p 1.0; int8 89.4 %). Temporal dropout and the extra labels did not cost the
+ball in video. T5 and its int8 export are in [`models/research/`](../../models/research/README.md) as
+`student-ft-r3`; by the benchmarks here it is the best model so far, but no SportsMOT broadcast is held out of it.

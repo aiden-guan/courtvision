@@ -156,15 +156,17 @@ More, varied games are the main lever. All tables, including the simulator round
 
 **The detector beyond its two games** (2026-11-03, [details](docs/research/cross_game_detector.md)). Footage it never
 trained on, scored against human player boxes (SportsMOT basketball) and teacher-labelled NBA ball positions (BARD,
-2024-25 season); both datasets are research-only, and so are the fine-tuned weights: the round-2 fine-tune is
-published for research in [models/research](models/research/README.md) (sources and terms there), not shipped in the
-app:
+2024-25 season) and human-labelled NBA frames (Roboflow Universe); the datasets are research-only, and so are the
+fine-tuned weights: published for research in [models/research](models/research/README.md) (sources and terms there),
+not shipped in the app:
 
-| What | Published detector | Research fine-tune (round 2) | Held out how |
+| What | Published detector | Research fine-tune | Held out how |
 |---|---|---|---|
-| Players found, 4 NCAA and FIBA broadcasts | 62.6% (AP50 0.675) | **87.0%** (AP50 **0.918**) | human labels, broadcasts never trained on |
-| Ball's top candidate within 15 px, 30 NBA games (1,153 frames) | 81.7% | **89.1%** | teacher labels, games never trained on |
-| Players, 2 NBA broadcasts (a separate round-2 fine-tune that saw no NBA player label) | AP50 0.599 | AP50 **0.860** | human labels, broadcasts never trained on |
+| Players, 5 NBA games (single frames), AP50 | 0.396 | **0.870** (round 3) | human labels, games never trained on |
+| Ball in those frames, within 15 px | 22.7% | **68.0%** (round 3) | human labels; only round 3 trained on still frames |
+| Ball's top candidate within 15 px, 30 NBA games in video (1,153 frames) | 81.7% | **89.5%** (round 3; round 2 89.1%) | teacher labels, games never trained on |
+| Players found, 4 NCAA and FIBA broadcasts | 62.6% (AP50 0.675) | **87.0%** (AP50 **0.918**, round 2) | human labels, broadcasts never trained on |
+| Players, 2 NBA broadcasts (a round-2 fine-tune that saw no NBA player label) | AP50 0.599 | AP50 **0.860** | human labels, broadcasts never trained on |
 | One detection on a 4-core x86 CPU | 222 ms (PyTorch) | **106 ms** same detections; **50 ms** int8 | idle machine, median of 40 |
 
 **Simulator, held-out seeds 101–104** (macro-F1 over 9 event kinds, [report](docs/bench/round5-heldout.md)):
