@@ -36,11 +36,18 @@ def test_bard_clips_reads_a_list_and_refuses_odd_names(tmp_path: Path) -> None:
         fd.bard_clips("missing", splits)
 
 
-def test_roboflow_split_keeps_the_named_games_and_their_labels() -> None:
-    ann = {"categories": [{"id": 1, "name": "player"}],
-           "images": [{"id": 1, "file_name": "game-a-q1_mp4-0001_jpg.rf.x.jpg"},
-                      {"id": 2, "file_name": "game-b-q2_mp4-0001_jpg.rf.y.jpg"}],
-           "annotations": [{"id": 10, "image_id": 1}, {"id": 11, "image_id": 2}]}
-    part = fd.roboflow_split(ann, ["game-a"])
-    assert [im["id"] for im in part["images"]] == [1] and [a["id"] for a in part["annotations"]] == [10]
-    assert part["categories"] == ann["categories"]
+def test_roboflow_split_takes_exact_clips_from_the_named_folders_and_renumbers() -> None:
+    cats = [{"id": 1, "name": "player"}]
+    anns = {"train": {"categories": cats,
+                      "images": [{"id": 1, "file_name": "game-a-q1_mp4-0001_jpg.rf.x.jpg"},
+                                 {"id": 2, "file_name": "game-a-q1-long_mp4-0001_jpg.rf.y.jpg"}],
+                      "annotations": [{"id": 1, "image_id": 1}, {"id": 2, "image_id": 2}]},
+            "valid": {"categories": cats,
+                      "images": [{"id": 1, "file_name": "game-a-q1_mov-0002_jpg.rf.z.jpg"}],
+                      "annotations": [{"id": 1, "image_id": 1}]}}
+    assert fd.rf_clip("game-a-q1_mov-0002_jpg.rf.z.jpg") == "game-a-q1"
+    part = fd.roboflow_split(anns, ["game-a-q1"], ("train", "valid"))
+    assert [(im["id"], im["folder"]) for im in part["images"]] == [(1, "train"), (2, "valid")]  # not "game-a-q1-long"
+    assert [(a["id"], a["image_id"]) for a in part["annotations"]] == [(1, 1), (2, 2)]
+    assert part["categories"] == cats
+    assert len(fd.roboflow_split(anns, ["game-a-q1"], ("valid",))["images"]) == 1

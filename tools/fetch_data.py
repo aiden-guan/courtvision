@@ -16,9 +16,9 @@ read; the list itself goes to ``<out>/basketball.txt``. A failed stream starts t
 ``calib_clips_round2``), one file at a time, to ``<out>/<game>/<clip>.mp4``; files already there are skipped.
 
 ``roboflow``: Roboflow Universe's "basketball-player-detection-2" (CC BY 4.0; human labels of NBA broadcast frames) from
-Hugging Face, its ``train`` split's annotation file and the images of the splits file's ``roboflow_coco`` games:
-the training games' to ``<out>/fit/`` with ``<out>/fit_ann.json``, the held-out games' to ``<out>/heldout/`` with
-``<out>/heldout_ann.json`` (``detector_bench.py --coco data/roboflow/heldout_ann.json``; ``student_finetune.py
+Hugging Face: the images of the splits file's ``roboflow_coco`` clips (exact clip names), the training clips' from all
+three folders of the copy to ``<out>/fit/`` with ``<out>/fit_ann.json``, the held-out clips' from its ``valid`` and
+``test`` folders to ``<out>/heldout/`` with ``<out>/heldout_ann.json`` (1,190 and 211 images) (``detector_bench.py --coco data/roboflow/heldout_ann.json``; ``student_finetune.py
 prep-coco data/roboflow/fit_ann.json data/roboflow/fit ...``).
 
 All are research and evaluation data only (docs/TRAINING.md §1). One HTTP request at a time; a rate-limited or
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import ssl
 import sys
 import tarfile
@@ -190,42 +191,65 @@ def fetch_bard(listing: str, out: Path, first: int = 0, count: int | None = None
 # --------------------------------------------------------------------------- Roboflow
 
 
-def roboflow_split(ann: dict, prefixes: list[str]) -> dict:
-    """The annotation file reduced to the images whose names start with one of ``prefixes`` (and their labels)."""
-    keep = [im for im in ann["images"] if any(im["file_name"].startswith(p) for p in prefixes)]
-    ids = {im["id"] for im in keep}
-    return {**{k: v for k, v in ann.items() if k not in ("images", "annotations")}, "images": keep,
-            "annotations": [a for a in ann["annotations"] if a["image_id"] in ids]}
+RF_SPLITS = ("train", "valid", "test")  # the Hugging Face copy's folders
+
+
+def rf_clip(file_name: str) -> str:
+    """A Roboflow export image's clip: its name up to ``_mp4-NNNN_jpg`` (or ``_mov-``)."""
+    return re.split(r"_(?:mp4|mov)-\d{4}_jpg", file_name)[0]
+
+
+def roboflow_split(anns: dict[str, dict], clips: list[str], folders: tuple[str, ...]) -> dict:
+    """One annotation file of the images of ``clips`` (exact clip names, ``rf_clip``) found in ``folders`` of the
+    per-folder annotation files ``anns``, ids renumbered; each image keeps its folder as ``"folder"``."""
+    keep = set(clips)
+    images, labels = [], []
+    for folder in folders:
+        ann = anns[folder]
+        ids = {}
+        for im in ann["images"]:
+            if rf_clip(im["file_name"]) in keep:
+                ids[im["id"]] = len(images) + 1
+                images.append({**im, "id": ids[im["id"]], "folder": folder})
+        for a in ann["annotations"]:
+            if a["image_id"] in ids:
+                labels.append({**a, "id": len(labels) + 1, "image_id": ids[a["image_id"]]})
+    first = anns[folders[0]]
+    return {**{k: v for k, v in first.items() if k not in ("images", "annotations")}, "images": images,
+            "annotations": labels}
 
 
 def fetch_roboflow(out: Path, splits: Path = SPLITS) -> int:
+    """The splits file's training games' images from every folder of the copy, the held-out games' from ``valid`` and
+    ``test`` (the cloud round's sets: 1,190 and 211 images)."""
     rf = json.loads(splits.read_text())["roboflow_coco"]
 
-    def ann_file() -> dict:
-        with _get(f"{ROBOFLOW}/train/_annotations.coco.json") as resp:
+    def ann_file(folder: str) -> dict:
+        with _get(f"{ROBOFLOW}/{folder}/_annotations.coco.json") as resp:
             return json.loads(resp.read().decode())
 
-    ann = _retry("train/_annotations.coco.json", ann_file)
-    for name, prefixes in (("fit", rf["train_prefixes"]), ("heldout", rf["heldout_prefixes"])):
-        part = roboflow_split(ann, prefixes)
-        folder = out / name
-        folder.mkdir(parents=True, exist_ok=True)
+    anns = {f: _retry(f"{f}/_annotations.coco.json", lambda f=f: ann_file(f)) for f in RF_SPLITS}
+    for name, clips, folders in (("fit", rf["train_prefixes"], RF_SPLITS),
+                                 ("heldout", rf["heldout_prefixes"], ("valid", "test"))):
+        part = roboflow_split(anns, clips, folders)
+        dest = out / name
+        dest.mkdir(parents=True, exist_ok=True)
         for im in part["images"]:
             fn = im["file_name"]
-            if "/" in fn or fn.startswith(".") or (folder / fn).is_file():
+            if "/" in fn or fn.startswith(".") or (dest / fn).is_file():
                 continue
 
-            def one(fn: str = fn) -> None:
-                with _get(f"{ROBOFLOW}/train/{fn}") as resp:
+            def one(fn: str = fn, folder: str = im["folder"]) -> None:
+                with _get(f"{ROBOFLOW}/{folder}/{fn}") as resp:
                     data = resp.read()
-                tmp = folder / (fn + ".part")
+                tmp = dest / (fn + ".part")
                 tmp.write_bytes(data)
-                tmp.replace(folder / fn)
+                tmp.replace(dest / fn)
 
             _retry(fn, one)
             time.sleep(PAUSE_S)
         (out / f"{name}_ann.json").write_text(json.dumps(part))
-        print(f"{name}: {len(part['images'])} images, {len(part['annotations'])} labels in {folder}", flush=True)
+        print(f"{name}: {len(part['images'])} images, {len(part['annotations'])} labels in {dest}", flush=True)
     return 0
 
 

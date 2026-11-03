@@ -1278,7 +1278,19 @@
    "oklahoma-city-thunder-denver-nuggets-game-1-q1-11_26-11_20",
    "oklahoma-city-thunder-denver-nuggets-game-1-q1-11_39-11_32",
    "oklahoma-city-thunder-denver-nuggets-game-3-jump-shots"
-  ]
+  ],
+  "folders": {
+   "train_clips": [
+    "train",
+    "valid",
+    "test"
+   ],
+   "heldout_clips": [
+    "valid",
+    "test"
+   ],
+   "note": "The counts match these folders of the Hugging Face copy: the training clips' images in all three (1,046 + 78 + 66 = 1,190), the held-out clips' in valid and test (108 + 103 = 211); the held-out games' 810 images in its train folder are in neither set. Clips are matched by exact name (the image name up to _mp4-NNNN_jpg or _mov-NNNN_jpg); tools/fetch_data.py roboflow."
+  }
  },
  "readme_games": {
   "about": "Test sets on the README's two games (local footage, not distributed; research note section 9). Never trained or tuned on by the fine-tunes.",
