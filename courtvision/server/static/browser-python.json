@@ -1,5 +1,5 @@
 {
-  "sha256": "2fe27bba30114c248e923b4b192648739a173c65ebceddc3e850196d64c53ef4",
+  "sha256": "dfa1f099ab9855420f36143a69152532c318c7995cc0ea573620491370ba53f1",
   "sources": {
     "__init__.py": "fed34b7929cfd154f4825e3c0e9fb707badad457d66ad7e6c07426394db45e5f",
     "types.py": "c43ab4ebd56d645b91dd135828f7f6f86de1cb463c68f73d3ae003e9d02471fe",
@@ -34,7 +34,8 @@
     "perception/scorebug.py": "39dd451733349fb76056216e5bfc9cea6c8309ce1172555c06df3c80919a273b",
     "perception/scorebug_layout.py": "d35255d58dd563d9d8fe1df47f3fd4d0ed632551c502d881f02dce8bd851384f",
     "perception/scorebug_ocr.py": "67d37cf69d19cc065106eea5229a8ee33b3fedb123e8cf7b1066baf3685f725b",
-    "perception/student.py": "26681695c7324b68819fcd12cd0355e066945eea6745011ff2c3f549ffb29e16",
+    "perception/student.py": "fadbb71a6dd49dfa261439217da091c68ec72e405a573b3afb6fe785640b4aa9",
+    "perception/student_onnx.py": "baeb542ffe2f9fd97d0970bd95ce646ea56fddcdd384b8a34d11512f5804a034",
     "perception/teams.py": "5a72a3d2b33229ef7c0349363efef584c8d1de72d70b7ba73608a08c86076735",
     "perception/tracker.py": "47c14dac91576dcc1872870790f85217795c7e8be9d7c2fb35d650a755d220e1",
     "perception/trackers_adapter.py": "130e8cb5a5b7f50fbc0d3cfd949594e1a90e31c194e6a97d68f20144d4e037e5",

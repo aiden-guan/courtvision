@@ -352,10 +352,16 @@ class Workspace:
 
     def student_weights(self) -> Path | None:
         """The NBA broadcast student detector (training/train_student.py), when one is installed in the data folder's
-        models (``models/nba-student.pt``); it replaces the COCO starter unless an RF-DETR checkpoint is configured."""
-        p = self.root / "models" / "nba-student.pt"
+        models (``models/nba-student.pt``, else its ONNX export ``models/nba-student.onnx``, fp32 or int8, which runs
+        on ONNX Runtime on any CPU); it replaces the COCO starter unless an RF-DETR checkpoint is configured."""
         rf = self.cfg.perception.rfdetr
-        return p if p.is_file() and not (rf.weights or rf.coreml_path) else None
+        if rf.weights or rf.coreml_path:
+            return None
+        for name in ("nba-student.pt", "nba-student.onnx"):
+            p = self.root / "models" / name
+            if p.is_file():
+                return p
+        return None
 
     def new_detector(self) -> Any:
         """A fresh, warmed detector (blocking: call it in a thread): the NBA student when installed, else the

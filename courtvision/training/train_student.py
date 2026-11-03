@@ -194,8 +194,10 @@ class ClipDataset:
 
     def __init__(self, folders: list[Path], clips: set[tuple[int, int]] | None, train: bool, frames: int = 3,
                  ball_sigma: float = 1.2, person_min_score: float = 0.4, crop: int = 512,
-                 ball_crop_share: float = 0.7, weights: Sequence[float] | None = None) -> None:
+                 ball_crop_share: float = 0.7, weights: Sequence[float] | None = None,
+                 zoom_range: tuple[float, float] = (0.8, 1.25)) -> None:
         self.train, self.frames, self.ball_sigma, self.person_min = train, frames, ball_sigma, person_min_score
+        self.zoom_range = zoom_range  # training: each sample's scale is drawn from this range
         self.crop, self.ball_crop_share = crop, ball_crop_share  # training crops (eval: the whole frame)
         self.items: list[tuple[int, int, list[int], dict, dict]] = []
         self.folders = folders
@@ -230,7 +232,7 @@ class ClipDataset:
         h0, w0 = imgs[0].shape[:2]
         s = w0 / float(det["size"][0]) if det.get("size") else TEACHER_SCALE  # label px -> stored image px
         flip = self.train and random.random() < 0.5
-        zoom = random.uniform(0.8, 1.25) if self.train else 1.0
+        zoom = random.uniform(*self.zoom_range) if self.train else 1.0
         ox = oy = 0.0
         if self.train:  # a crop x crop window of the zoomed frame, often around the ball
             h_in = w_in = self.crop

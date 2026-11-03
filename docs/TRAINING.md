@@ -504,6 +504,32 @@ A real broadcast still needs four things that are not in this repository:
 
 ---
 
+## 7B. The NBA student on more broadcasts (`tools/student_finetune.py`)
+
+The student detector (`perception/student.py`) was distilled on two NBA games. On human-labelled clips of seven
+other broadcasts it finds 61% of the players (`tools/detector_bench.py`; research note
+`docs/research/cross_game_detector.md`). These tools fine-tune it with more varied footage, starting from any of its
+exports:
+
+| Step | Command |
+|---|---|
+| A trainable checkpoint from the browser/CPU ONNX export (batch norms folded back exactly) | `python -m courtvision.training.student_from_onnx courtvision/server/static/nba-student.onnx --out runs/models/student-from-onnx.pt` |
+| Players from human boxes: SportsMOT basketball sequences | `tools/student_finetune.py prep-mot data/sportsmot/train data/ft/mot_train` |
+| The ball from the network's own linked detections on NBA clips (pseudo labels, weight at most 0.5) | `tools/student_finetune.py prep-video <clips> data/ft/bard_calib` |
+| Held-out ball labels from the RF-DETR teacher (the `nba_teacher_labels.py` recipe) | `tools/student_finetune.py prep-teacher <clips> data/ft/bard_check_teacher` |
+| Fine-tune (batch norms frozen; `--freeze` keeps modules fixed; `--hue` turns player-only frames' colours) | `tools/student_finetune.py train --data data/ft/mot_train --data data/ft/bard_calib --init runs/models/student-from-onnx.pt --out runs/models/student-ft` |
+| Export (the browser interface) and score | `tools/student_finetune.py export runs/models/student-ft/last.pt --out runs/models/student-ft.onnx`; `tools/detector_bench.py --models a.onnx,b.onnx --split val --sparse` |
+| int8 for CPUs (calibrated on held-apart frames, checked against fp32) | `tools/quantize_student.py --calib <folder> --check <folder> --out runs/models/student-int8.onnx` |
+
+Every data folder uses `train_student.ClipDataset`'s layout and carries a `video` identity in `meta.json` (without
+one, `plan_data` treats two folders as one video and leaves out every clip near the other's held-out clips).
+
+**Rights.** SportsMOT is CC BY-NC 4.0, so a model fine-tuned on it is evaluation and research only (§1, rule 3), like
+everything trained on NBA footage. These tools write weights under `runs/` (git-ignored); the shipped browser asset
+`courtvision/server/static/nba-student.onnx` is not replaced by them.
+
+---
+
 ## 8. Known gaps
 
 * **The entry lag** of 1.5 s, and whether PBP clocks are truncated or rounded, are unverified per league.

@@ -33,6 +33,9 @@ cv = [
     "trackers==2.6.1",
     "torch>=2.4",
 ]
+# The student detector on ONNX Runtime (any CPU; fp32 or int8 export): perception/student_onnx.py,
+# tools/quantize_student.py, tools/detector_bench.py.
+onnx = ["onnxruntime>=1.17", "onnx>=1.15"]
 # Kept as an alias of `cv` so existing install commands keep working.
 rfdetr = [
     "rfdetr[coreml]==1.11.2",

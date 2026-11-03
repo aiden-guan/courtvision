@@ -5,6 +5,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — The detector on broadcasts it never saw: a benchmark, a faster CPU path, fine-tuning tools
+
+Measured on 2026-11-03 in a 4-core Linux container (Xeon, AVX-512 VNNI and AMX, no GPU) from the published ONNX export;
+[research note](docs/research/cross_game_detector.md), tables in [BENCHMARKS.md](docs/BENCHMARKS.md).
+
+- **A cross-game detector benchmark** (`tools/detector_bench.py`): players against the human boxes of SportsMOT's
+  basketball clips (7 broadcasts: NBA, NCAA, FIBA; CC BY-NC, research use) and, with `--ball-folder`, the top ball
+  against teacher-labelled clips of NBA games the detector never trained on. The published student finds 61.1% of the
+  players over all 30 sequences (AP50 0.633; 41% to 82% by broadcast) and puts its top ball on the label on 86.1% of
+  368 frames of 30 NBA games of 2024-25 (95.7% on its own two games' held-out clips).
+- **The offset and size heads only where they are read** (`perception/student_onnx.py`): three of the five heads (18.7%
+  of the network's 38.7 GMACs) are evaluated at the decoded peaks instead of over the whole grid, from the same
+  weights; the detections are the full network's (heatmaps identical, offsets within 1.4e-6). `StudentConfig.backend`
+  `"onnx"` (and `"auto"` for an `.onnx` file), `nba_analyze.py detect --backend onnx`, and the Studio loads
+  `models/nba-student.onnx` when no `.pt` is installed. One detection on 4 CPU threads: 222.0 ms on PyTorch, 129.8 ms
+  on ONNX Runtime, 105.9 ms with the sparse heads. Extra `pip install -e ".[onnx]"`.
+- **int8** (`tools/quantize_student.py`): QDQ weights per channel, activations calibrated on held-apart frames, the
+  output convolutions fp32; 47.3 MB to 12.7 MB and **49.6 ms** a detection (4.5 times PyTorch's speed). The same ball
+  hit, wrong and missed counts as fp32 on the 368 held-out NBA frames; person boxes 98.4% matched. Calibration feeds one
+  input per pass (`CalibStridedMinMax`): ONNX Runtime 1.31's histogram calibrators otherwise hold every activation of
+  every input, and its `CalibMaxIntermediateOutputs` chunks are cleared without being merged.
+- **Fine-tuning from the export** (`training/student_from_onnx.py`: the folded batch norms restored exactly;
+  `tools/student_finetune.py`: SportsMOT player labels, the network's own linked ball detections on NBA clips as
+  pseudo-labels, RF-DETR teacher labels for checks, frozen batch norms, hue and scale randomisation; TRAINING.md §7B).
+  A research fine-tune finds **87.9%** of the players on four NCAA and FIBA broadcasts it never saw (published 62.6%;
+  AP50 0.675 to **0.922**; its worst broadcast 41% to 88%) and puts its top ball on the label on **90.8%** of the 30
+  unseen NBA games' frames (86.1%), with pseudo-labels from 30 other games only. Retraining just the person heads on
+  NCAA and FIBA footage raises AP50 on the two NBA broadcasts from 0.599 to 0.721. These weights learnt from CC BY-NC
+  labels and NBA footage: research-only, not committed, and the shipped browser export is unchanged.
+- `train_student.ClipDataset(zoom_range=...)` (default unchanged).
+- Studied and left alone: the simulator's monocular blocks (held-out F1 0.25). A learned check where a defender gains
+  a released ball that is not a shot reaches only 3 of the 19 blocks of the train seeds, so it was not added.
+- No NBA game video could be downloaded in the container (`app.ytdown.to` answers with a bot challenge, YouTube
+  refuses its video streams to the container); neither was worked around.
+
+---
+
 ## [Unreleased] — Parallel Live processing with unchanged frame evidence
 
 - Live now enables parallel court tracking for video playback by default (`pipeline.parallel_live`). Camera/stream

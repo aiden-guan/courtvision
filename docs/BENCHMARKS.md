@@ -4,6 +4,59 @@ Every accuracy and speed measurement the README summarises, in full. Simulator f
 simulator in `courtvision/sim` scored by `courtvision/eval`; NBA figures from two broadcasts scored against the ESPN
 box score and play-by-play (research use, [NBA.md](NBA.md)). Newest first.
 
+## The detector on broadcasts it never trained on (2026-11-03)
+
+The NBA student detector against human labels of other broadcasts and teacher labels of NBA games it never saw, its
+CPU paths, and research fine-tunes on more varied footage. Measured in a Linux container (4 cores of an Intel Xeon
+with AVX-512 VNNI and AMX, no GPU) from the published ONNX export; [research note](research/cross_game_detector.md).
+Data: SportsMOT basketball (CC BY-NC 4.0) and BARD (NBA.com clips of 60 games of 2024-25, CC BY 4.0), research use
+only; no NBA game video could be downloaded in the container.
+
+**Players, human labels** (`tools/detector_bench.py`; every 10th labelled frame; IoU 0.5; recall and precision at the
+pipeline's 0.3; SportsMOT boxes players only, so precision counts referees and the crowd as false positives):
+
+| Model | Held-out broadcasts | AP50 | Recall | Precision |
+|---|---|---:|---:|---:|
+| Published student | all 30 sequences, 7 broadcasts (2,501 frames, 22,825 boxes) | 0.633 | 0.611 | 0.748 |
+| Published student | NCAA + 3 FIBA (`val`, 15 sequences, 1,258 frames, 11,901 boxes) | 0.675 | 0.626 | 0.793 |
+| Person heads retrained on 2 NBA + 1 FIBA broadcast | NCAA + 3 FIBA (`val`) | 0.796 | 0.709 | 0.830 |
+| Full fine-tune on 2 NBA + 1 FIBA broadcast (+ NBA ball pseudo-labels) | NCAA + 3 FIBA (`val`) | **0.922** | **0.879** | 0.921 |
+| Full fine-tune, int8 | NCAA + 3 FIBA (`val`) | 0.921 | 0.881 | 0.920 |
+| Published student | 2 NBA + 1 FIBA (`train`, 15 sequences) | 0.592 | 0.594 | 0.701 |
+| Person heads retrained on NCAA + 3 FIBA | 2 NBA + 1 FIBA (`train`) | **0.714** | 0.615 | 0.766 |
+| Published student | the 2 NBA broadcasts alone (11 sequences) | 0.599 | 0.606 | 0.693 |
+| Person heads retrained on NCAA + 3 FIBA | the 2 NBA broadcasts alone | **0.721** | 0.622 | 0.760 |
+
+Recall by held-out broadcast (published, heads retrained, full fine-tune): NCAA, Kentucky v Wichita State 0.824,
+0.847, 0.886; FIBA Asia Championship 0.730, 0.809, 0.931; FIBA Women's World Cup 2018 0.406, 0.546, 0.881; FIBA, USA v
+Russia 0.517, 0.639, 0.839.
+
+**Ball, 30 NBA games never trained on** (one BARD clip each, 368 frames labelled by the student's own teacher recipe,
+RF-DETR Small at 1312x736 plus path linking; top ball within 15 px of 1080p, threshold 0.08):
+
+| Model | Hit | Wrong | Missed | Median error |
+|---|---:|---:|---:|---:|
+| Published student (95.7 % on its own two games' held-out clips) | 86.1 % | 13.6 % | 0.3 % | 2.12 px |
+| int8 | 86.1 % | 13.6 % | 0.3 % | 2.18 px |
+| Person heads retrained (ball path untouched) | 86.1 % | 13.6 % | 0.3 % | 2.12 px |
+| Full fine-tune (ball pseudo-labels from 30 *other* BARD games) | **90.8 %** | 9.2 % | 0.0 % | 2.05 px |
+| Full fine-tune, int8 | 90.5 % | 9.5 % | 0.0 % | 2.14 px |
+
+**CPU paths** (`tools/student_speed.py`; one detection, network and decoding, median of 40 on 12 BARD inputs, 4
+threads, idle machine; `runs/bench/speed_4t.json`):
+
+| Path | Median | p10-p90 | Outputs |
+|---|---:|---:|---|
+| PyTorch fp32 (`StudentDetector`'s CPU fallback until now) | 222.0 ms | 191-265 | reference |
+| ONNX Runtime fp32, whole graph | 129.8 ms | 116-162 | within 5e-6 of PyTorch |
+| ONNX Runtime fp32, offset and size heads at the peaks only (`backend="onnx"`) | **105.9 ms** | 95-137 | the whole graph's detections |
+| ONNX Runtime int8, heads at the peaks only | **49.6 ms** | 47-62 | the same ball hit / wrong / missed counts (below) |
+
+The sparse path (`perception/student_onnx.py`) gives the full network's detections (heatmaps identical, offsets
+within 1.4e-6). int8 against fp32 on 120 frames of 30 held-out NBA games: person boxes 98.4 % matched, ball points
+92.8 % (int8 mostly adds low-score candidates: on 60 of the frames it found all 112 fp32 balls scored 0.2 or more);
+on the 368 labelled frames above, the same hit, wrong and missed counts. File 47.3 MB fp32, 12.7 MB int8.
+
 ## NBA broadcast accuracy
 
 Measured on two real games so far, Lakers @ Warriors (2024-12-25, ESPN, 1080p) and Cavaliers @ Warriors (2017-06-12,

@@ -1,6 +1,6 @@
 """Analyse a whole NBA broadcast and score it against the official box score (research use).
 
-    .venv/bin/python tools/nba_analyze.py runs/nba/<game> detect [--workers 2] [--backend auto|coreml|torch]
+    .venv/bin/python tools/nba_analyze.py runs/nba/<game> detect [--workers 2] [--backend auto|coreml|torch|onnx]
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> ball
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> events [--tag baseline] [--3d] [--start S --end S]
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> eval --tag baseline
@@ -452,9 +452,10 @@ def main() -> int:
     ap.add_argument("--chunks", type=int, default=1, help="detect: split the range into this many files (resumable)")
     ap.add_argument("--det-dir", default="detections", help="detect / ball / events: detection folder in the game folder")
     ap.add_argument("--weights", default="runs/models/student/best.pt")
-    ap.add_argument("--backend", choices=("auto", "coreml", "torch"), default="auto",
-                    help="detect: the student on the Neural Engine (coreml; auto where it loads) or on torch "
-                         "(MPS / CPU, the detections of before bit for bit)")
+    ap.add_argument("--backend", choices=("auto", "coreml", "torch", "onnx"), default="auto",
+                    help="detect: the student on the Neural Engine (coreml; auto where it loads), on torch "
+                         "(MPS / CPU, the detections of before bit for bit) or on ONNX Runtime (onnx; auto for an "
+                         "--weights .onnx file: the browser export or its int8 version, any CPU)")
     ap.add_argument("--tag", default="baseline")
     ap.add_argument("--3d", dest="use_3d", action="store_true")
     ap.add_argument("--start", type=float, default=0.0)

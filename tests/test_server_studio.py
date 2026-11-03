@@ -361,3 +361,19 @@ def test_public_demo_is_watch_only_and_never_uses_credentials(tmp_path, monkeypa
         assert not game.config.narration.llm_enabled and game.config.jev.mode == "off"
         # A second viewer joins the running demo instead of restarting it for everyone.
         assert client.post("/api/studio/start", json={"demo": True}).json()["active"]["run_id"] == run_id
+
+
+def test_student_weights_prefer_the_checkpoint_then_the_onnx_export(tmp_path):
+    from courtvision.server.studio import Workspace
+
+    cfg = load_config(None, ["narration.llm_enabled=false", "narration.tts=none", "jev.mode=off"])
+    ws = Workspace(cfg, tmp_path / "workspace", detector=PeopleDetector(), auto_preanalyze=False)
+    models = ws.root / "models"
+    models.mkdir(parents=True, exist_ok=True)
+    assert ws.student_weights() is None
+    (models / "nba-student.onnx").write_bytes(b"onnx")
+    assert ws.student_weights() == models / "nba-student.onnx"
+    (models / "nba-student.pt").write_bytes(b"pt")
+    assert ws.student_weights() == models / "nba-student.pt"
+    cfg.perception.rfdetr.weights = "custom.pth"  # a configured RF-DETR checkpoint wins over any student
+    assert ws.student_weights() is None

@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
-[![Tests: 2,574 collected](https://img.shields.io/badge/pytest-2%2C574%20tests-brightgreen.svg)](#verification)
+[![Tests: 2,661 collected](https://img.shields.io/badge/pytest-2%2C661%20tests-brightgreen.svg)](#verification)
 [![Demo: Vercel](https://img.shields.io/badge/demo-courtvision--beta.vercel.app-black.svg)](https://courtvision-beta.vercel.app)
 
 <br/>
@@ -154,6 +154,17 @@ Gains shrink across games, and the second game exposes failures the first did no
 More, varied games are the main lever. All tables, including the simulator rounds:
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
+**The detector beyond its two games** (2026-11-03, [details](docs/research/cross_game_detector.md)). Footage it never
+trained on, scored against human player boxes (SportsMOT basketball) and teacher-labelled NBA ball positions (BARD,
+2024-25 season); both datasets are research-only, and so are the fine-tuned weights, which are not shipped:
+
+| What | Published detector | Research fine-tune | Held out how |
+|---|---|---|---|
+| Players found, 4 NCAA and FIBA broadcasts | 62.6% (AP50 0.675) | **87.9%** (AP50 **0.922**) | human labels, broadcasts never trained on |
+| Ball found within 15 px, 30 NBA games | 86.1% (95.7% on its own games) | **90.8%** | teacher labels, games never trained on |
+| Players, 2 NBA broadcasts (person heads retrained on NCAA and FIBA footage only) | AP50 0.599 | AP50 **0.721** | human labels, broadcasts never trained on |
+| One detection on a 4-core x86 CPU | 222 ms (PyTorch) | **106 ms** same detections; **50 ms** int8 | idle machine, median of 40 |
+
 **Simulator, held-out seeds 101–104** (macro-F1 over 9 event kinds, [report](docs/bench/round5-heldout.md)):
 `truth3d` (perfect 3-D positions) **0.991**, `mono` (one camera, noise, no ball height) **0.815**, `video` (rendered
 frames through the full perception stack) **0.792**. The 0.85 target for `mono` and `video` is not met.
@@ -249,6 +260,10 @@ pip install -e ".[cv,dev]"
 courtvision studio --open
 ```
 
+Off a Mac, `pip install -e ".[onnx]"` adds ONNX Runtime: the Studio then runs an NBA detector installed as
+`runs/studio/models/nba-student.onnx` (the browser export, or its int8 version from `tools/quantize_student.py`) on the
+CPU.
+
 **Run the demo game** plays a simulated game with no downloads. **Add or open a video** analyses your own footage:
 the first run fetches an RF-DETR Nano starter checkpoint (about 350 MB) that detects generic people and balls. For
 an unknown venue, match four floor landmarks in **Court mapping**. Press `⌘K` to ask about the game or run any
@@ -321,7 +336,7 @@ courtvision/
 ## Verification
 
 ```bash
-.venv/bin/python -m pytest -q                       # 2,574 tests, network-free
+.venv/bin/python -m pytest -q                       # 2,661 tests, network-free
 node --test tests/js/replay.test.cjs                # replay client, no npm dependencies
 .venv/bin/python tools/accuracy_bench.py --modes truth3d,mono --split train --seconds 300
 ```

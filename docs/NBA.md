@@ -180,6 +180,9 @@ the engine's turnovers, against the play-by-play; see docs/research/possession_d
 ## In the studio
 
 Copy the trained student to `runs/studio/models/nba-student.pt` and the studio uses it instead of the COCO starter.
+Without a `.pt` there, `runs/studio/models/nba-student.onnx` (the browser export, or its int8 version from
+`tools/quantize_student.py`) runs on ONNX Runtime on any CPU (`pip install -e ".[onnx]"`;
+[cross_game_detector.md](research/cross_game_detector.md)).
 With **Broadcast footage** on and no saved calibration, the court is registered automatically. Six frames, a second
 apart, give the camera centre, which is saved next to the video's calibration. On macOS the scorebug is read with
 Vision, using the `scorebug_profile.json` that `nba_scan_scorebug.py` saved for the video (beside it or in its game

@@ -23,9 +23,11 @@ Speed. On Apple silicon the network runs on the Neural Engine through Core ML (`
 weights are exported once to an fp16 ML program cached by their hash (``coreml_model``), 8 ms a frame on an M3 Pro
 where MPS takes 28 (and the GPU stays free). Its fp16 outputs stay within 0.002 of the fp32 network, as close as MPS
 fp16 is, and the held-out ball F1 and person recall of ``train_student.evaluate`` are unchanged (0.9608; 0.8039
-against 0.8037). Elsewhere, or when the export fails, it runs on torch as before. Each frame is normalised once
-(``detect`` keeps the normalised frames, not the raw ones) through per-channel lookup tables, bit-identical to the
-float maths they replace and about 15 times faster.
+against 0.8037). Elsewhere, or when the export fails, it runs on torch as before. On any CPU, the browser/CPU
+ONNX export (fp32, or int8 from ``tools/quantize_student.py``) runs on ONNX Runtime with the offset and size heads
+evaluated only at the decoded peaks (``backend="onnx"``, ``student_onnx``; the same detections with a fifth fewer
+multiply-adds). Each frame is normalised once (``detect`` keeps the normalised frames, not the raw ones) through
+per-channel lookup tables, bit-identical to the float maths they replace and about 15 times faster.
 """
 
 from __future__ import annotations
@@ -195,7 +197,9 @@ class StudentConfig:
     half: bool = True  # fp16 on mps
     frame_step: int = 1  # stream frames between two input frames: ``history_step(fps)`` (2 on a 50-60 fps stream)
     # "coreml": the Neural Engine (macOS with coremltools; ``coreml_model``); "torch": PyTorch on ``device``;
-    # "auto": coreml on Apple silicon where it loads, else torch
+    # "onnx": ONNX Runtime on the CPU with the offset/size heads at the peaks only (``student_onnx``; ``weights`` is
+    # an ONNX export, fp32 or int8: ``tools/quantize_student.py``); "auto": onnx for an ``.onnx`` file, else coreml on
+    # Apple silicon where it loads, else torch
     backend: str = "auto"
     coreml_cache: str | None = None  # folder of the exported models; None: $COURTVISION_CACHE or ~/Library/Caches/courtvision
 
@@ -267,6 +271,7 @@ class StudentDetector:
         self.config = config or StudentConfig()
         self._net = net
         self._ml: Any = None  # the Core ML model (backend "coreml")
+        self._onnx: Any = None  # the ONNX Runtime model (backend "onnx": ``student_onnx.OnnxStudent``)
         self._device: Any = None
         # each frame's own preprocessed (3, H, W) input, so a frame is normalised once, not once per sample it is in
         self._buf: deque[np.ndarray] = deque(maxlen=(self.config.frames - 1) * max(1, self.config.frame_step) + 1)
@@ -277,15 +282,24 @@ class StudentDetector:
 
     @property
     def backend(self) -> str:
-        """The backend that runs the network: "coreml" or "torch" (loads it)."""
+        """The backend that runs the network: "coreml", "onnx" or "torch" (loads it)."""
         self._model()
-        return "coreml" if self._ml is not None else "torch"
+        return "coreml" if self._ml is not None else "onnx" if self._onnx is not None else "torch"
 
     def _model(self) -> Any:
-        if self._net is None and self._ml is None:
+        if self._net is None and self._ml is None and self._onnx is None:
             want = self.config.backend
-            if want not in ("auto", "coreml", "torch"):
+            if want not in ("auto", "coreml", "torch", "onnx"):
                 raise ValueError(f"unknown student backend {want!r}")
+            is_onnx = str(self.config.weights).lower().endswith(".onnx")
+            if want == "onnx" or (want == "auto" and is_onnx):
+                from courtvision.perception.student_onnx import OnnxStudent
+
+                self._onnx = OnnxStudent(self.config.weights)
+                return self._onnx
+            if is_onnx:
+                raise ValueError(f"student backend {want!r} cannot run the ONNX export {self.config.weights}: "
+                                 "use backend 'onnx' or 'auto'")
             if want == "coreml" or (want == "auto" and sys.platform == "darwin" and platform.machine() == "arm64"):
                 try:
                     self._ml = coreml_model(self.config.weights, self.config.frames, self.config.coreml_cache)
@@ -304,7 +318,7 @@ class StudentDetector:
             if self.config.half and dev == "mps":
                 net.half()
             self._net, self._device = net, dev
-        return self._ml if self._ml is not None else self._net
+        return self._ml if self._ml is not None else self._onnx if self._onnx is not None else self._net
 
     def reset(self) -> None:
         if self._prefetched:
@@ -355,6 +369,10 @@ class StudentDetector:
         """Batch inference on preprocessed inputs (B, 3 * frames, H, W) (``preprocess_frames``; a caller that keeps
         each frame's own preprocessed slice avoids redoing it for every sample that contains the frame).
         ``frame_sizes``: each sample's frame (width, height), or its width alone for a 16:9 frame."""
+        if self._model() is self._onnx and self._onnx is not None:
+            scales = [input_scale(*wh) if isinstance(wh, (tuple, list)) else INPUT_HW[1] / wh for wh in frame_sizes]
+            return [self._onnx.detect(x[i:i + 1], sc, ball_thresh=self.config.ball_thresh,
+                                      person_thresh=self.config.person_thresh) for i, sc in enumerate(scales)]
         res = self._forward(x)
         decoded = []
         for i, wh in enumerate(frame_sizes):
