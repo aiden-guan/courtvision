@@ -546,8 +546,9 @@ the 34 clips with a court fit):
 
 M1 against the app model on Cavaliers @ Warriors: +7.0 points of players (95 % interval over clips +3.8 to +10.8; up on
 24 clips, down on 5, sign test p 0.00055); against M1-ctrl +5.4 points (+3.8 to +6.8; 24 / 5 clips). The teacher's
-boxes on the app model's own game taught M1 the referees back and lifted its players on a game it never saw. Round 2,
-T5 and M1-ctrl are within chance of the app model there (+1.3 to +1.6 points, intervals across zero).
+boxes on the app model's own game taught M1 the referees back and lifted its players on a game it never saw. Round 2 and
+M1-ctrl are within chance of the app model there (+1.3 and +1.6 points, intervals across zero); T5 is 0.1 point
+below it.
 
 SportsMOT `val` players (NCAA and FIBA, held out of all five; `--split val`): AP50 / recall / precision at 0.3: app
 model 0.675 / 0.626 / 0.793, round 2 0.918 / 0.870 / 0.939 (both as measured in the container), M1-ctrl
