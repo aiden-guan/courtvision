@@ -536,6 +536,13 @@ Two changes, each tried on T5's recipe (§9) with nothing else changed:
   (`ClipDataset`'s `ignore` boxes, `focal_loss(pixel_weight=...)`). These are mostly referees; people in the stands
   fall outside the hull and stay background.
 
+  *Changed before any training*: the hull alone marked only 521 boxes on 494 of SportsMOT's 4,125 `train` samples. On
+  40 random samples the app model found 79 people no player label covers; 69 of them stood more than 5 % of the frame
+  height outside the hull, and the drawn frames showed them to be referees at the sidelines and baselines (the learned
+  check of §11.1 read 61 of the 69 as referees). So a person is also ignored when that check reads them as a referee,
+  wherever they stand (`mark-ignore --referees`, the default); everyone else stays background. No result of R4a or R4b
+  existed when this was changed.
+
 Measures, on the 5 held-out Roboflow games (§9; `detector_bench.py --coco`, detections at 0.3, IoU 0.5): the share of
 the 506 labelled referees a box matches; the share of detections that match no labelled player or referee (the crowd,
 benches and coaches; also per frame); players AP50, recall and precision; and the referee rule's calls on the matched
