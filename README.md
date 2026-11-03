@@ -171,11 +171,10 @@ not shipped in the app:
 | Ball, linked path, Cavaliers @ Warriors (606 frames of 60 clips) | 72.4% | **77.9%** (round 2; p 3.6e-8) | teacher labels, a game neither trained on |
 | Ball, linked path, Lakers @ Warriors (243 frames of the app model's 15 held-out clips) | 95.5% | 95.5% (round 2; the same frames) | teacher labels, the game the published detector learnt from |
 
-On the README's two games the round-2 fine-tune does not yet move the pipeline beyond chance, so the app keeps its
-detector:
-team with the ball 96.4% to 97.0% (Lakers @ Warriors) and 75.8% to 74.0% (Cavaliers @ Warriors), made or missed 83.1%
-to 85.4% and 75.4% to 66.7% (paired over the shots both found: p 0.46 and 0.27), box-score error 0.209 to 0.225 and
-0.570 to 0.581. It also leaves referees and the crowd unboxed, as its human labels do
+On the README's two games neither fine-tune moves the pipeline beyond chance yet, so the app keeps its detector: with
+round 3, team with the ball 96.4% to 96.8% (Lakers @ Warriors) and 75.8% to 74.8% (Cavaliers @ Warriors), made or
+missed 83.1% to 87.1% and 75.4% to 78.8% (paired over the shots both found: p 0.33 and 0.85), box-score error 0.209 to
+0.208 and 0.570 to 0.574 (round 2 alike). Both leave referees and the crowd unboxed, as their human labels do
 ([details](docs/research/cross_game_detector.md#10-on-the-owners-mac-m3-pro-the-readmes-two-games)).
 
 **Simulator, held-out seeds 101–104** (macro-F1 over 9 event kinds, [report](docs/bench/round5-heldout.md)):

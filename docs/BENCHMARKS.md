@@ -11,30 +11,32 @@ is shown: Lakers @ Warriors, the game the app model was distilled on (its 15 hel
 Warriors, which neither trained on (60 new teacher clips). Ball and people on ONNX Runtime for both models; the
 pipeline re-detected on Core ML for both, current code; [research note §10](research/cross_game_detector.md).
 
-**Ball** (teacher labels; within 15 px of 1080p; paired exact McNemar test on the frames only one model hits):
+**Ball** (teacher labels; within 15 px of 1080p; paired exact McNemar test on the frames only one model hits; T5 is
+the cloud's round 3, `student-ft-r3`):
 
-| Game (frames) | Measure | App model | Round 2 | Round 2 int8 | Only round 2 / only app, p |
-|---|---|---:|---:|---:|---|
-| Lakers @ Warriors (243) | top candidate | **95.5 %** | 94.2 % | 93.8 % | 0 / 3, p 0.25 |
-| | linked path (README protocol) | 95.5 % | 95.5 % | 95.5 % | the same frames |
-| Cavaliers @ Warriors (606) | top candidate | 75.7 % | **78.1 %** | 77.7 % | 20 / 6, p 0.0094 |
-| | linked path | 72.4 % | **77.9 %** | 78.6 % | 36 / 3, p 3.6e-8 |
+| Game (frames) | Measure | App model | Round 2 | Round 2 int8 | T5 | Round 2 vs app (only it / only app, p) | T5 vs app |
+|---|---|---:|---:|---:|---:|---|---|
+| Lakers @ Warriors (243) | top candidate | **95.5 %** | 94.2 % | 93.8 % | 95.1 % | 0 / 3, p 0.25 | 0 / 1, p 1 |
+| | linked path (README protocol) | 95.5 % | 95.5 % | 95.5 % | **95.9 %** | the same frames | 1 / 0, p 1 |
+| Cavaliers @ Warriors (606) | top candidate | 75.7 % | **78.1 %** | 77.7 % | 77.9 % | 20 / 6, p 0.0094 | 25 / 12, p 0.047 |
+| | linked path | 72.4 % | 77.9 % | 78.6 % | **78.7 %** | 36 / 3, p 3.6e-8 | 45 / 7, p 7.0e-8 |
 
 **People** (the teacher's boxes, placed on the court by the game's camera track; referees by `analyze.is_referee`):
-players on the court found, Lakers @ Warriors 99.0 % against 95.9 % (1,311 boxes), Cavaliers @ Warriors 80.2 %
-against 81.5 % (3,535); referees on the court 99.1 % against 27.0 % and 83.6 % against 12.1 %: the fine-tune, taught
-by player-only labels, leaves referees and the crowd unboxed.
+players on the court found, Lakers @ Warriors 99.0 % (app), 95.9 % (round 2), 95.2 % (T5) of 1,311 boxes; Cavaliers @
+Warriors 80.2 %, 81.5 %, 80.1 % of 3,535; referees on the court 99.1 %, 27.0 %, 10.0 % and 83.6 %, 12.1 %, 12.1 %:
+the fine-tunes, taught by player-only labels, leave referees and the crowd unboxed.
 
-**The pipeline** (fitted on one half of each game, scored on the other):
+**The pipeline** (fitted on one half of each game, scored on the other; made or missed paired with the app model over
+the shots both found):
 
-| | Lakers @ Warriors: app | round 2 | Cavaliers @ Warriors: app | round 2 |
-|---|---:|---:|---:|---:|
-| Team with the ball, settled live play (timeline) | 96.4 % | 97.0 % | 75.8 % | 74.0 % |
-| the same, engine alone | 72.8 % | 79.1 % | 61.0 % | 58.4 % |
-| Real shot or not | 78.5 % | 73.7 % | 52.4 % | 63.9 % |
-| Made or missed, real shots | 83.1 % | 85.4 % | 75.4 % | 66.7 % |
-| paired over the shots both found (only round 2 right / only app right, p) | | 17 / 12, p 0.46 | | 11 / 18, p 0.27 |
-| Box-score error | 0.209 | 0.225 | 0.570 | 0.581 |
+| | LAL @ GSW: app | round 2 | T5 | CLE @ GSW: app | round 2 | T5 |
+|---|---:|---:|---:|---:|---:|---:|
+| Team with the ball, settled live play (timeline) | 96.4 % | 97.0 % | 96.8 % | 75.8 % | 74.0 % | 74.8 % |
+| the same, engine alone | 72.8 % | 79.1 % | 69.1 % | 61.0 % | 58.4 % | 61.5 % |
+| Real shot or not | 78.5 % | 73.7 % | 76.9 % | 52.4 % | 63.9 % | 57.8 % |
+| Made or missed, real shots | 83.1 % | 85.4 % | 87.1 % | 75.4 % | 66.7 % | 78.8 % |
+| paired with the app model (only it right / only app, p) | | 17 / 12, p 0.46 | 16 / 10, p 0.33 | | 11 / 18, p 0.27 | 14 / 12, p 0.85 |
+| Box-score error | 0.209 | 0.225 | 0.208 | 0.570 | 0.581 | 0.574 |
 
 Neither game's pipeline numbers move beyond chance, so the app keeps its detector. The app model's README run `full`
 (PyTorch on MPS, older code: 96.2 %, 84.8 %) re-runs at 96.3 % and 83.6 % with the current code, and at 96.4 % and
