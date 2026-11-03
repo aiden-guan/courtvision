@@ -143,3 +143,23 @@ def test_temporal_dropout_repeats_the_current_frame(tmp_path: Path) -> None:
     random.seed(3)
     y, _ = never[1]
     assert not np.allclose(y[0:3], y[6:9], atol=1e-3)
+
+
+def test_soup_averages_float_tensors_and_interpolates_with_the_start(tmp_path: Path) -> None:
+    import torch
+
+    base = {"w": torch.zeros(2, 2), "n": torch.tensor(7)}
+    a = {"w": torch.full((2, 2), 2.0), "n": torch.tensor(7)}
+    b = {"w": torch.full((2, 2), 4.0), "n": torch.tensor(7)}
+    assert torch.equal(sf.soup_states([a, b])["w"], torch.full((2, 2), 3.0))
+    wise = sf.soup_states([a, b], base, alpha=0.5)
+    assert torch.equal(wise["w"], torch.full((2, 2), 1.5)) and int(wise["n"]) == 7
+    with pytest.raises(ValueError):
+        sf.soup_states([a, {"w": torch.zeros(3), "n": torch.tensor(7)}])
+    for name, s in (("a", a), ("b", b), ("base", base)):
+        torch.save({"model": s, "step": 1}, tmp_path / f"{name}.pt")
+    out = tmp_path / "soup.pt"
+    assert sf.main(["soup", str(tmp_path / "a.pt"), str(tmp_path / "b.pt"), "--base", str(tmp_path / "base.pt"),
+                    "--alpha", "0.5", "--out", str(out)]) == 0
+    got = torch.load(out, weights_only=True)
+    assert torch.equal(got["model"]["w"], torch.full((2, 2), 1.5)) and got["alpha"] == 0.5

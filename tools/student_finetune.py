@@ -13,7 +13,9 @@ This tool adds varied footage without losing what the network already does well:
   Student, Xie et al. 2020);
 * training (``train``) from ``student_from_onnx``'s exact copy of the export, batch norms frozen (they hold the folded
   statistics), the stem and first stage frozen, AdamW with cosine decay, ``train_student``'s data loading,
-  augmentation and losses. ``export`` writes the ONNX export (browser interface) and a ``.pt`` checkpoint.
+  augmentation and losses. ``export`` writes the ONNX export (browser interface) and a ``.pt`` checkpoint;
+* ``soup`` averages fine-tunes of the same start in weight space (optionally pulled back towards that start): one
+  network, so no extra cost per frame.
 
 Both data folders use ``train_student.ClipDataset``'s layout (``frames/<clip>/<frame>.jpg`` at 960 px wide,
 ``detections.jsonl``, ``ball_labels.jsonl``, ``meta.json``), so ``python -m courtvision.training.train_student`` can
@@ -496,6 +498,62 @@ def train(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- soup
+
+
+def soup_states(states: list[dict[str, Any]], base: dict[str, Any] | None = None,
+                alpha: float = 1.0) -> dict[str, Any]:
+    """Weight-space ensemble of fine-tunes that share one initialisation: their uniform average (a "uniform soup",
+    Wortsman et al. 2022, arXiv:2203.05482), interpolated with that initialisation when ``base`` is given:
+    ``(1 - alpha) * base + alpha * average`` (WiSE-FT, Wortsman et al. 2022, arXiv:2109.01903). The result is one
+    network of the same shape, so a frame costs what it cost before. Integer buffers (batch-norm counters) come from
+    the first state; floating tensors are averaged in float64."""
+    import torch
+
+    keys = list(states[0])
+    for i, s in enumerate(states[1:] + ([base] if base is not None else []), start=1):
+        if set(s) != set(keys) or any(tuple(s[k].shape) != tuple(states[0][k].shape) for k in keys):
+            raise ValueError(f"state {i} is not the same network as state 0")
+    out = {}
+    for k in keys:
+        t0 = states[0][k]
+        if not t0.is_floating_point():
+            out[k] = t0.clone()
+            continue
+        m = torch.stack([s[k].double() for s in states]).mean(0)
+        if base is not None:
+            m = (1.0 - alpha) * base[k].double() + alpha * m
+        out[k] = m.to(t0.dtype).contiguous()
+    return out
+
+
+def soup(weights: list[Path], out: Path, base: Path | None = None, alpha: float = 1.0) -> int:
+    """``soup_states`` over checkpoints on disk; prints how far each one moved from ``base`` (relative L2 norm of
+    the trained tensors) and writes a checkpoint ``export`` reads."""
+    import torch
+
+    def load(p: Path) -> dict[str, Any]:
+        s = torch.load(p, map_location="cpu", weights_only=True)
+        return s.get("model", s)
+
+    states = [load(w) for w in weights]
+    ref = load(base) if base is not None else None
+    mixed = soup_states(states, ref, alpha)
+    if ref is not None:
+        def dist(s: dict[str, Any]) -> float:
+            num = sum(float((s[k].double() - ref[k].double()).pow(2).sum()) for k in ref if ref[k].is_floating_point())
+            den = sum(float(ref[k].double().pow(2).sum()) for k in ref if ref[k].is_floating_point())
+            return math.sqrt(num / den) if den > 0 else float("inf")
+        for w, s in zip(weights, states):
+            print(f"{w}: {dist(s):.4f} of the base's norm away from it")
+        print(f"soup: {dist(mixed):.4f}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"model": mixed, "soup": [str(w) for w in weights], "base": str(base) if base else None,
+                "alpha": alpha}, out)
+    print(f"{out}: {len(weights)} checkpoints" + (f", alpha {alpha} from {base}" if base else ""))
+    return 0
+
+
 # --------------------------------------------------------------------------- export
 
 
@@ -589,10 +647,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--eval-frames", type=int, default=8)
     p.add_argument("--eval-every", type=int, default=500)
     p.add_argument("--log-every", type=int, default=50)
+    p = sub.add_parser("soup", help="average fine-tunes of one start (and interpolate with that start)")
+    p.add_argument("weights", type=Path, nargs="+", help=".pt checkpoints fine-tuned from the same --init")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--base", type=Path, default=None, help="their shared start, for (1 - alpha) * base + alpha * avg")
+    p.add_argument("--alpha", type=float, default=1.0, help="weight of the average against --base (1: plain soup)")
     p = sub.add_parser("export", help=".pt -> ONNX")
     p.add_argument("weights", type=Path)
     p.add_argument("--out", type=Path, required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "soup":
+        return soup(a.weights, a.out, a.base, a.alpha)
     if a.cmd == "prep-mot":
         names = {s.strip() for s in a.seqs.split(",")} if a.seqs else None
         return 0 if prep_mot(a.src, a.out, a.sample_every, names) else 2
