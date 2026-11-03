@@ -559,7 +559,7 @@ against it, and its recall falls 3.5 points).
 
 On 2026-11-03 the owner chose one main detector, improved in place: the app's model. Each round starts from the
 current main model, uses everything the earlier rounds learnt from, and replaces it only when it is better somewhere
-and worse nowhere that matters. Two candidates for the next main version, named before either is trained or scored:
+and worse nowhere that matters. Candidates for the next main version, named before any is trained or scored:
 
 * **A, everything at once**: from the app model, T5's recipe (§9: temporal dropout 0.25, 4,000 steps, folders sampled
   equally) on every training source of the earlier rounds: the 15 SportsMOT `train` and 15 `val` sequences, the 3
@@ -568,6 +568,9 @@ and worse nowhere that matters. Two candidates for the next main version, named 
   then held out.
 * **B, a soup**: the uniform weight average of the four fine-tunes that share the app model as their start (round 2,
   T5, M1-ctrl, M1; `student_finetune.py soup`), at the same cost per frame.
+* **C, the cloud's model carried forward** (added on the owner's question, before any candidate was trained or
+  scored): A's recipe and data, started from T5 (`student-ft-r3`, the cloud's best) instead of the app model. A
+  against C shows whether building on T5's weights helps.
 
 Held out of both, and scored once: the Lakers @ Warriors held-out clips, the 60 Cavaliers @ Warriors clips, the 30 BARD
 check games (the Mac's teacher labels) and the 5 held-out Roboflow games; then the whole pipeline on both games for the
