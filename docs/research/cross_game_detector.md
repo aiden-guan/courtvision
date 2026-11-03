@@ -584,6 +584,25 @@ candidate that passes. **Rule for replacing the main model**: no paired test aga
 on both games not worse beyond chance; among candidates that pass, the one with more significant gains over the app
 model; on a tie, the single fine-tune over the soup. M1 (§10.7) is scored by the same rule.
 
+### 10.9 The candidates changed for the crowd and the referees, before any was trained
+
+Before A or C was trained, the owner reported people in the crowd boxed as players and asked for referees to be found
+better (§11). The Lakers @ Warriors teacher boxes everyone, so A and C as planned would have taught the crowd and the
+benches back (M1 boxes 43 % of the teacher's people off the court on Cavaliers @ Warriors, round 2 5 %). So A and C
+now take, in place of the folders named in §10.8:
+
+* the Lakers @ Warriors teacher folder through `student_finetune.py court-people`: each teacher box at 0.4 or more
+  placed on the court by the camera track, kept within 3 ft of the lines (players, referees), an ignore box up to
+  10 ft (courtside seats, the bench's edge), dropped beyond (37,107 kept, 3,539 ignored, 34 dropped; the 15,726 on
+  frames without a camera fit ignored);
+* the Roboflow training games with their referees as people (`prep-coco --referees`, §11's R4a);
+* SportsMOT `train` and `val` with ignore regions on the unlabelled people among the players (`mark-ignore`, §11's
+  R4b), mostly referees.
+
+B (the soup) is unchanged. Added measures, from §11: referees found and detections matching no labelled person on the
+5 held-out Roboflow games, and on the two games the teacher's off-court people found (lower is better) beside the
+players and referees on the court.
+
 ## 11. Referees and the crowd (cloud): plan, fixed before training
 
 The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The
