@@ -4,6 +4,47 @@ Every accuracy and speed measurement the README summarises, in full. Simulator f
 simulator in `courtvision/sim` scored by `courtvision/eval`; NBA figures from two broadcasts scored against the ESPN
 box score and play-by-play (research use, [NBA.md](NBA.md)). Newest first.
 
+## The detector fine-tunes on the README's two games (2026-11-03, M3 Pro)
+
+The published student (the app model) against the round-2 research fine-tune (T2, `models/research/`) where the app
+is shown: Lakers @ Warriors, the game the app model was distilled on (its 15 held-out teacher clips), and Cavaliers @
+Warriors, which neither trained on (60 new teacher clips). Ball and people on ONNX Runtime for both models; the
+pipeline re-detected on Core ML for both, current code; [research note §9](research/cross_game_detector.md).
+
+**Ball** (teacher labels; within 15 px of 1080p; paired exact McNemar test on the frames only one model hits):
+
+| Game (frames) | Measure | App model | Round 2 | Round 2 int8 | Only round 2 / only app, p |
+|---|---|---:|---:|---:|---|
+| Lakers @ Warriors (243) | top candidate | **95.5 %** | 94.2 % | 93.8 % | 0 / 3, p 0.25 |
+| | linked path (README protocol) | 95.5 % | 95.5 % | 95.5 % | the same frames |
+| Cavaliers @ Warriors (606) | top candidate | 75.7 % | **78.1 %** | 77.7 % | 20 / 6, p 0.0094 |
+| | linked path | 72.4 % | **77.9 %** | 78.6 % | 36 / 3, p 3.6e-8 |
+
+**People** (the teacher's boxes, placed on the court by the game's camera track; referees by `analyze.is_referee`):
+players on the court found, Lakers @ Warriors 99.0 % against 95.9 % (1,311 boxes), Cavaliers @ Warriors 80.2 %
+against 81.5 % (3,535); referees on the court 99.1 % against 27.0 % and 83.6 % against 12.1 %: the fine-tune, taught
+by player-only labels, leaves referees and the crowd unboxed.
+
+**The pipeline** (fitted on one half of each game, scored on the other):
+
+| | Lakers @ Warriors: app | round 2 | Cavaliers @ Warriors: app | round 2 |
+|---|---:|---:|---:|---:|
+| Team with the ball, settled live play (timeline) | 96.4 % | 97.0 % | 75.8 % | 74.0 % |
+| the same, engine alone | 72.8 % | 79.1 % | 61.0 % | 58.4 % |
+| Real shot or not | 78.5 % | 73.7 % | 52.4 % | 63.9 % |
+| Made or missed, real shots | 83.1 % | 85.4 % | 75.4 % | 66.7 % |
+| paired over the shots both found (only round 2 right / only app right, p) | | 17 / 12, p 0.46 | | 11 / 18, p 0.27 |
+| Box-score error | 0.209 | 0.225 | 0.570 | 0.581 |
+
+Neither game's pipeline numbers move beyond chance, so the app keeps its detector. The app model's README run `full`
+(PyTorch on MPS, older code: 96.2 %, 84.8 %) re-runs at 96.3 % and 83.6 % with the current code, and at 96.4 % and
+83.1 % on Core ML. Re-detecting the whole game on the Neural Engine takes 12 ms a frame (20 minutes).
+
+**Fine-tuning on the Mac** (`student_finetune.py train --device mps`, the same data and start; steps 20-60 of a short
+run): MPS fp32 0.33 s a step, bf16 autocast 0.30 s, fp16 0.35 s, channels-last 0.33 s; the CPU (6 threads) 0.83 s
+in fp32 and 11.4 s with bf16 autocast (no bf16 hardware path on Apple's CPU). A 3,000-step run takes about 16 minutes
+on MPS; the losses agree with the CPU's to the fourth decimal.
+
 ## The detector on broadcasts it never trained on (2026-11-03)
 
 The NBA student detector against human labels of other broadcasts and teacher labels of NBA games it never saw, its

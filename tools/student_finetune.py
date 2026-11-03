@@ -59,11 +59,11 @@ DEFAULT_MODEL = ROOT / "courtvision" / "server" / "static" / "nba-student.onnx"
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".m4v"}
 
 
-def _save(img: np.ndarray, path: Path) -> None:
+def _save(img: np.ndarray, path: Path, quality: int = 92) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     h, w = img.shape[:2]
     small = cv2.resize(img, (SAVE_WIDTH, round(h * SAVE_WIDTH / w)), interpolation=cv2.INTER_AREA)
-    cv2.imwrite(str(path), small, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    cv2.imwrite(str(path), small, [cv2.IMWRITE_JPEG_QUALITY, quality])
 
 
 # --------------------------------------------------------------------------- prep-mot
@@ -114,7 +114,7 @@ def _videos(folder: Path) -> list[Path]:
 
 
 def prep_video(src: Path, out: Path, model_path: Path, sample_every: int, max_frames: int, threads: int,
-               append: bool = False) -> int:
+               append: bool = False, quality: int = 92) -> int:
     """Videos -> a pseudo ClipDataset folder with the model's own linked ball labels (no person labels). With
     ``append`` the clips are added after those already in ``out`` (one folder, and one ``video`` identity, filled
     batch by batch: the videos of a batch can then be deleted before the next is fetched), and every clip's labels
@@ -132,6 +132,8 @@ def prep_video(src: Path, out: Path, model_path: Path, sample_every: int, max_fr
         clips = list(old_meta["clips"])
         if old_meta.get("model") not in (None, str(model_path)):
             raise SystemExit(f"{out} was labelled by {old_meta['model']}, not {model_path}")
+        if old_meta.get("jpeg_quality", 92) != quality:
+            raise SystemExit(f"{out} stores frames at JPEG quality {old_meta.get('jpeg_quality', 92)}, not {quality}")
     done = {c["video"] for c in clips}
     vids = [v for v in _videos(src) if str(v) not in done]
     n_clips = len(clips) + len(vids)
@@ -158,7 +160,7 @@ def prep_video(src: Path, out: Path, model_path: Path, sample_every: int, max_fr
             x = np.concatenate([hist[max(0, len(hist) - 3 + j)] for j in range(3)])[None]
             balls, _ = model.detect(x, input_scale(img.shape[1], img.shape[0]), ball_thresh=0.05, person_thresh=0.99)
             r = 12.0 * img.shape[0] / 1080.0
-            _save(img, out / "frames" / f"{ci:04d}" / f"{fi:06d}.jpg")
+            _save(img, out / "frames" / f"{ci:04d}" / f"{fi:06d}.jpg", quality)
             row: dict[str, Any] = {"clip": ci, "frame": fi, "t": (first + k) / fps,
                                    "size": [img.shape[1], img.shape[0]], "persons": [],
                                    "balls": [[bx - r, by - r, bx + r, by + r, sc] for bx, by, sc in balls]}
@@ -172,7 +174,7 @@ def prep_video(src: Path, out: Path, model_path: Path, sample_every: int, max_fr
     out.mkdir(parents=True, exist_ok=True)
     (out / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in det_rows))
     meta = {"kind": "pseudo", "video": f"videos:{src.resolve()}", "person_weight": 0.0,
-            "source": f"{model_path.name} on {src}", "model": str(model_path), "fps": TRAIN_FPS,
+            "source": f"{model_path.name} on {src}", "model": str(model_path), "jpeg_quality": quality, "fps": TRAIN_FPS,
             "rights_status": "research_only", "label_origin": "pseudo", "clips": clips}
     if old_meta is not None:  # the folder keeps its identity; each batch's source is listed
         meta["video"] = old_meta["video"]
@@ -646,6 +648,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--append", action="store_true",
                    help="add these videos' clips to the folder already in OUT (videos already in it are skipped)")
+    p.add_argument("--jpeg-quality", type=int, default=92, help="stored frames' JPEG quality (lower: a smaller folder)")
     p = sub.add_parser("prep-coco", help="COCO-format human labels -> a training folder (one-frame clips)")
     p.add_argument("ann", type=Path, help="the COCO annotation file")
     p.add_argument("images", type=Path, help="the folder of its images")
@@ -706,7 +709,8 @@ def main(argv: list[str] | None = None) -> int:
         names = {s.strip() for s in a.seqs.split(",")} if a.seqs else None
         return 0 if prep_mot(a.src, a.out, a.sample_every, names) else 2
     if a.cmd == "prep-video":
-        return 0 if prep_video(a.src, a.out, a.model, a.sample_every, a.max_frames, a.threads, a.append) else 2
+        return 0 if prep_video(a.src, a.out, a.model, a.sample_every, a.max_frames, a.threads, a.append,
+                               a.jpeg_quality) else 2
     if a.cmd == "prep-coco":
         games = [g.strip() for g in a.games.split(",") if g.strip()]
         excl = [g.strip() for g in a.exclude.split(",") if g.strip()]

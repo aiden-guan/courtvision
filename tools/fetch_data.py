@@ -154,8 +154,8 @@ def bard_clips(listing: str, splits: Path = SPLITS) -> list[str]:
     return clips
 
 
-def fetch_bard(listing: str, out: Path) -> int:
-    clips = bard_clips(listing)
+def fetch_bard(listing: str, out: Path, first: int = 0, count: int | None = None) -> int:
+    clips = bard_clips(listing)[first:None if count is None else first + count]
     got = 0
     for i, name in enumerate(clips):
         dest = out.joinpath(*PurePosixPath(name).parts)
@@ -188,10 +188,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("bard", help="BARD clips named by the splits file")
     p.add_argument("--clips", required=True, help="a list of the splits file's bard part, e.g. check_clips")
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--first", type=int, default=0, help="start at this clip of the list (fetch it in batches)")
+    p.add_argument("--count", type=int, default=None, help="fetch at most this many clips")
     a = ap.parse_args(argv)
     if a.cmd == "sportsmot":
         return fetch_sportsmot(a.split, a.out)
-    return fetch_bard(a.clips, a.out)
+    return fetch_bard(a.clips, a.out, a.first, a.count)
 
 
 if __name__ == "__main__":

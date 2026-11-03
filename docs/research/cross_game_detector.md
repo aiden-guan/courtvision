@@ -427,7 +427,18 @@ engine reports a candidate for only 114-120 of its 229 shots.
 * So the fine-tunes measured so far are not yet a reason to replace the app model: the detector gains on footage it
   never saw are real, but on these two games the pipeline's stages after the detector decide the results.
 
-### 9.6 Round 3 training on the Mac: plan, fixed before training
+### 9.6 Training on the Mac's GPU
+
+`student_finetune.py train --device mps` (PyTorch's Metal backend). One A/B on the same data (the Lakers @ Warriors
+teacher folder) and start, 60 steps of the recipe each, timed from step 20 to step 60: MPS fp32 0.33 s a step, bf16
+autocast 0.30 s, fp16 autocast 0.35 s, channels-last 0.33 s; the CPU (6 threads of the M3 Pro) 0.83 s in fp32 and
+11.4 s with bf16 autocast, which Apple's CPU has no fast path for (on the container's Xeon it was the fast path,
+§8.1). Four data-loader workers keep the GPU fed (8 workers: the same 0.32 s over 100 steps). The losses on MPS and
+the CPU agree to the fourth decimal. A 3,000-step run takes about 16 minutes on MPS, half the container's 30 with
+AMX. Getting there needed one fix: data-loader workers on macOS start by spawn and must unpickle the dataset, which
+was a class defined inside a function.
+
+### 9.7 Round 3 training on the Mac: plan, fixed before training
 
 Two runs, each changing one thing against the one before it, from the same start (the exact copy of the app model,
 `student_from_onnx`) with round 2's recipe (§8: 3,000 steps, batch 4, AdamW 2e-4 cosine, stem and first stage

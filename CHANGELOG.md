@@ -5,6 +5,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — The detector fine-tunes on the README's two games; fine-tuning on a Mac
+
+Measured on 2026-11-03 on the owner's M3 Pro with the local footage; [research note §9](docs/research/cross_game_detector.md),
+tables in [BENCHMARKS.md](docs/BENCHMARKS.md).
+
+- **The round-2 fine-tune where the app is shown.** On Lakers @ Warriors (the game the app model learnt from) it
+  matches the app model's ball on its held-out clips (linked path 95.5%, the same frames) and finds 95.9% of the players
+  on the court against 99.0%; on Cavaliers @ Warriors (never trained on) its ball is clearly better (linked path 72.4%
+  to 77.9%, p 3.6e-8; top candidate 75.7% to 78.1%, p 0.0094). It leaves referees and the crowd unboxed, as its
+  player-only human labels do.
+- **The whole pipeline with it** (both games re-detected on Core ML): team with the ball 96.4% to 97.0% and 75.8% to
+  74.0%, made or missed 83.1% to 85.4% and 75.4% to 66.7%, all within chance (paired over the shots both found: p 0.46
+  and 0.27). The app's `nba-student.onnx` is unchanged.
+- **Fine-tuning on Apple silicon**: `student_finetune.py train --device mps`, 0.33 s a step against 0.83 s on the CPU
+  (a 3,000-step run in about 16 minutes). Fixed: `train` with data-loader workers failed on macOS, whose workers
+  spawn and could not unpickle the dataset.
+- **Tools**: `tools/fetch_data.py` streams SportsMOT's basketball sequences out of the split archives (3.1 of 6.6 GB
+  kept, the archive never stored) and fetches BARD clips by the splits file's lists; `detector_bench.py --held-out`
+  scores a teacher folder's held-out clips and reports the teacher's people found; `prep-video --append`
+  (batches into one folder) and `--jpeg-quality`; `prep-teacher --device mps`; `nba_analyze.py --ball-track` keeps a
+  second detector's ball track beside the game's own. The splits file lists the two games' test clips.
+
+---
+
 ## [Unreleased] — Detector round 2: faster training, iterated self-training, NBA players held out, research weights
 
 Measured on 2026-11-03 in the same 4-core container; [research note §8](docs/research/cross_game_detector.md), tables in
