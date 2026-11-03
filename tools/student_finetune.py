@@ -223,7 +223,7 @@ def prep_coco(ann: Path, images: Path, out: Path, games: list[str], exclude: lis
 # --------------------------------------------------------------------------- prep-teacher
 
 
-def prep_teacher(src: Path, out: Path, frames: int, weights: str | None, shape: str) -> int:
+def prep_teacher(src: Path, out: Path, frames: int, weights: str | None, shape: str, device: str = "cpu") -> int:
     """Videos -> a teacher folder labelled as ``tools/nba_teacher_labels.py`` labels a game: RF-DETR Small (COCO) on
     every stored frame (the middle ``frames`` of each video, at the student's input spacing) at ``shape``, persons
     from 0.25, every ball candidate, then the linked ball labels. For held-out ball checks (``detector_bench.py
@@ -239,7 +239,7 @@ def prep_teacher(src: Path, out: Path, frames: int, weights: str | None, shape: 
 
     threads = os.environ.get("OMP_NUM_THREADS", "")
     torch.set_num_threads(int(threads) if threads.isdigit() and int(threads) > 0 else max(1, os.cpu_count() or 2))
-    model = rfdetr.RFDETRSmall(pretrain_weights=weights, device="cpu") if weights else rfdetr.RFDETRSmall(device="cpu")
+    model = rfdetr.RFDETRSmall(pretrain_weights=weights, device=device) if weights else rfdetr.RFDETRSmall(device=device)
     hw = tuple(int(v) for v in shape.split(","))
     det_rows, clips = [], []
     vids = _videos(src)
@@ -623,6 +623,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--frames", type=int, default=48, help="frames per video (at ~30 fps), from its middle")
     p.add_argument("--weights", default=None, help="RF-DETR Small checkpoint (default: rfdetr's COCO download)")
     p.add_argument("--shape", default="736,1312", help="teacher input height,width (nba_teacher_labels default)")
+    p.add_argument("--device", default="cpu", choices=("cpu", "mps"),
+                   help="where RF-DETR runs (mps: faster on a Mac; float rounding differs from the CPU's)")
     p = sub.add_parser("train", help="fine-tune")
     p.add_argument("--data", action="append", required=True, help="a training folder, DIR or DIR:WEIGHT")
     p.add_argument("--init", type=Path, required=True)
@@ -675,7 +677,7 @@ def main(argv: list[str] | None = None) -> int:
         excl = [g.strip() for g in a.exclude.split(",") if g.strip()]
         return 0 if prep_coco(a.ann, a.images, a.out, games, excl) else 2
     if a.cmd == "prep-teacher":
-        return 0 if prep_teacher(a.src, a.out, a.frames, a.weights, a.shape) else 2
+        return 0 if prep_teacher(a.src, a.out, a.frames, a.weights, a.shape, a.device) else 2
     if a.cmd == "train":
         return train(a)
     return export(a.weights, a.out)
