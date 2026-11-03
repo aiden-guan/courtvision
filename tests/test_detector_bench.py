@@ -120,6 +120,7 @@ def test_coco_bench_scores_players_people_and_ball(tmp_path: Path) -> None:
     assert out["referees"] == {"n_truth": 1, "found": 1, "recall": pytest.approx(1.0)}
     assert out["other"]["detections"] == 2 and out["other"]["share"] == pytest.approx(0.5)
     assert out["other"]["per_frame"] == pytest.approx(1.0)
+    assert out["other"]["on_nobody"] == 2  # frame 2 labels nobody, so both of its boxes are on nobody
     rule = out["referee_rule_shirt"]  # the striped grey shirt is called a referee, the red jersey is not
     assert (rule["referees_called"], rule["referees"], rule["players_called_referee"], rule["players"]) == (1, 1, 0, 1)
     assert rule["precision"] == pytest.approx(1.0) and rule["recall"] == pytest.approx(1.0)

@@ -493,8 +493,8 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
     ``basketball-player-detection-2`` frames: NBA broadcasts, square crops of the full frame height). People:
     ``player`` and every ``player-<action>`` class are players, ``referee`` referees; recall and AP50 are reported for
     players alone and for players with referees. Detections at ``thresh`` are matched once to all labelled people:
-    the referees found (``referees``), the detections that match nobody labelled (``other``: the crowd, benches,
-    coaches) and the pipeline's referee check (``nba.analyze.is_referee``: the learned classifier, and
+    the referees found (``referees``), the detections that match nobody labelled (``other``; ``on_nobody``: those
+    overlapping no labelled person at IoU 0.1, the crowd, benches and staff, rather than a loose box on someone) and the pipeline's referee check (``nba.analyze.is_referee``: the learned classifier, and
     ``_shirt`` its first rule) on the matched detections (``referee_rule``); ``..._on_truth`` applies it to the
     labelled boxes themselves. Ball: on frames with a labelled ball, the top ball within
     ``tol_1080`` px of 1080 lines of frame height (the crop keeps the full height) is a hit, elsewhere wrong, nothing
@@ -516,7 +516,7 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
         key, idx = (m.group(1), int(m.group(2))) if m else (im["file_name"], 0)
         clips.setdefault(key, []).append((idx, im))
     tally = {m: {"players": Tally(), "people": Tally(), "hit": 0, "wrong": 0, "miss": 0, "false_alarm": 0,
-                 "no_ball_frames": 0, "hits": [], "refs_found": 0, "refs": 0, "other": 0, "kept": 0,
+                 "no_ball_frames": 0, "hits": [], "refs_found": 0, "refs": 0, "other": 0, "nobody": 0, "kept": 0,
                  "rule": []} for m in models}
     rule_on_truth: list[tuple[bool, bool]] = []
     x = np.empty((1, 9, *INPUT_HW), np.float32)
@@ -567,6 +567,9 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
                 got = greedy_assign(pb[keep], sc[keep], people)
                 o["kept"] += int(keep.sum())
                 o["other"] += int((got < 0).sum())
+                if (got < 0).any():  # on nobody labelled at all (the crowd, benches, staff), not a loose box on someone
+                    near = iou_matrix(pb[keep][got < 0], people).max(axis=1) if len(people) else np.zeros(int((got < 0).sum()))
+                    o["nobody"] += int((near < 0.1).sum())
                 o["refs"] += len(refs)
                 o["refs_found"] += int(sum(1 for j in got if j >= 0 and is_ref[j]))
                 o["rule"] += [(bool(is_ref[j]), is_referee(frame_bgr, tuple(b)), is_referee(frame_bgr, tuple(b), "shirt"))
@@ -597,7 +600,9 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
                   "referees": {"n_truth": o["refs"], "found": o["refs_found"],
                                "recall": o["refs_found"] / o["refs"] if o["refs"] else None},
                   "other": {"detections": o["other"], "share": o["other"] / o["kept"] if o["kept"] else None,
-                            "per_frame": o["other"] / frames_scored if frames_scored else None},
+                            "per_frame": o["other"] / frames_scored if frames_scored else None,
+                            "on_nobody": o["nobody"],
+                            "on_nobody_per_frame": o["nobody"] / frames_scored if frames_scored else None},
                   "referee_rule": _rule_counts([(r, c) for r, c, _ in o["rule"]]),
                   "referee_rule_shirt": _rule_counts([(r, c) for r, _, c in o["rule"]]),
                   "referee_rule_on_truth": _rule_counts([(r, c) for r, c, _ in rule_on_truth]),
@@ -669,14 +674,15 @@ def main(argv: list[str] | None = None) -> int:
                       f"{'—' if fa is None else f'{fa:.4f}'} | {cmp} |")
         print(f"\nReferees found and detections that match nobody labelled (the crowd, benches, coaches), at {a.thresh}; "
               "the referee rule (nba.analyze.is_referee) on the matched detections\n")
-        print("| set | model | referees found | other detections (share, per frame) | learned: referees called, "
-              "players called referee | shirt rule: the same |")
-        print("|---|---|---|---|---|---|")
+        print("| set | model | referees found | unmatched detections (share, per frame) | of them on nobody (per frame) "
+              "| learned: referees called, players called referee | shirt rule: the same |")
+        print("|---|---|---|---|---|---|---|")
         for ann, part in res.items():
             for m, o in part.items():
                 r, ot, ru, sh = o["referees"], o["other"], o["referee_rule"], o["referee_rule_shirt"]
                 print(f"| {Path(ann).name} | {Path(m).name} | {r['found']} / {r['n_truth']} | {ot['detections']} "
-                      f"({ot['share']:.3f}, {ot['per_frame']:.2f}) | {ru['referees_called']} / {ru['referees']}, "
+                      f"({ot['share']:.3f}, {ot['per_frame']:.2f}) | {ot['on_nobody']} ({ot['on_nobody_per_frame']:.2f}) | "
+                      f"{ru['referees_called']} / {ru['referees']}, "
                       f"{ru['players_called_referee']} / {ru['players']} | {sh['referees_called']} / {sh['referees']}, "
                       f"{sh['players_called_referee']} / {sh['players']} |")
             first = next(iter(part.values()))
