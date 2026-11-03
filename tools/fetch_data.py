@@ -219,9 +219,11 @@ def roboflow_split(anns: dict[str, dict], clips: list[str], folders: tuple[str, 
             "annotations": labels}
 
 
-def fetch_roboflow(out: Path, splits: Path = SPLITS) -> int:
+def fetch_roboflow(out: Path, splits: Path = SPLITS, whole: bool = False) -> int:
     """The splits file's training games' images from every folder of the copy, the held-out games' from ``valid`` and
-    ``test`` (the cloud round's sets: 1,190 and 211 images)."""
+    ``test`` (the cloud round's sets: 1,190 and 211 images). With ``whole``, also every image of the copy as it is
+    published, to ``<out>/whole/<folder>/`` beside its annotation file (the referee classifier's sources,
+    ``tools/referee_classifier.py``); images already fetched are linked, not fetched again."""
     rf = json.loads(splits.read_text())["roboflow_coco"]
 
     def ann_file(folder: str) -> dict:
@@ -250,6 +252,30 @@ def fetch_roboflow(out: Path, splits: Path = SPLITS) -> int:
             time.sleep(PAUSE_S)
         (out / f"{name}_ann.json").write_text(json.dumps(part))
         print(f"{name}: {len(part['images'])} images, {len(part['annotations'])} labels in {dest}", flush=True)
+    if whole:
+        have = {p.name: p for d in ("fit", "heldout") if (out / d).is_dir() for p in (out / d).iterdir()}
+        for folder in RF_SPLITS:
+            dest = out / "whole" / folder
+            dest.mkdir(parents=True, exist_ok=True)
+            for im in anns[folder]["images"]:
+                fn = im["file_name"]
+                if "/" in fn or fn.startswith(".") or (dest / fn).is_file():
+                    continue
+                if fn in have:
+                    (dest / fn).hardlink_to(have[fn])
+                    continue
+
+                def one(fn: str = fn, folder: str = folder, dest: Path = dest) -> None:
+                    with _get(f"{ROBOFLOW}/{folder}/{fn}") as resp:
+                        data = resp.read()
+                    tmp = dest / (fn + ".part")
+                    tmp.write_bytes(data)
+                    tmp.replace(dest / fn)
+
+                _retry(fn, one)
+                time.sleep(PAUSE_S)
+            (dest / "_annotations.coco.json").write_text(json.dumps(anns[folder]))
+            print(f"whole/{folder}: {len(anns[folder]['images'])} images", flush=True)
     return 0
 
 
@@ -266,11 +292,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--count", type=int, default=None, help="fetch at most this many clips")
     p = sub.add_parser("roboflow", help="the Roboflow NBA frames of the splits file's training and held-out games")
     p.add_argument("--out", type=Path, default=Path("data/roboflow"))
+    p.add_argument("--whole", action="store_true", help="also the whole copy, by folder (the referee classifier's data)")
     a = ap.parse_args(argv)
     if a.cmd == "sportsmot":
         return fetch_sportsmot(a.split, a.out)
     if a.cmd == "roboflow":
-        return fetch_roboflow(a.out)
+        return fetch_roboflow(a.out, whole=a.whole)
     return fetch_bard(a.clips, a.out, a.first, a.count)
 
 

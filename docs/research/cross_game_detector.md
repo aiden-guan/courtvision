@@ -651,6 +651,19 @@ the learned check and its guard stay as options. What the learned check needs be
 taking dark team jerseys for referees' shirts: training boxes from more uniforms, or the game's two team colours (which
 the pipeline fits) as an input.
 
+### 10.12 Fixing the learned referee check: plan, fixed before fitting
+
+The learned check takes dark team jerseys for referees' shirts (§10.10-10.11). Its 8 training games have few dark
+uniforms; SportsMOT boxes every player on the court in 7 other broadcasts (NBA, NCAA and FIBA; Wichita State plays in
+black and yellow), and none of those boxes is a referee. One change, nothing else: the same fit (`tools/referee_classifier.py`,
+the whole Roboflow copy, jitter 2, L2 1e-2, threshold 0.5) plus every SportsMOT player box of every 10th labelled
+frame of the 30 sequences (`--players data/ft/mot_train --players data/ft/mot_val`) as samples that are not referees.
+The refit of the current model on the same data is the control. Measures, each fixed now: the 8 Roboflow games left out
+one at a time (referees found, players called referee, F1; paired with the control), the SportsMOT broadcasts left
+out one at a time (players called referee), the 160 hand-labelled boxes of §10.10 (a check on the two games, read once),
+and the pipeline on both games with the learned check unguarded (§10.11's table). It becomes the pipeline's default only
+if neither game's possession timeline or made-or-missed is worse than the shirt rule's beyond chance.
+
 ## 11. Referees and the crowd (cloud): plan, fixed before training
 
 The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The

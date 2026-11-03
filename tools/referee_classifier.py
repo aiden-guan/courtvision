@@ -6,7 +6,10 @@
         --out courtvision/nba/referee_model.py
 
 Every labelled ``referee`` and ``player`` / ``player-<action>`` box of every image is a sample (plus ``--jitter``
-copies with the box moved and resized by about 6 %, as a detector's boxes are). Games are read from the file names
+copies with the box moved and resized by about 6 %, as a detector's boxes are). ``--players`` adds folders whose people
+are all players (``student_finetune.py prep-mot``: SportsMOT boxes the players on the court only), every
+``--players-every``-th labelled frame, each broadcast a game of its own: more uniforms that are not a referee's (the
+Roboflow games' dark jerseys are few; research note ``cross_game_detector.md`` §10.10). Games are read from the file names
 (``...-game-N``). First each game is left out in turn: a model fitted on the others calls that game's boxes at 0.5,
 beside the earlier shirt rule (``analyze.is_referee(..., method="shirt")``), with an exact McNemar test on the boxes
 only one of the two gets right. Then one model is fitted on every game and written to ``--out`` as Python constants.
@@ -74,6 +77,44 @@ def load(ann: Path, images: Path, jitter: int, seed: int) -> tuple[np.ndarray, n
     return np.array(X).reshape(-1, len(FEATURE_NAMES)), np.array(y, bool), games, rule
 
 
+def load_players(folder: Path, every: int, jitter: int, seed: int) -> tuple[np.ndarray, np.ndarray, list[str], list]:
+    """``load``'s arrays for a ClipDataset folder whose labelled people are all players (``prep-mot``): its stored
+    frames (scaled from the rows' ``size``), every ``every``-th labelled row; the game is the SportsMOT broadcast of the
+    clip's sequence (``v_<id>``)."""
+    rng = np.random.default_rng(seed)
+    meta = json.loads((folder / "meta.json").read_text())
+    seq = {c["clip"]: c.get("sequence", str(c["clip"])) for c in meta.get("clips", [])}
+    X, y, games, rule = [], [], [], []
+    n = 0
+    for r in map(json.loads, (folder / "detections.jsonl").open()):
+        if r.get("context") or not r.get("persons"):
+            continue
+        n += 1
+        if n % every:
+            continue
+        img = cv2.imread(str(folder / "frames" / f"{r['clip']:04d}" / f"{r['frame']:06d}.jpg"))
+        if img is None:
+            continue
+        k = img.shape[1] / float(r["size"][0])
+        game = "sportsmot:" + seq.get(r["clip"], str(r["clip"])).rsplit("_c", 1)[0]
+        for q in r["persons"]:
+            x1, y1, x2, y2 = (v * k for v in q[:4])
+            w, h = x2 - x1, y2 - y1
+            boxes = [(x1, y1, x2, y2)]
+            for _ in range(jitter):
+                dx, dy, sw, sh = rng.normal(0, 0.06, 4)
+                boxes.append((x1 + dx * w, y1 + dy * h, x2 + w * sw + dx * w, y2 + h * sh + dy * h))
+            for j, b in enumerate(boxes):
+                f = referee_features(img, b)
+                if f is None:
+                    continue
+                X.append(f)
+                y.append(False)
+                games.append(game)
+                rule.append(is_referee(img, b, method="shirt") if j == 0 else None)
+    return np.array(X).reshape(-1, len(FEATURE_NAMES)), np.array(y, bool), games, rule
+
+
 def prob(model: tuple, X: np.ndarray) -> np.ndarray:
     mu, sd, coef, bias = model
     return 1.0 / (1.0 + np.exp(-(((X - mu) / sd) @ coef + bias)))
@@ -97,6 +138,9 @@ def mcnemar(a: np.ndarray, b: np.ndarray) -> dict[str, float | int]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--source", action="append", required=True, help="ANN.json:IMAGES_DIR (repeat)")
+    ap.add_argument("--players", action="append", default=[], type=Path,
+                    help="a folder whose people are all players (prep-mot; repeat): more uniforms that are not a referee's")
+    ap.add_argument("--players-every", type=int, default=10, help="--players: every Nth labelled frame")
     ap.add_argument("--jitter", type=int, default=2)
     ap.add_argument("--l2", type=float, default=1e-2)
     ap.add_argument("--out", type=Path, default=None, help="write the fitted model here (a Python module)")
@@ -106,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
     for i, src in enumerate(a.source, start=1):
         ann, images = src.split(":", 1)
         parts.append(load(Path(ann), Path(images), a.jitter, seed=i))
+    for i, folder in enumerate(a.players, start=len(a.source) + 1):
+        parts.append(load_players(folder, a.players_every, a.jitter, seed=i))
     X = np.concatenate([p[0] for p in parts])
     y = np.concatenate([p[1] for p in parts])
     g = np.array(sum((p[2] for p in parts), []))
@@ -116,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{int(labelled.sum())} labelled boxes ({len(X)} with the jittered copies), {len(games)} games")
     per_game, right_rule, right_learned = {}, [], []
     pooled = {"rule": (np.zeros(0, bool), np.zeros(0, bool)), "learned": (np.zeros(0, bool), np.zeros(0, bool))}
+    extra = {"rule": (np.zeros(0, bool), np.zeros(0, bool)), "learned": (np.zeros(0, bool), np.zeros(0, bool))}
     print("| game left out | rule: referees called / players called referee, F1 | learned: the same |")
     print("|---|---|---|")
     for game in games:
@@ -124,10 +171,14 @@ def main(argv: list[str] | None = None) -> int:
         learned = prob(model, X[te]) >= THRESHOLD
         truth, by_rule = y[te], rule_call[te]
         per_game[game] = {"rule": counts(by_rule, truth), "learned": counts(learned, truth)}
-        for name, c in (("rule", by_rule), ("learned", learned)):
-            pooled[name] = (np.r_[pooled[name][0], c], np.r_[pooled[name][1], truth])
-        right_rule.append(by_rule == truth)
-        right_learned.append(learned == truth)
+        if game.startswith("sportsmot:"):  # players only: reported apart, so the NBA games' figures keep their meaning
+            for name, c in (("rule", by_rule), ("learned", learned)):
+                extra[name] = (np.r_[extra[name][0], c], np.r_[extra[name][1], truth])
+        else:
+            for name, c in (("rule", by_rule), ("learned", learned)):
+                pooled[name] = (np.r_[pooled[name][0], c], np.r_[pooled[name][1], truth])
+            right_rule.append(by_rule == truth)
+            right_learned.append(learned == truth)
         r, L = per_game[game]["rule"], per_game[game]["learned"]
         print(f"| {game} | {r['referees_called']}/{r['referees']} / {r['players_called_referee']}/{r['players']}, "
               f"{r['f1']:.3f} | {L['referees_called']}/{L['referees']} / {L['players_called_referee']}/{L['players']},"
@@ -139,8 +190,14 @@ def main(argv: list[str] | None = None) -> int:
               f"referee {s['players_called_referee']}/{s['players']}, precision {s['precision']:.3f}, F1 {s['f1']:.3f}")
     print(f"boxes only the rule gets right {test['only_rule']}, only the learned classifier {test['only_learned']}, "
           f"exact McNemar p {test['p_value']:.3g}")
+    players_only = {name: counts(*extra[name]) for name in extra} if len(extra["rule"][0]) else None
+    if players_only:
+        print("players-only broadcasts, each left out: players called referee: rule "
+              f"{players_only['rule']['players_called_referee']}/{players_only['rule']['players']}, learned "
+              f"{players_only['learned']['players_called_referee']}/{players_only['learned']['players']}")
     result = {"games": games, "per_game": per_game, "pooled": summary, "mcnemar": test, "threshold": THRESHOLD,
-              "l2": a.l2, "jitter": a.jitter, "sources": a.source}
+              "l2": a.l2, "jitter": a.jitter, "sources": a.source, "players": [str(f) for f in a.players],
+              "players_every": a.players_every, "players_only": players_only}
     if a.json:
         a.json.parent.mkdir(parents=True, exist_ok=True)
         a.json.write_text(json.dumps(result, indent=1))
