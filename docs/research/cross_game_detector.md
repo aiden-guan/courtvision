@@ -162,6 +162,11 @@ the other way: self-training with the path linker's temporal consistency improve
 part in it. The fine-tuned network also reports more ball candidates above 0.08 (704 against 475 on 120 frames,
 `runs/bench/int8_ft_full.json`); this benchmark scores the top candidate only.
 
+**The README's protocol on these games** (the linked ball path, `--link`, round 4; `runs/bench/ball_check12_linked.json`):
+the published student 81.9 % (wrong 11.4 %, missed 6.8 %; int8 81.5 %, p 0.34), the round-1 full fine-tune 88.7 %, T4
+91.6 % and T5 91.6 % (wrong 3.0 %, missed 5.5 %; against the published student 114 frames to 2, p 1.6e-31). On the
+published student's own game the same protocol gives 95.5 % (§10.2).
+
 ## 6. Players on broadcasts held out of the fine-tuning
 
 ### 6.1 NBA broadcasts held out (heads only, trained on the four NCAA and FIBA broadcasts)
@@ -578,3 +583,67 @@ candidate that passes. **Rule for replacing the main model**: no paired test aga
 (p < 0.05) on the ball or the players on the court of any of these sets, and the pipeline's possession and made-or-missed
 on both games not worse beyond chance; among candidates that pass, the one with more significant gains over the app
 model; on a tie, the single fine-tune over the soup. M1 (§10.7) is scored by the same rule.
+
+## 11. Referees and the crowd (cloud): plan, fixed before training
+
+The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The
+detector has one person class; the NBA pipeline tells referees apart afterwards by their shirts
+(`nba/analyze.is_referee`: an achromatic torso with dark stripes) and the browser app not at all. §10.2 measured both
+halves of the problem on the README's two games: the app model boxes 76 % of the people off the court (benches, the
+crowd) and 99 % of the referees; the fine-tunes, taught by SportsMOT's player-only labels that everyone else is
+background, box 5-8 % of the first and 10-27 % of the second. No new output is added; the aim is a person head that
+boxes the players and the referees and leaves the crowd alone.
+
+Two changes, each tried on T5's recipe (§9) with nothing else changed:
+
+* **R4a**: the Roboflow games' referees count as people (`prep-coco --referees`; until now they were left out like
+  SportsMOT's). The crowd, benches and coaches, never labelled there, stay background.
+* **R4b**: R4a plus *ignore regions* on SportsMOT (`mark-ignore`): the app model's people on each SportsMOT sample
+  that overlap no labelled player (IoU below 0.3) but stand among the players (foot point inside the hull of the
+  labelled players' foot points, grown by 5 % of the frame height) are left out of the person heatmap loss
+  (`ClipDataset`'s `ignore` boxes, `focal_loss(pixel_weight=...)`). These are mostly referees; people in the stands
+  fall outside the hull and stay background.
+
+Measures, on the 5 held-out Roboflow games (§9; `detector_bench.py --coco`, detections at 0.3, IoU 0.5): the share of
+the 506 labelled referees a box matches; the share of detections that match no labelled player or referee (the crowd,
+benches and coaches; also per frame); players AP50, recall and precision; and the referee rule's calls on the matched
+boxes. On the 1,153 BARD frames: the ball (§5), so that it is not paid for. Candidates: T5, R4a, R4b, with the app
+model and T2 for reference; all reported. The referee rule is also scored on the labelled boxes themselves, per game,
+so that any change to it would be fitted on the 3 training games and tested on the 5 held-out ones.
+
+### 11.1 Telling referees from players: a learned check (done)
+
+The shirt rule, scored on the human labels of the Roboflow set (every labelled player and referee box), misses about a
+quarter of the referees and calls many players in dark or grey jerseys referees (in Lakers v Timberwolves a third of
+the players). `nba/referee.py` replaces it as the pipeline's default (`analyze.is_referee`; `method="shirt"` keeps the
+rule): a logistic regression on 24 statistics of two parts of the box, the shirt and the trousers, each resampled to
+a fixed size so that the frame's resolution does not matter (saturation and brightness quantiles, the shares of dark,
+bright grey and coloured pixels, the coloured pixels' hues, brightness changes across and down for stripes). Every
+labelled box is a sample, with two copies moved and resized by about 6 % as a detector's boxes are; the two classes
+are weighted equally and the threshold is fixed at 0.5 (`tools/referee_classifier.py`).
+
+All 8 games of the set were left out one at a time (fitted on the other 7, scored on the boxes of the one left out;
+`runs/bench/referee_logo.json`):
+
+| Game left out | Rule: referees called | Rule: players called referee | Rule F1 | Learned: referees called | Learned: players called referee | Learned F1 |
+|---|---:|---:|---:|---:|---:|---:|
+| Celtics v Knicks, game 1 | 101 / 123 | 6 / 453 | 0.878 | 122 / 123 | 3 / 453 | 0.984 |
+| Celtics v Knicks, game 2 | 713 / 858 | 216 / 3230 | 0.798 | 766 / 858 | 16 / 3230 | 0.934 |
+| Celtics v Magic | 995 / 1315 | 568 / 4946 | 0.691 | 1218 / 1315 | 718 / 4946 | 0.749 |
+| Warriors v Rockets, game 3 | 311 / 384 | 218 / 1410 | 0.681 | 365 / 384 | 84 / 1410 | 0.876 |
+| Clippers v Nuggets | 782 / 833 | 176 / 2939 | 0.873 | 789 / 833 | 223 / 2939 | 0.855 |
+| Lakers v Timberwolves | 573 / 891 | 1065 / 3143 | 0.453 | 854 / 891 | 168 / 3143 | 0.893 |
+| Thunder v Nuggets, game 1 | 362 / 530 | 126 / 2251 | 0.711 | 492 / 530 | 453 / 2251 | 0.667 |
+| Thunder v Nuggets, game 3 | 672 / 1167 | 89 / 4068 | 0.697 | 1147 / 1167 | 65 / 4068 | 0.964 |
+| **All 8, pooled** | 4509 / 6101 | 2464 / 22440 | 0.690 | **5753 / 6101** | **1730 / 22440** | **0.847** |
+
+On the same boxes the learned check is right where the rule is wrong 3,339 times and the other way
+1,361 times (exact McNemar p 1.3e-188): referees found 73.9 % to 94.3 %, precision 0.647 to
+0.769. It is not better everywhere: in the two games with Denver it calls more players referees than the rule
+(Thunder v Nuggets game 1: 453 of 2,251), so some uniforms still pass for a referee's. The weights shipped
+(`nba/referee_model.py`) are fitted on all 8 games, so its numbers on the 5 held-out games of §9 are in-sample;
+the figures above are the honest estimate for a game it has not seen. It reads all boxes of a frame at once: 1.6 ms
+for a frame of 12 people on one core (the rule 0.4 ms), about two extra minutes for a whole game.
+
+The pipeline's numbers on the README's two games (§10.3, §10.4) were measured with the shirt rule; with the learned
+check they have to be measured again before the README changes.

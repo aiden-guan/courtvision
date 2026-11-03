@@ -190,11 +190,13 @@ def prep_video(src: Path, out: Path, model_path: Path, sample_every: int, max_fr
 # --------------------------------------------------------------------------- prep-coco
 
 
-def prep_coco(ann: Path, images: Path, out: Path, games: list[str], exclude: list[str]) -> int:
+def prep_coco(ann: Path, images: Path, out: Path, games: list[str], exclude: list[str],
+              referees: bool = False) -> int:
     """COCO-format human labels (a Roboflow export: ``player``, ``player-<action>``, ``referee``, ``ball``, ``rim``)
     -> a ClipDataset folder: every image its own one-frame clip (the network's earlier input frames are then the frame
-    itself: the export's frames are too far apart for motion), players (every ``player*`` class; referees are left
-    out, as in SportsMOT) as person labels with score 1, the human ball box centre as a ball label of weight 1.
+    itself: the export's frames are too far apart for motion), players (every ``player*`` class) as person labels with
+    score 1, the human ball box centre as a ball label of weight 1. Referees are left out, as in SportsMOT, unless
+    ``referees``: then they are people too (the crowd, benches and coaches, never labelled, stay background).
     ``games``: file-name prefixes to keep (all when empty); ``exclude``: prefixes to drop."""
     import shutil
 
@@ -220,7 +222,7 @@ def prep_coco(ann: Path, images: Path, out: Path, games: list[str], exclude: lis
         for a in by_img.get(im["id"], []):
             x, y, w, h = a["bbox"]
             c = cats[a["category_id"]]
-            if c == "player" or c.startswith("player-"):
+            if c == "player" or c.startswith("player-") or (referees and c == "referee"):
                 persons.append([x, y, x + w, y + h, 1.0])
             elif c == "ball" and ball is None:
                 ball = [x + w / 2.0, y + h / 2.0]
@@ -235,8 +237,90 @@ def prep_coco(ann: Path, images: Path, out: Path, games: list[str], exclude: lis
         "kind": "human", "video": f"coco:{ann.resolve()}:{','.join(games) or 'all'}", "source": str(ann),
         "games": games, "exclude": exclude, "fps": TRAIN_FPS, "rights_status": "research_only",
         "license": "labels CC BY 4.0 (Roboflow Universe); footage NBA", "label_origin": "human",
-        "persons": "players only (referees left out)"}, indent=1))
+        "persons": "players and referees" if referees else "players only (referees left out)"}, indent=1))
     print(f"{n} images, {sum(1 for r in lab_rows if r['w'] > 0)} with a ball", file=sys.stderr)
+    return n
+
+
+# --------------------------------------------------------------------------- mark-ignore
+
+
+def foot_hull_ignore(players: np.ndarray, found: np.ndarray, scores: np.ndarray, size: tuple[int, int],
+                     iou: float = 0.3, score: float = 0.3, margin: float = 0.05) -> list[list[float]]:
+    """The boxes of ``found`` (people another model detected, label px, with ``scores``) that a player-only label set
+    leaves out although they stand among its players: at ``score`` or more, overlapping no labelled player at ``iou``
+    or more, their foot point (bottom centre) inside the convex hull of the labelled players' foot points grown by
+    ``margin`` of the frame height. On a broadcast these are mostly referees (and a coach or bench player at the
+    sideline); people in the stands stand outside the hull and stay background. Fewer than 3 players: none."""
+    if len(players) < 3 or len(found) == 0:
+        return []
+    sys.path.insert(0, str(ROOT / "tools"))
+    from detector_bench import iou_matrix  # noqa: E402
+
+    feet = np.stack([(players[:, 0] + players[:, 2]) / 2.0, players[:, 3]], 1).astype(np.float32)
+    hull = cv2.convexHull(feet)
+    over = iou_matrix(found, players).max(axis=1) if len(players) else np.zeros(len(found))
+    out = []
+    for box, sc, o in zip(found, scores, over):
+        if sc < score or o >= iou:
+            continue
+        foot = (float((box[0] + box[2]) / 2.0), float(box[3]))
+        if cv2.pointPolygonTest(hull, foot, True) >= -margin * size[1]:
+            out.append([round(float(v), 1) for v in box[:4]])
+    return out
+
+
+def mark_ignore(src: Path, out: Path, model_path: Path, iou: float = 0.3, score: float = 0.3, margin: float = 0.05,
+                threads: int = 4, model: Any = None) -> int:
+    """A player-only folder (SportsMOT, ``prep-mot``) -> the same folder (``out``: its frames linked, not copied)
+    whose rows carry ``ignore`` boxes (``foot_hull_ignore``) found by ``model_path`` (default: the app's export,
+    which boxes everyone) on the network's own input of every sample: ``train_student.ClipDataset`` then leaves
+    those people out of the person heatmap loss, so the referees the labels skip are not taught as background.
+    ``model``: an already loaded ``detector_bench`` model (tests). Returns the number of ignore boxes."""
+    import shutil
+
+    sys.path.insert(0, str(ROOT / "tools"))
+    from detector_bench import load_model, run_model  # noqa: E402
+
+    from courtvision.training.train_student import ClipDataset, plan_data
+
+    if model is None:
+        model = load_model(model_path, threads, sparse=True)
+    plan = plan_data([str(src)])
+    ds = ClipDataset(plan.folders, plan.train | plan.val, train=False, weights=plan.weights)
+    marks: dict[tuple[int, int], list[list[float]]] = {}
+    n_rows = 0
+    for i, (_, clip, frames, det, _) in enumerate(ds.items):
+        players = np.array([q[:4] for q in det["persons"]], float).reshape(-1, 4)
+        if len(players) < 3:
+            continue
+        x, _ = ds[i]
+        size = tuple(det.get("size") or (1280, 720))
+        _, persons = run_model(model, x[None], size, 0.99, score)
+        found = np.array([q[:4] for q in persons], float).reshape(-1, 4)
+        scores = np.array([q[4] for q in persons], float)
+        boxes = foot_hull_ignore(players, found, scores, size, iou, score, margin)
+        n_rows += 1
+        if boxes:
+            marks[(clip, frames[-1])] = boxes
+        if n_rows % 500 == 0:
+            print(f"{n_rows} samples, {sum(len(v) for v in marks.values())} ignore boxes", file=sys.stderr, flush=True)
+    out.mkdir(parents=True, exist_ok=True)
+    rows = [json.loads(line) for line in (src / "detections.jsonl").open()]
+    for r in rows:
+        if (r["clip"], r["frame"]) in marks:
+            r["ignore"] = marks[(r["clip"], r["frame"])]
+    (out / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    shutil.copyfile(src / "ball_labels.jsonl", out / "ball_labels.jsonl")
+    if not (out / "frames").exists():
+        (out / "frames").symlink_to((src / "frames").resolve(), target_is_directory=True)
+    meta = json.loads((src / "meta.json").read_text())
+    n = sum(len(v) for v in marks.values())
+    meta["ignore"] = {"model": str(model_path), "iou": iou, "score": score, "margin": margin, "boxes": n,
+                      "rows": len(marks), "samples": n_rows,
+                      "what": "unlabelled people among the labelled players (mostly referees): no person loss"}
+    (out / "meta.json").write_text(json.dumps(meta, indent=1))
+    print(f"{out}: {n} ignore boxes on {len(marks)} of {n_rows} samples", file=sys.stderr)
     return n
 
 
@@ -501,7 +585,7 @@ def train(args: argparse.Namespace) -> int:
             o = {k: v.float() for k, v in o.items()}
             l_ball = focal_loss(o["ball_hm"], tg["ball_hm"], tg["ball_w"][:, 0])
             l_boff = masked_l1(o["ball_off"], tg["ball_off"], tg["ball_mask"])
-            l_phm = focal_loss(o["person_hm"], tg["person_hm"], tg["person_w"][:, 0])
+            l_phm = focal_loss(o["person_hm"], tg["person_hm"], tg["person_w"][:, 0], tg.get("person_valid"))
             l_pwh = masked_l1(o["person_wh"], tg["person_wh"], tg["person_mask"])
             l_poff = masked_l1(o["person_off"], tg["person_off"], tg["person_mask"])
             loss = args.ball_weight * (2.0 * l_ball + l_boff) + l_phm + 0.5 * l_pwh + l_poff
@@ -655,6 +739,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("out", type=Path)
     p.add_argument("--games", default="", help="comma list of file-name prefixes to keep (default: all)")
     p.add_argument("--exclude", default="", help="comma list of file-name prefixes to drop")
+    p.add_argument("--referees", action="store_true", help="referees are people too (default: players only)")
+    p = sub.add_parser("mark-ignore", help="player-only folder -> the same with the unlabelled people among the "
+                                         "players (mostly referees) left out of the person loss")
+    p.add_argument("src", type=Path)
+    p.add_argument("out", type=Path)
+    p.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="the model that finds everyone (the app's export)")
+    p.add_argument("--iou", type=float, default=0.3, help="overlap with a labelled player that makes a box that player")
+    p.add_argument("--score", type=float, default=0.3)
+    p.add_argument("--margin", type=float, default=0.05, help="growth of the players' foot hull, share of frame height")
+    p.add_argument("--threads", type=int, default=4)
     p = sub.add_parser("prep-teacher", help="videos -> an RF-DETR teacher folder (held-out ball checks)")
     p.add_argument("src", type=Path)
     p.add_argument("out", type=Path)
@@ -714,7 +808,9 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "prep-coco":
         games = [g.strip() for g in a.games.split(",") if g.strip()]
         excl = [g.strip() for g in a.exclude.split(",") if g.strip()]
-        return 0 if prep_coco(a.ann, a.images, a.out, games, excl) else 2
+        return 0 if prep_coco(a.ann, a.images, a.out, games, excl, a.referees) else 2
+    if a.cmd == "mark-ignore":
+        return 0 if mark_ignore(a.src, a.out, a.model, a.iou, a.score, a.margin, a.threads) >= 0 else 2
     if a.cmd == "prep-teacher":
         return 0 if prep_teacher(a.src, a.out, a.frames, a.weights, a.shape, a.device) else 2
     if a.cmd == "train":

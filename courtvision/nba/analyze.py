@@ -787,7 +787,37 @@ def rim_boxes(camera: CameraParams, court: CourtSpec, size: tuple[int, int]) -> 
     return out
 
 
-def is_referee(frame_bgr: np.ndarray, box: tuple[float, float, float, float]) -> bool:
+def is_referee(frame_bgr: np.ndarray, box: tuple[float, float, float, float], method: str = "learned") -> bool:
+    """Whether a person box shows a referee. ``learned`` (default): ``nba.referee``'s classifier of the shirt and
+    trouser colours at its threshold (left out one game at a time on 8 human-labelled NBA games it found 94 % of the
+    referees, the shirt rule 74 %, and called fewer players referees); a box too small to read is not a referee.
+    ``shirt``: the first rule, kept for comparison (``is_referee_shirt``)."""
+    if method == "shirt":
+        return is_referee_shirt(frame_bgr, box)
+    if method != "learned":
+        raise ValueError(f"unknown referee method {method!r}")
+    from courtvision.nba import referee_model
+    from courtvision.nba.referee import referee_prob
+
+    p = referee_prob(frame_bgr, box, referee_model)
+    return p is not None and p >= referee_model.THRESHOLD
+
+
+def are_referees(frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]], method: str = "learned"
+                 ) -> list[bool]:
+    """``is_referee`` for every person box of one frame (the learned check reads them all at once)."""
+    if method == "shirt":
+        return [is_referee_shirt(frame_bgr, b) for b in boxes]
+    if method != "learned":
+        raise ValueError(f"unknown referee method {method!r}")
+    from courtvision.nba import referee_model
+    from courtvision.nba.referee import referee_probs
+
+    probs = referee_probs(frame_bgr, boxes, referee_model) if boxes else np.zeros(0)
+    return [bool(p >= referee_model.THRESHOLD) for p in probs]  # NaN (unreadable) compares False
+
+
+def is_referee_shirt(frame_bgr: np.ndarray, box: tuple[float, float, float, float]) -> bool:
     """NBA referees wear grey shirts with black stripes: an achromatic, mid-bright torso with dark stripes (white
     and coloured jerseys fail it). Thresholds from torso statistics of on-court people on ESPN frames."""
     x1, y1, x2, y2 = box
@@ -867,10 +897,10 @@ class CachedDetector:
         h, w = frame_bgr.shape[:2]
         cam = self.camera.get(frame_idx) if self.camera is not None else None
         dets = []
-        for x1, y1, x2, y2, sc in self.cache.persons.get(frame_idx, np.zeros((0, 5))):
-            if sc < self.min_person:
-                continue
-            cls = ObjClass.REFEREE if is_referee(frame_bgr, (x1, y1, x2, y2)) else ObjClass.PLAYER
+        persons = [p for p in self.cache.persons.get(frame_idx, np.zeros((0, 5))) if p[4] >= self.min_person]
+        refs = are_referees(frame_bgr, [tuple(map(float, p[:4])) for p in persons])
+        for (x1, y1, x2, y2, sc), ref in zip(persons, refs):
+            cls = ObjClass.REFEREE if ref else ObjClass.PLAYER
             box = (float(x1), float(y1), float(x2), float(y2))
             if cam is not None:
                 box = rectify_box(box, cam, (w, h)) or box

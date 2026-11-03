@@ -200,3 +200,84 @@ def test_prep_video_appends_batches_to_one_folder(tmp_path: Path, monkeypatch: p
     assert sorted({r["clip"] for r in labels}) == [0, 1]
     with pytest.raises(SystemExit):  # another labeller into the same folder
         sf.prep_video(src, out, tmp_path / "other.onnx", 3, 6, 1, append=True)
+
+
+def test_prep_coco_can_count_referees_as_people(tmp_path: Path) -> None:
+    ann, imgs = _coco(tmp_path)
+    out = tmp_path / "coco_refs"
+    assert sf.prep_coco(ann, imgs, out, ["gameA"], [], referees=True) == 2
+    rows = [json.loads(line) for line in (out / "detections.jsonl").open()]
+    assert [len(r["persons"]) for r in rows] == [2, 1]  # the referee is a person now; the jersey number still is not
+    assert rows[0]["persons"][1][:4] == [50, 10, 70, 50]
+    assert json.loads((out / "meta.json").read_text())["persons"] == "players and referees"
+
+
+def test_foot_hull_keeps_people_among_the_players_and_drops_the_stands() -> None:
+    players = np.array([[100, 300, 140, 400], [500, 320, 540, 420], [300, 500, 340, 600]], float)
+    found = np.array([[300, 330, 340, 430],    # a referee between the players: unlabelled, inside the foot hull
+                      [300, 50, 330, 120],     # a fan in the stands: far above the hull
+                      [101, 301, 141, 401],    # one of the players again (overlaps a label)
+                      [700, 330, 740, 430]],   # beyond the hull by more than the margin
+                     float)
+    boxes = sf.foot_hull_ignore(players, found, np.array([0.9, 0.9, 0.9, 0.9]), (1280, 720), margin=0.05)
+    assert boxes == [[300.0, 330.0, 340.0, 430.0]]
+    assert sf.foot_hull_ignore(players, found, np.array([0.2, 0.9, 0.9, 0.9]), (1280, 720)) == []  # below 0.3
+    assert sf.foot_hull_ignore(players[:2], found, np.ones(4), (1280, 720)) == []  # too few players for a hull
+
+
+def test_ignore_boxes_leave_person_cells_out_of_the_loss(tmp_path: Path) -> None:
+    import torch
+
+    from courtvision.training.train_student import ClipDataset, focal_loss
+
+    human = _folder(tmp_path / "human", "human", "a", set(), persons=True)  # the person: (100, 100)-(160, 260)
+    rows = [json.loads(line) for line in (human / "detections.jsonl").open()]
+    for r in rows:
+        r["ignore"] = [[600, 100, 700, 300]]
+    (human / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    plan = plan_data([str(human)])
+    ds = ClipDataset(plan.folders, plan.train | plan.val, train=False, weights=plan.weights)
+    _, t = ds[0]
+    valid = t["person_valid"][0]
+    s = 960 / 1280 / 4  # label px -> output cells (stored at 960 px wide, stride 4)
+    assert valid[int(200 * s), int(650 * s)] == 0.0  # inside the ignore box
+    assert valid[int(180 * s), int(130 * s)] == 1.0 and valid[10, 10] == 1.0  # the labelled person, the background
+    logits = torch.zeros((1, 1, 4, 4))
+    target = torch.zeros((1, 1, 4, 4))
+    target[0, 0, 0, 0] = 1.0
+    w = torch.ones((1, 1, 4, 4))
+    full = float(focal_loss(logits, target, None, w))
+    w[0, 0, 2:, 2:] = 0.0
+    assert float(focal_loss(logits, target, None, w)) < full  # four background cells no longer count
+    assert float(focal_loss(logits, target)) == pytest.approx(full)
+
+
+def test_mark_ignore_writes_ignore_boxes_and_links_the_frames(tmp_path: Path) -> None:
+    src = tmp_path / "mot"
+    (src / "frames" / "0000").mkdir(parents=True)
+    rows = []
+    players = [[100, 300, 140, 400, 1.0], [500, 320, 540, 420, 1.0], [300, 500, 340, 600, 1.0]]
+    for f in range(1, 4):
+        cv2.imwrite(str(src / "frames" / "0000" / f"{f:06d}.jpg"), np.full((540, 960, 3), 90, np.uint8))
+        row = {"clip": 0, "frame": f, "size": [1280, 720], "persons": players, "balls": []}
+        if f < 3:
+            row["context"] = True
+        rows.append(row)
+    (src / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (src / "ball_labels.jsonl").write_text("".join(json.dumps({"clip": 0, "frame": f, "xy": None, "w": 0.0}) + "\n"
+                                                   for f in range(1, 4)))
+    (src / "meta.json").write_text(json.dumps({"kind": "human", "video": "mot:x"}))
+
+    class Everyone:
+        sparse = True
+
+        def detect(self, x, scale, ball_thresh, person_floor):  # noqa: ANN001, ANN201
+            return [], [tuple(p[:4]) + (0.9,) for p in players] + [(300, 330, 340, 430, 0.8), (300, 50, 330, 120, 0.8)]
+
+    out = tmp_path / "mot_ign"
+    assert sf.mark_ignore(src, out, Path("app.onnx"), model=Everyone()) == 1
+    got = [json.loads(line) for line in (out / "detections.jsonl").open()]
+    assert got[2]["ignore"] == [[300.0, 330.0, 340.0, 430.0]] and "ignore" not in got[0]  # samples only
+    assert (out / "frames").is_symlink() and (out / "frames" / "0000" / "000003.jpg").is_file()
+    meta = json.loads((out / "meta.json").read_text())
+    assert meta["video"] == "mot:x" and meta["ignore"]["boxes"] == 1

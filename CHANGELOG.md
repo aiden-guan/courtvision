@@ -29,6 +29,21 @@ tables in [BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ---
 
+## [Unreleased] — Referees told apart by a learned check; referee and crowd measures
+
+- **The pipeline's referee check is learned** (`nba/referee.py`, the default of `analyze.is_referee`; the shirt rule
+  stays as `method="shirt"`): shirt and trouser colour statistics, fitted on human labels of 8 NBA games (Roboflow
+  Universe, CC BY 4.0). Each game left out in turn: referees found 73.9% to **94.3%**, players called referee 2,464 to
+  1,730 of 22,440, F1 0.690 to **0.847** (McNemar p 1.3e-188); worse than the rule in the 2 games with Denver.
+  1.6 ms a frame of 12 people. `tools/referee_classifier.py` fits and checks it.
+- `detector_bench.py --coco` reports referees found, detections that match nobody labelled (the crowd, benches) and
+  both referee checks. The README's linked ball protocol on 30 unseen NBA games: 81.9% (published) to 91.6% (T5).
+- `student_finetune.py prep-coco --referees` and `mark-ignore` (SportsMOT people among the players left out of the
+  person loss), for a person head that keeps the referees and leaves the crowd alone (research note §11, in training).
+- `detector_bench.mcnemar`: exact for any number of discordant pairs (it overflowed above about 1,000).
+
+---
+
 ## [Unreleased] — Detector rounds 2 and 3: faster training, iterated self-training, NBA human labels, research weights
 
 Measured on 2026-11-03 in the same 4-core container; [research note §8](docs/research/cross_game_detector.md), tables in

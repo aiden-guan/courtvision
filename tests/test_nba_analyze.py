@@ -215,10 +215,11 @@ def test_rectify_box_is_none_when_the_box_centre_ray_does_not_come_down() -> Non
 
 def test_is_referee_on_synthetic_torsos() -> None:
     box = (40.0, 20.0, 160.0, 280.0)
-    assert is_referee(jersey((128, 128, 128), stripes=True), box)  # grey with black stripes
-    assert not is_referee(jersey((255, 255, 255)), box)  # a white jersey
-    assert not is_referee(jersey((150, 30, 10), stripes=True), box)  # saturated blue, even with dark stripes
-    assert not is_referee(jersey((128, 128, 128)), box)  # plain grey: no dark stripes
+    # the first, shirt rule (the learned default is scored on human labels: tools/referee_classifier.py)
+    assert is_referee(jersey((128, 128, 128), stripes=True), box, method="shirt")  # grey with black stripes
+    assert not is_referee(jersey((255, 255, 255)), box, method="shirt")  # a white jersey
+    assert not is_referee(jersey((150, 30, 10), stripes=True), box, method="shirt")  # saturated blue, dark stripes
+    assert not is_referee(jersey((128, 128, 128)), box, method="shirt")  # plain grey: no dark stripes
 
 
 # --------------------------------------------------------------------------- box score
@@ -789,9 +790,9 @@ def test_referee_test_unchanged_on_grey_striped_and_coloured_shirts() -> None:
     for _ in range(300):
         x1, y1 = rng.uniform(-20, 380), rng.uniform(-20, 280)
         box = (x1, y1, x1 + rng.uniform(4, 90), y1 + rng.uniform(4, 160))
-        assert analyze.is_referee(frame, box) == old(frame, box)
-    assert analyze.is_referee(frame, (40.0, 30.0, 120.0, 180.0)) and old(frame, (40.0, 30.0, 120.0, 180.0))
-    assert not analyze.is_referee(frame, (190.0, 30.0, 270.0, 180.0))
+        assert analyze.is_referee_shirt(frame, box) == old(frame, box)
+    assert analyze.is_referee_shirt(frame, (40.0, 30.0, 120.0, 180.0)) and old(frame, (40.0, 30.0, 120.0, 180.0))
+    assert not analyze.is_referee_shirt(frame, (190.0, 30.0, 270.0, 180.0))
 
 
 def test_prefetch_keeps_order_raises_the_producers_error_and_stops_early() -> None:
