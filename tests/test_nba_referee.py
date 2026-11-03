@@ -61,7 +61,29 @@ def test_is_referee_methods() -> None:
     box = (0, 0, 40, 96)
     assert is_referee(img, box, method="shirt") == is_referee_shirt(img, box)
     p = referee_prob(img, box)
-    assert p is not None and is_referee(img, box) == (p >= referee_model.THRESHOLD)
-    assert is_referee(img, (0, 0, 2, 2)) is False  # too small to read
+    assert p is not None and is_referee(img, box, method="learned") == (p >= referee_model.THRESHOLD)
+    assert is_referee(img, box) == is_referee_shirt(img, box)  # the shirt rule is the default (research note §10.11)
+    assert is_referee(img, (0, 0, 2, 2), method="learned") is False  # too small to read
     with pytest.raises(ValueError):
         is_referee(img, box, method="jersey")
+
+
+def test_referee_check_guard_falls_back_to_the_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    from courtvision.nba import analyze
+
+    monkeypatch.setattr(analyze, "are_referees", lambda img, boxes, method="shirt": [method == "learned"] * len(boxes))
+    img = np.zeros((10, 10, 3), np.uint8)
+    four, one = [(0, 0, 1, 1)] * 4, [(0, 0, 1, 1)]
+    guard = analyze.RefereeCheck("guarded", max_mean=3.5, min_frames=3, min_people=2)
+    assert guard(img, four, 1) == [True] * 4 and guard(img, one, 2) == [True]  # too few people: not counted
+    assert guard(img, four, 3) == [True] * 4  # 2 counted frames: not yet judged
+    assert guard(img, four, 4) == [False] * 4 and guard.fell_back_at == 4  # 4 calls a frame > 3.5: the rule
+    assert guard(img, one, 5) == [False]  # for the rest of the game
+    calm = analyze.RefereeCheck("guarded", max_mean=3.5, min_frames=3, min_people=2)
+    for k in range(5):
+        assert calm(img, [(0, 0, 1, 1)] * 3, k) == [True] * 3  # 3 a frame: the learned check stays
+    assert calm.fell_back_at is None
+    assert analyze.RefereeCheck("learned")(img, four) == [True] * 4
+    assert analyze.RefereeCheck()(img, four) == [False] * 4  # the default is the rule
+    with pytest.raises(ValueError):
+        analyze.RefereeCheck("jersey")

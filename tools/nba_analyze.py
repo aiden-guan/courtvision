@@ -113,7 +113,8 @@ def cmd_events(root: Path, args: argparse.Namespace) -> None:
     reads = load_scorebug(root / "scorebug.jsonl")
     cfg = PerceiveConfig(use_3d_flights=args.use_3d, home_color_bgr=tuple(game["home_color_bgr"]) if game.get("home_color_bgr") else None,
                          away_color_bgr=tuple(game["away_color_bgr"]) if game.get("away_color_bgr") else None,
-                         team_refit_at=TEAM_REFIT if getattr(args, "team_refit", False) else ())
+                         team_refit_at=TEAM_REFIT if getattr(args, "team_refit", False) else (),
+                         referees=getattr(args, "referees", "shirt"))
     start = frame_bound(camera, args.start) if args.start else 0
     end = frame_bound(camera, args.end) if args.end else None
     t0 = time.time()
@@ -467,6 +468,10 @@ def main() -> int:
     ap.add_argument("--team-refit", action="store_true",
                     help="events: refit the two team clusters as player crops accumulate (TeamConfig.refit_at), so a "
                          "first fit on a few frames does not hold for the whole game")
+    ap.add_argument("--referees", choices=("shirt", "learned", "guarded"), default="shirt",
+                    help="events: how referees are told from players (analyze.RefereeCheck): the shirt rule, the "
+                         "learned check, or the learned check that falls back to the rule for a game once it calls more "
+                         "than 3.5 referees a frame")
     ap.add_argument("--tol", type=float, default=2.5)
     ap.add_argument("--file", default="events.jsonl", help="eval: events file of the run (events.jsonl / fused.jsonl)")
     ap.add_argument("--fusion", default=None, help="fuse: FusionConfig overrides (JSON)")

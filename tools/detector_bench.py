@@ -550,7 +550,7 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
             balls_gt = boxes(("ball",))
             tol = tol_1080 * size[1] / 1080.0
             frame_bgr = cv2.imread(str(images / im["file_name"]))
-            rule_on_truth += [(bool(r), is_referee(frame_bgr, tuple(b)), is_referee(frame_bgr, tuple(b), "shirt"))
+            rule_on_truth += [(bool(r), is_referee(frame_bgr, tuple(b), "learned"), is_referee(frame_bgr, tuple(b), "shirt"))
                               for b, r in zip(people, is_ref)]
             for m, model in models.items():
                 balls, persons = run_model(model, x, size, ball_thresh, DECODE_FLOOR)
@@ -569,7 +569,8 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
                 o["other"] += int((got < 0).sum())
                 o["refs"] += len(refs)
                 o["refs_found"] += int(sum(1 for j in got if j >= 0 and is_ref[j]))
-                o["rule"] += [(bool(is_ref[j]), is_referee(frame_bgr, tuple(b)), is_referee(frame_bgr, tuple(b), "shirt"))
+                o["rule"] += [(bool(is_ref[j]), is_referee(frame_bgr, tuple(b), "learned"),
+                               is_referee(frame_bgr, tuple(b), "shirt"))
                               for b, j in zip(pb[keep], got) if j >= 0]
                 if len(balls_gt):
                     c = balls_gt[:, :2] + (balls_gt[:, 2:] - balls_gt[:, :2]) / 2

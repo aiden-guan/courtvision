@@ -787,11 +787,13 @@ def rim_boxes(camera: CameraParams, court: CourtSpec, size: tuple[int, int]) -> 
     return out
 
 
-def is_referee(frame_bgr: np.ndarray, box: tuple[float, float, float, float], method: str = "learned") -> bool:
-    """Whether a person box shows a referee. ``learned`` (default): ``nba.referee``'s classifier of the shirt and
-    trouser colours at its threshold (left out one game at a time on 8 human-labelled NBA games it found 94 % of the
-    referees, the shirt rule 74 %, and called fewer players referees); a box too small to read is not a referee.
-    ``shirt``: the first rule, kept for comparison (``is_referee_shirt``)."""
+def is_referee(frame_bgr: np.ndarray, box: tuple[float, float, float, float], method: str = "shirt") -> bool:
+    """Whether a person box shows a referee. ``shirt`` (default): the first rule (``is_referee_shirt``). ``learned``:
+    ``nba.referee``'s classifier of the shirt and trouser colours at its threshold (left out one game at a time on 8
+    human-labelled NBA games it found 94 % of the referees, the shirt rule 74 %, and called fewer players referees; a
+    box too small to read is not a referee). It is not the default: on Cavaliers @ Warriors (2017) it calls the
+    Cavaliers' black jerseys referees, and the possession timeline falls from 75.8 % to 38.8 % (research note
+    ``cross_game_detector.md`` §10.10-10.11); ``RefereeCheck`` guards it for a whole game."""
     if method == "shirt":
         return is_referee_shirt(frame_bgr, box)
     if method != "learned":
@@ -803,7 +805,7 @@ def is_referee(frame_bgr: np.ndarray, box: tuple[float, float, float, float], me
     return p is not None and p >= referee_model.THRESHOLD
 
 
-def are_referees(frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]], method: str = "learned"
+def are_referees(frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]], method: str = "shirt"
                  ) -> list[bool]:
     """``is_referee`` for every person box of one frame (the learned check reads them all at once)."""
     if method == "shirt":
@@ -884,21 +886,56 @@ def rectify_box(box: tuple[float, float, float, float], cam: CameraParams, size:
     return (u - half_w, head_v, u + half_w, foot_v)
 
 
-class CachedDetector:
-    """``Detector`` replaying the cache (persons; referees relabelled; no balls: the ball is set afterwards). With
-    ``camera``, person boxes are rectified to a standing player at their centre (``rectify_box``)."""
+class RefereeCheck:
+    """The referee calls of one game, frame after frame: ``shirt`` or ``learned`` as ``are_referees``, or ``guarded``:
+    the learned check until it has called more people referees than a game has: over the frames with at least
+    ``min_people`` boxes, once ``min_frames`` of them are seen, a mean above ``max_mean`` calls a frame (an NBA game has
+    3 referees; a team's dark uniform read as a referee's shirt adds several a frame) switches the rest of the game to
+    the shirt rule."""
 
-    def __init__(self, cache: DetectionCache, min_person: float = 0.3, camera: CameraTrack | None = None) -> None:
+    def __init__(self, method: str = "shirt", max_mean: float = 3.5, min_frames: int = 100, min_people: int = 8) -> None:
+        if method not in ("shirt", "learned", "guarded"):
+            raise ValueError(f"unknown referee method {method!r}")
+        self.method, self.max_mean, self.min_frames, self.min_people = method, max_mean, min_frames, min_people
+        self.frames = 0
+        self.calls = 0
+        self.fell_back_at: int | None = None  # the frame index the guard switched to the rule at
+
+    def __call__(self, frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]],
+                 frame_idx: int | None = None) -> list[bool]:
+        if self.method == "shirt" or self.fell_back_at is not None:
+            return are_referees(frame_bgr, boxes, "shirt")
+        calls = are_referees(frame_bgr, boxes, "learned")
+        if self.method == "learned" or len(boxes) < self.min_people:
+            return calls
+        self.frames += 1
+        self.calls += sum(calls)
+        if self.frames >= self.min_frames and self.calls / self.frames > self.max_mean:
+            self.fell_back_at = -1 if frame_idx is None else frame_idx
+            log.warning("learned referee check: %.1f referees a frame over %d frames; the shirt rule from here on",
+                        self.calls / self.frames, self.frames)
+            return are_referees(frame_bgr, boxes, "shirt")
+        return calls
+
+
+class CachedDetector:
+    """``Detector`` replaying the cache (persons; referees relabelled by ``referees``, a ``RefereeCheck`` method; no
+    balls: the ball is set afterwards). With ``camera``, person boxes are rectified to a standing player at their
+    centre (``rectify_box``)."""
+
+    def __init__(self, cache: DetectionCache, min_person: float = 0.3, camera: CameraTrack | None = None,
+                 referees: str = "shirt") -> None:
         self.cache = cache
         self.min_person = min_person
         self.camera = camera
+        self.referees = RefereeCheck(referees)
 
     def detect(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> FrameDetections:
         h, w = frame_bgr.shape[:2]
         cam = self.camera.get(frame_idx) if self.camera is not None else None
         dets = []
         persons = [p for p in self.cache.persons.get(frame_idx, np.zeros((0, 5))) if p[4] >= self.min_person]
-        refs = are_referees(frame_bgr, [tuple(map(float, p[:4])) for p in persons])
+        refs = self.referees(frame_bgr, [tuple(map(float, p[:4])) for p in persons], frame_idx)
         for (x1, y1, x2, y2, sc), ref in zip(persons, refs):
             cls = ObjClass.REFEREE if ref else ObjClass.PLAYER
             box = (float(x1), float(y1), float(x2), float(y2))
@@ -972,6 +1009,7 @@ class PerceiveConfig:
     home_color_bgr: tuple[int, int, int] | None = None
     away_color_bgr: tuple[int, int, int] | None = None
     team_refit_at: tuple[int, ...] = ()  # TeamConfig.refit_at (nba_analyze.py events --team-refit)
+    referees: str = "shirt"  # RefereeCheck method: shirt, learned or guarded (nba_analyze.py events --referees)
     league: str = "nba"
     # ByteTrack thresholds for the student detector, whose person scores sit lower than RF-DETR's (a centre
     # heatmap peak, not a classification score); tuned on Lakers @ Warriors frames
@@ -1003,7 +1041,8 @@ def perceive(video: Path, camera: CameraTrack, cache: DetectionCache, ball: Ball
                             **rate)
     first_cam = next(iter(sorted(camera.params)))
     calib0 = Calibration(homography=camera.homography(first_cam), image_size=size, league=cfg.league)  # type: ignore[arg-type]
-    pipe = PerceptionPipeline(CachedDetector(cache, camera=camera if cfg.rectify_boxes else None), calib0, config=pcfg)
+    pipe = PerceptionPipeline(CachedDetector(cache, camera=camera if cfg.rectify_boxes else None, referees=cfg.referees),
+                              calib0, config=pcfg)
     board = scoreboard_by_frame(reads, camera.fps, camera.frame_at)
     prev_cam_frame: int | None = None
     for idx, img in iter_frames(video, start, end, exact=camera.vfr):
