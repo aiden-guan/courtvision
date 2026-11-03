@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import types
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -71,7 +72,8 @@ def test_is_referee_methods() -> None:
 def test_referee_check_guard_falls_back_to_the_rule(monkeypatch: pytest.MonkeyPatch) -> None:
     from courtvision.nba import analyze
 
-    monkeypatch.setattr(analyze, "are_referees", lambda img, boxes, method="shirt": [method == "learned"] * len(boxes))
+    monkeypatch.setattr(analyze, "are_referees",
+                        lambda img, boxes, method="shirt", model=None: [method == "learned"] * len(boxes))
     img = np.zeros((10, 10, 3), np.uint8)
     four, one = [(0, 0, 1, 1)] * 4, [(0, 0, 1, 1)]
     guard = analyze.RefereeCheck("guarded", max_mean=3.5, min_frames=3, min_people=2)
@@ -87,3 +89,18 @@ def test_referee_check_guard_falls_back_to_the_rule(monkeypatch: pytest.MonkeyPa
     assert analyze.RefereeCheck()(img, four) == [False] * 4  # the default is the rule
     with pytest.raises(ValueError):
         analyze.RefereeCheck("jersey")
+
+
+def test_load_referee_model_reads_another_fit(tmp_path) -> None:  # noqa: ANN001
+    from courtvision.nba import analyze
+
+    text = Path(referee_model.__file__).read_text().replace("THRESHOLD = ", "THRESHOLD = 2 * ")
+    path = tmp_path / "refit.py"
+    path.write_text(text)
+    model = analyze.load_referee_model(path)
+    assert model.THRESHOLD == 2 * referee_model.THRESHOLD and model.COEF == referee_model.COEF
+    img = _person(96, 40, (128, 128, 128), True, (20, 20, 20))
+    box = (0.0, 0.0, 40.0, 96.0)
+    p = referee_prob(img, box)
+    assert analyze.are_referees(img, [box], "learned", model) == [bool(p >= 2 * referee_model.THRESHOLD)]
+    assert analyze.RefereeCheck("learned", model=model)(img, [box]) == [bool(p >= 2 * referee_model.THRESHOLD)]

@@ -114,7 +114,8 @@ def cmd_events(root: Path, args: argparse.Namespace) -> None:
     cfg = PerceiveConfig(use_3d_flights=args.use_3d, home_color_bgr=tuple(game["home_color_bgr"]) if game.get("home_color_bgr") else None,
                          away_color_bgr=tuple(game["away_color_bgr"]) if game.get("away_color_bgr") else None,
                          team_refit_at=TEAM_REFIT if getattr(args, "team_refit", False) else (),
-                         referees=getattr(args, "referees", "shirt"))
+                         referees=getattr(args, "referees", "shirt"),
+                         referee_model=getattr(args, "referee_model", None))
     start = frame_bound(camera, args.start) if args.start else 0
     end = frame_bound(camera, args.end) if args.end else None
     t0 = time.time()
@@ -472,6 +473,8 @@ def main() -> int:
                     help="events: how referees are told from players (analyze.RefereeCheck): the shirt rule, the "
                          "learned check, or the learned check that falls back to the rule for a game once it calls more "
                          "than 3.5 referees a frame")
+    ap.add_argument("--referee-model", default=None,
+                    help="events: the learned referee check's weights from this file (tools/referee_classifier.py --out)")
     ap.add_argument("--tol", type=float, default=2.5)
     ap.add_argument("--file", default="events.jsonl", help="eval: events file of the run (events.jsonl / fused.jsonl)")
     ap.add_argument("--fusion", default=None, help="fuse: FusionConfig overrides (JSON)")

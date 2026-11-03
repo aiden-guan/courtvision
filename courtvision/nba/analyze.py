@@ -805,9 +805,10 @@ def is_referee(frame_bgr: np.ndarray, box: tuple[float, float, float, float], me
     return p is not None and p >= referee_model.THRESHOLD
 
 
-def are_referees(frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]], method: str = "shirt"
-                 ) -> list[bool]:
-    """``is_referee`` for every person box of one frame (the learned check reads them all at once)."""
+def are_referees(frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]], method: str = "shirt",
+                 model: Any = None) -> list[bool]:
+    """``is_referee`` for every person box of one frame (the learned check reads them all at once; ``model``: another
+    fit of its weights, ``load_referee_model``, instead of the packaged ``nba.referee_model``)."""
     if method == "shirt":
         return [is_referee_shirt(frame_bgr, b) for b in boxes]
     if method != "learned":
@@ -815,8 +816,22 @@ def are_referees(frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, f
     from courtvision.nba import referee_model
     from courtvision.nba.referee import referee_probs
 
-    probs = referee_probs(frame_bgr, boxes, referee_model) if boxes else np.zeros(0)
-    return [bool(p >= referee_model.THRESHOLD) for p in probs]  # NaN (unreadable) compares False
+    weights = model or referee_model
+    probs = referee_probs(frame_bgr, boxes, weights) if boxes else np.zeros(0)
+    return [bool(p >= weights.THRESHOLD) for p in probs]  # NaN (unreadable) compares False
+
+
+def load_referee_model(path: str | Path) -> Any:
+    """A fit of the learned referee check's weights written by ``tools/referee_classifier.py --out`` (a Python file of
+    constants), for ``are_referees(model=...)``: to try a refit without replacing the packaged one."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("referee_model_" + Path(path).stem, str(path))
+    if spec is None or spec.loader is None:
+        raise ValueError(f"cannot load referee weights from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def is_referee_shirt(frame_bgr: np.ndarray, box: tuple[float, float, float, float]) -> bool:
@@ -893,10 +908,12 @@ class RefereeCheck:
     3 referees; a team's dark uniform read as a referee's shirt adds several a frame) switches the rest of the game to
     the shirt rule."""
 
-    def __init__(self, method: str = "shirt", max_mean: float = 3.5, min_frames: int = 100, min_people: int = 8) -> None:
+    def __init__(self, method: str = "shirt", max_mean: float = 3.5, min_frames: int = 100, min_people: int = 8,
+                 model: Any = None) -> None:
         if method not in ("shirt", "learned", "guarded"):
             raise ValueError(f"unknown referee method {method!r}")
         self.method, self.max_mean, self.min_frames, self.min_people = method, max_mean, min_frames, min_people
+        self.model = model  # the learned check's weights (None: the packaged ones)
         self.frames = 0
         self.calls = 0
         self.fell_back_at: int | None = None  # the frame index the guard switched to the rule at
@@ -905,7 +922,7 @@ class RefereeCheck:
                  frame_idx: int | None = None) -> list[bool]:
         if self.method == "shirt" or self.fell_back_at is not None:
             return are_referees(frame_bgr, boxes, "shirt")
-        calls = are_referees(frame_bgr, boxes, "learned")
+        calls = are_referees(frame_bgr, boxes, "learned", self.model)
         if self.method == "learned" or len(boxes) < self.min_people:
             return calls
         self.frames += 1
@@ -924,11 +941,11 @@ class CachedDetector:
     centre (``rectify_box``)."""
 
     def __init__(self, cache: DetectionCache, min_person: float = 0.3, camera: CameraTrack | None = None,
-                 referees: str = "shirt") -> None:
+                 referees: str = "shirt", referee_model: str | None = None) -> None:
         self.cache = cache
         self.min_person = min_person
         self.camera = camera
-        self.referees = RefereeCheck(referees)
+        self.referees = RefereeCheck(referees, model=load_referee_model(referee_model) if referee_model else None)
 
     def detect(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> FrameDetections:
         h, w = frame_bgr.shape[:2]
@@ -1010,6 +1027,7 @@ class PerceiveConfig:
     away_color_bgr: tuple[int, int, int] | None = None
     team_refit_at: tuple[int, ...] = ()  # TeamConfig.refit_at (nba_analyze.py events --team-refit)
     referees: str = "shirt"  # RefereeCheck method: shirt, learned or guarded (nba_analyze.py events --referees)
+    referee_model: str | None = None  # the learned check's weights from this file (load_referee_model), not the packaged
     league: str = "nba"
     # ByteTrack thresholds for the student detector, whose person scores sit lower than RF-DETR's (a centre
     # heatmap peak, not a classification score); tuned on Lakers @ Warriors frames
@@ -1041,8 +1059,8 @@ def perceive(video: Path, camera: CameraTrack, cache: DetectionCache, ball: Ball
                             **rate)
     first_cam = next(iter(sorted(camera.params)))
     calib0 = Calibration(homography=camera.homography(first_cam), image_size=size, league=cfg.league)  # type: ignore[arg-type]
-    pipe = PerceptionPipeline(CachedDetector(cache, camera=camera if cfg.rectify_boxes else None, referees=cfg.referees),
-                              calib0, config=pcfg)
+    pipe = PerceptionPipeline(CachedDetector(cache, camera=camera if cfg.rectify_boxes else None, referees=cfg.referees,
+                                             referee_model=cfg.referee_model), calib0, config=pcfg)
     board = scoreboard_by_frame(reads, camera.fps, camera.frame_at)
     prev_cam_frame: int | None = None
     for idx, img in iter_frames(video, start, end, exact=camera.vfr):
