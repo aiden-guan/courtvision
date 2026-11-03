@@ -104,7 +104,7 @@ def test_decode_sparse_matches_decode() -> None:
     b2, p2 = decode(dense, 0.5, ball_thresh=0.2, person_thresh=0.3)
     assert len(b1) == len(b2) > 0 and len(p1) == len(p2) > 0
     np.testing.assert_allclose(np.array(b1), np.array(b2), rtol=1e-5, atol=1e-4)
-    np.testing.assert_allclose(np.array(p1), np.array(p2), rtol=1e-5, atol=1e-3)
+    np.testing.assert_allclose(np.array(p1), np.array(p2), rtol=1e-4, atol=1e-3)  # random weights: sizes up to 1e17
 
 
 def test_onnx_weights_round_trip_into_build_net(exported) -> None:  # noqa: ANN001

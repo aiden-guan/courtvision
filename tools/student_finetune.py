@@ -323,8 +323,8 @@ def _quick_mot_eval(net: Any, seqs: list[Any], frames_per_seq: int) -> dict[str,
             fr = [f for f in sorted(seq.gt) if f >= 3]
             for f in fr[:: max(1, len(fr) // frames_per_seq)][:frames_per_seq]:
                 imgs = [cv2.imread(str(seq.frames[g - 1])) for g in (f - 2, f - 1, f)]
-                x = torch.from_numpy(preprocess_frames(imgs)[None])
-                out = {k: v[0].numpy() for k, v in net(x).items()}
+                x = torch.from_numpy(preprocess_frames(imgs)[None]).to(next(net.parameters()).device)
+                out = {k: v[0].float().cpu().numpy() for k, v in net(x).items()}
                 for k in ("ball_hm", "person_hm"):
                     out[k] = 1.0 / (1.0 + np.exp(-out[k]))
                 _, persons = decode(out, input_scale(*seq.size), person_thresh=0.05, person_k=100)
@@ -405,6 +405,7 @@ def train(args: argparse.Namespace) -> int:
     net = build_net(3, pretrained=False)
     state = torch.load(args.init, map_location="cpu", weights_only=True)
     net.load_state_dict(state.get("model", state))
+    net = net.to(args.device)
     if args.channels_last:  # oneDNN's preferred layout for CPU convolutions
         net = net.to(memory_format=torch.channels_last)
     frozen = [m for m in args.freeze.split(",") if m]
@@ -453,10 +454,14 @@ def train(args: argparse.Namespace) -> int:
         for x, tg in loader:
             net.train()
             freeze_bn(net)
+            x = x.to(args.device, non_blocking=True)
+            tg = {k: v.to(args.device, non_blocking=True) for k, v in tg.items()}
             if args.channels_last:
                 x = x.contiguous(memory_format=torch.channels_last)
-            # bf16 autocast runs the convolutions on AMX / AVX512-BF16 where the CPU has them; the losses stay fp32
-            with torch.autocast("cpu", dtype=torch.bfloat16, enabled=args.bf16):
+            # bf16 autocast runs the convolutions on AMX / AVX512-BF16 where the CPU has them (on MPS: the GPU's
+            # bf16); --fp16 is MPS's half precision; the losses stay fp32
+            with torch.autocast(args.device, dtype=torch.float16 if args.fp16 else torch.bfloat16,
+                                enabled=args.bf16 or args.fp16):
                 o = net(x)
             o = {k: v.float() for k, v in o.items()}
             l_ball = focal_loss(o["ball_hm"], tg["ball_hm"], tg["ball_w"][:, 0])
@@ -485,7 +490,7 @@ def train(args: argparse.Namespace) -> int:
                 print(f"step {step} eval {ev}", flush=True)
                 log.write(json.dumps({"step": step, "eval": ev}) + "\n")
                 log.flush()
-                state = {"model": net.state_dict(), "step": step, "eval": ev, "init": str(args.init),
+                state = {"model": {k: v.cpu() for k, v in net.state_dict().items()}, "step": step, "eval": ev, "init": str(args.init),
                          "data": args.data}
                 torch.save(state, out / "last.pt")
                 if ev and ev["ap50"] > best:
@@ -638,6 +643,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--bf16", action="store_true", help="bf16 autocast for the forward pass (CPU AMX / AVX512-BF16)")
+    p.add_argument("--fp16", action="store_true", help="fp16 autocast for the forward pass (--device mps)")
+    p.add_argument("--device", default="cpu", choices=("cpu", "mps"), help="where to train (mps: Apple GPU)")
     p.add_argument("--balance", action="store_true", help="sample every --data folder equally often")
     p.add_argument("--static-p", type=float, default=0.0,
                    help="temporal dropout: share of samples whose earlier input frames are the frame itself")

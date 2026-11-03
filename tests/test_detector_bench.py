@@ -140,3 +140,23 @@ def test_ball_bench_scores_top_candidates_and_linked_paths(tmp_path: Path) -> No
     linked = db.ball_bench([folder], {"m": Moving()}, 0.08, 15.0, 0.5, quiet=True, link=True)["m"]
     assert linked["n"] == 6
     assert linked["hit"] + linked["wrong"] + linked["miss"] == 6
+
+
+def test_ball_bench_held_out_clips_and_teacher_people(tmp_path: Path) -> None:
+    folder = tmp_path / "teacher"
+    rows, labels = [], []
+    people = [[10, 10, 50, 90, 0.9], [200, 10, 240, 90, 0.8], [400, 10, 440, 90, 0.3]]  # the last below 0.5
+    for clip in (0, 5):
+        (folder / "frames" / f"{clip:04d}").mkdir(parents=True)
+        for f in range(1, 5):
+            cv2.imwrite(str(folder / "frames" / f"{clip:04d}" / f"{f:06d}.jpg"), np.zeros((54, 96, 3), np.uint8))
+            rows.append({"clip": clip, "frame": f, "size": [960, 540], "persons": people, "balls": []})
+            labels.append({"clip": clip, "frame": f, "xy": [100.0, 200.0], "w": 1.0, "source": "detected"})
+    (folder / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (folder / "ball_labels.jsonl").write_text("".join(json.dumps(r) + "\n" for r in labels))
+    model = _FakeSparse([(100.0, 200.0, 0.9)], [(12, 12, 50, 88, 0.9), (600, 10, 640, 90, 0.9)])
+    every = db.ball_bench([folder], {"m": model}, 0.08, 15.0, 0.5, quiet=True)["m"]
+    held = db.ball_bench([folder], {"m": model}, 0.08, 15.0, 0.5, quiet=True, held_out=True)["m"]
+    assert every["n"] == 4 and held["n"] == 2  # frames 3 and 4 of each clip (two earlier frames needed)
+    assert held["hit_rate"] == 1.0
+    assert held["person_recall_vs_teacher"] == pytest.approx(0.5)  # one of the two teacher people >= 0.5

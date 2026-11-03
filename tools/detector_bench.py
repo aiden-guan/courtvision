@@ -369,15 +369,20 @@ LINK_THRESH = 0.04  # candidates kept for linking (tools/nba_ball_bench.py's stu
 
 
 def ball_bench(folders: list[Path], models: dict[str, Any], ball_thresh: float, tol_1080: float,
-               min_weight: float, quiet: bool, link: bool = False) -> dict[str, dict[str, Any]]:
+               min_weight: float, quiet: bool, link: bool = False, held_out: bool = False,
+               person_thresh: float = 0.3) -> dict[str, dict[str, Any]]:
     """Each model's top ball on every labelled frame of teacher folders (``ball_labels.jsonl`` weight >=
     ``min_weight``: the teacher's linked path, ``training.ball_labels``): within ``tol_1080`` px of 1080p of the label
     (hit), elsewhere (wrong) or nothing above ``ball_thresh`` (miss). The network sees the frame and the two stored
     frames before it, as in training (``train_student.ClipDataset``). Each model's per-frame hits are kept in one
     order (``hits``) for paired comparisons (``mcnemar``). With ``link`` the call is the clip's linked ball path
     instead (``analyze.link_ball`` over every frame's candidates from ``LINK_THRESH``, identity camera), as
-    ``tools/nba_ball_bench.py`` scores the student for the README's "ball found within 15 px"."""
-    out = {m: {"hit": 0, "wrong": 0, "miss": 0, "err_px_1080": [], "hits": []} for m in models}
+    ``tools/nba_ball_bench.py`` scores the student for the README's "ball found within 15 px". With ``held_out`` only
+    ``train_student``'s held-out clips (every 10th, ``clip % 10 == 5``) are scored: a teacher folder the model was
+    distilled on. Also counted on the scored frames: the teacher's people (score >= 0.5; referees and the crowd
+    included) that a box of the model at ``person_thresh`` matches at IoU 0.5 (``person_recall_vs_teacher``)."""
+    out = {m: {"hit": 0, "wrong": 0, "miss": 0, "err_px_1080": [], "hits": [], "p_hit": 0, "p_n": 0}
+           for m in models}
     x = np.empty((1, 9, *INPUT_HW), np.float32)
     for folder in folders:
         rows = {(r["clip"], r["frame"]): r for r in map(json.loads, (folder / "detections.jsonl").open())}
@@ -386,6 +391,8 @@ def ball_bench(folders: list[Path], models: dict[str, Any], ball_thresh: float, 
         for c, f in rows:
             by_clip.setdefault(c, []).append(f)
         for clip, frames in sorted(by_clip.items()):
+            if held_out and clip % 10 != 5:
+                continue
             frames.sort()
             cache: dict[int, np.ndarray] = {}
             paths: dict[str, dict[int, tuple[float, float, float]]] = {}
@@ -419,13 +426,20 @@ def ball_bench(folders: list[Path], models: dict[str, Any], ball_thresh: float, 
                         x[0, 3 * k:3 * k + 3] = cache[g]
                 size = tuple(rows[(clip, f)]["size"])
                 tol = tol_1080 * size[1] / 1080.0
+                if link:
+                    for k, g in enumerate(frames[i - 2:i + 1]):  # the people of this frame's own input
+                        x[0, 3 * k:3 * k + 3] = cache[g]
+                teach = np.array([q[:4] for q in rows[(clip, f)]["persons"] if q[4] >= 0.5]).reshape(-1, 4)
                 for m, model in models.items():
+                    balls, persons = run_model(model, x, size, ball_thresh, person_thresh)
                     if link:
                         p = paths[m].get(f)
                         balls = [] if p is None else [(p[0], p[1], 1.0)]
-                    else:
-                        balls, _ = run_model(model, x, size, ball_thresh, 0.99)
                     o = out[m]
+                    if len(teach):
+                        mine = np.array([q[:4] for q in persons]).reshape(-1, 4)
+                        o["p_n"] += len(teach)
+                        o["p_hit"] += int((iou_matrix(teach, mine) >= IOU_MATCH).any(axis=1).sum()) if len(mine) else 0
                     if not balls:
                         o["miss"] += 1
                         o["hits"].append(0)
@@ -446,7 +460,8 @@ def ball_bench(folders: list[Path], models: dict[str, Any], ball_thresh: float, 
         o.update({"n": n, "hit_rate": o["hit"] / n if n else None, "wrong_rate": o["wrong"] / n if n else None,
                   "miss_rate": o["miss"] / n if n else None,
                   "median_err_px_1080": float(np.median(o["err_px_1080"])) if o["err_px_1080"] else None,
-                  "vs_first": mcnemar(first, o["hits"])})
+                  "vs_first": mcnemar(first, o["hits"]),
+                  "person_recall_vs_teacher": o["p_hit"] / o["p_n"] if o["p_n"] else None})
         del o["err_px_1080"]
     return out
 
@@ -574,6 +589,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="COCO frames are sampled sparsely: the two earlier input frames are the frame itself (static) "
                         "or the clip's previous exported frames (prev)")
     p.add_argument("--ball-min-weight", type=float, default=0.5)
+    p.add_argument("--held-out", action="store_true",
+                   help="ball: only train_student's held-out clips (clip %% 10 == 5) of each folder")
     p.add_argument("--link", action="store_true",
                    help="ball: score each clip's linked path (nba_ball_bench.py's protocol) instead of the top candidate")
     p.add_argument("-q", "--quiet", action="store_true")
@@ -613,7 +630,8 @@ def main(argv: list[str] | None = None) -> int:
         paths = [Path(m.strip()) for m in a.models.split(",") if m.strip()]
         models = {str(pth): load_model(pth, a.threads, a.sparse) for pth in paths}
         folders = [Path(f.strip()) for f in a.ball_folder.split(",") if f.strip()]
-        res = ball_bench(folders, models, a.ball_thresh, a.ball_tol, a.ball_min_weight, a.quiet, a.link)
+        res = ball_bench(folders, models, a.ball_thresh, a.ball_tol, a.ball_min_weight, a.quiet, a.link, a.held_out,
+                         a.thresh)
         how = f"the linked path (link_ball, candidates from {LINK_THRESH})" if a.link else \
             f"the top candidate, threshold {a.ball_thresh}"
         print(f"\nball within {a.ball_tol:g} px of 1080p, labelled frames of {a.ball_folder} (weight >= "

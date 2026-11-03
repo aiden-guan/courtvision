@@ -277,3 +277,33 @@ recipe with the person labels swapped to the four NCAA and FIBA broadcasts (`val
 Recall by broadcast: Warriors at Oracle 0.689, 0.690, 0.706; Lakers at New Orleans (a re-streamed local feed) 0.467,
 0.508, **0.787**. With the trunk free to change, footage of other leagues lifts NBA player detection far more than the
 retrained heads did; the broadcast that was already handled best gains little.
+
+## 9. Round 3 on the owner's Mac (M3 Pro): the README's two games
+
+### 9.1 Protocol, fixed before any result of this round was read
+
+The fine-tunes above never saw the README's two games, whose footage is only on the Mac. Before any number below was
+looked at, the test sets, candidates and measures were fixed as follows.
+
+* **Lakers @ Warriors (2024-12-25), ball and people**: the app model's own held-out clips, `train_student`'s every
+  10th clip (`clip % 10 == 5`) of `runs/nba/2024-12-25-LAL-GSW/teacher` (15 clips of 36 frames; labels by the RF-DETR
+  teacher recipe). The app model was distilled on the other clips of this game (clips within 2 s of a held-out clip
+  left out), so for it these are in-game held-out frames; the fine-tunes never saw this game. Scored with
+  `tools/detector_bench.py --ball-folder ... --held-out`: the top ball candidate (threshold 0.08) within 15 px of
+  1080p, and with `--link` the clip's linked ball path (the protocol of `tools/nba_ball_bench.py` and the README's
+  95.7 %). Also counted: the teacher's people (score >= 0.5) a box at 0.3 matches at IoU 0.5. The teacher boxes
+  referees, benches and spectators too, which the fine-tunes were taught to leave alone, so this measure is biased
+  against them.
+* **Cavaliers @ Warriors (2017 Finals Game 5), ball and people**: no model of this repo has trained on it. New
+  teacher labels on 60 clips (`tools/nba_teacher_labels.py --clips 60 --seed 0`, the tool's default mix of clips with
+  and without the scorebug), every clip scored the same way. This folder is a test set only: it is listed in
+  `cross_game_detector_splits.json` and is never trained or tuned on.
+* **The pipeline on Lakers @ Warriors**: the whole game re-detected with a candidate (`nba_analyze.py detect
+  --det-dir ...`), then `ball`, `events` and `timeline` as for the README's run `full` (the timeline and shot models
+  fitted on one half and scored on the other): team with the ball in settled live play (README 96.2 %), made or missed
+  on real shots (84.8 %), real shot or not, free throw or field goal, box-score error. The app model's run is
+  repeated with the current code first. Court registration reads no detections (`nba_track_court.py`), so it does not
+  change with the detector and is not re-measured.
+* **Candidates**: the app model (`courtvision/server/static/nba-student.onnx`), `models/research/student-ft-r2.onnx`
+  and its int8 file, and later models from the cloud rounds (T4, T5, the soups) or this round as they are made. Every
+  candidate tried is reported. Paired ball comparisons are exact McNemar tests on the frames only one model hits.
