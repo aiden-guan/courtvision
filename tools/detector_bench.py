@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from dataclasses import dataclass, field
@@ -339,52 +340,210 @@ def run(seqs: list[Sequence], models: dict[str, Any], stride: int, thresh: float
     return per_seq, pooled
 
 
-def ball_bench(folder: Path, models: dict[str, Any], ball_thresh: float, tol_1080: float, min_weight: float,
-               quiet: bool) -> dict[str, dict[str, Any]]:
-    """Each model's top ball on every labelled frame of a teacher folder (``ball_labels.jsonl`` weight >=
+def mcnemar(a: list[int], b: list[int]) -> dict[str, Any]:
+    """Paired comparison of two models' per-frame hits: frames only ``a`` hits, only ``b`` hits, and the exact
+    two-sided McNemar p-value (a binomial test on the discordant frames)."""
+    only_a = sum(1 for x, y in zip(a, b) if x and not y)
+    only_b = sum(1 for x, y in zip(a, b) if y and not x)
+    n = only_a + only_b
+    k = min(only_a, only_b)
+    p = min(1.0, 2.0 * sum(math.comb(n, i) for i in range(k + 1)) / 2.0 ** n) if n else 1.0
+    return {"only_first": only_a, "only_second": only_b, "p_value": p}
+
+
+class _IdentityCamera:
+    """A camera track stand-in for ``analyze.link_ball`` on short clips (``tools/nba_ball_bench.py``'s protocol): every
+    frame tracked, no frame-to-frame homography (camera motion stays in the motion cost), the clip's rate and size."""
+
+    def __init__(self, fps: float, size: tuple[int, int]) -> None:
+        self.fps, self.image_size = fps, size
+
+    def get(self, f: int) -> object:
+        return object()
+
+    def frame_to_frame(self, a: int, b: int) -> None:
+        return None
+
+
+LINK_THRESH = 0.04  # candidates kept for linking (tools/nba_ball_bench.py's student threshold)
+
+
+def ball_bench(folders: list[Path], models: dict[str, Any], ball_thresh: float, tol_1080: float,
+               min_weight: float, quiet: bool, link: bool = False) -> dict[str, dict[str, Any]]:
+    """Each model's top ball on every labelled frame of teacher folders (``ball_labels.jsonl`` weight >=
     ``min_weight``: the teacher's linked path, ``training.ball_labels``): within ``tol_1080`` px of 1080p of the label
     (hit), elsewhere (wrong) or nothing above ``ball_thresh`` (miss). The network sees the frame and the two stored
-    frames before it, as in training (``train_student.ClipDataset``)."""
-    rows = {(r["clip"], r["frame"]): r for r in map(json.loads, (folder / "detections.jsonl").open())}
-    labels = {(r["clip"], r["frame"]): r for r in map(json.loads, (folder / "ball_labels.jsonl").open())}
-    by_clip: dict[int, list[int]] = {}
-    for c, f in rows:
-        by_clip.setdefault(c, []).append(f)
-    out = {m: {"hit": 0, "wrong": 0, "miss": 0, "err_px_1080": []} for m in models}
+    frames before it, as in training (``train_student.ClipDataset``). Each model's per-frame hits are kept in one
+    order (``hits``) for paired comparisons (``mcnemar``). With ``link`` the call is the clip's linked ball path
+    instead (``analyze.link_ball`` over every frame's candidates from ``LINK_THRESH``, identity camera), as
+    ``tools/nba_ball_bench.py`` scores the student for the README's "ball found within 15 px"."""
+    out = {m: {"hit": 0, "wrong": 0, "miss": 0, "err_px_1080": [], "hits": []} for m in models}
     x = np.empty((1, 9, *INPUT_HW), np.float32)
-    for clip, frames in sorted(by_clip.items()):
-        frames.sort()
-        cache: dict[int, np.ndarray] = {}
-        for i, f in enumerate(frames):
-            lab = labels.get((clip, f))
-            if not lab or lab.get("xy") is None or lab.get("w", 0) < min_weight or i < 2:
-                continue
-            for k, g in enumerate(frames[i - 2:i + 1]):
-                if g not in cache:
-                    cache[g] = preprocess_frames([cv2.imread(str(folder / "frames" / f"{clip:04d}" / f"{g:06d}.jpg"))])
-                x[0, 3 * k:3 * k + 3] = cache[g]
-            size = tuple(rows[(clip, f)]["size"])
-            tol = tol_1080 * size[1] / 1080.0
-            for m, model in models.items():
-                balls, _ = run_model(model, x, size, ball_thresh, 0.99)
-                o = out[m]
-                if not balls:
-                    o["miss"] += 1
+    for folder in folders:
+        rows = {(r["clip"], r["frame"]): r for r in map(json.loads, (folder / "detections.jsonl").open())}
+        labels = {(r["clip"], r["frame"]): r for r in map(json.loads, (folder / "ball_labels.jsonl").open())}
+        by_clip: dict[int, list[int]] = {}
+        for c, f in rows:
+            by_clip.setdefault(c, []).append(f)
+        for clip, frames in sorted(by_clip.items()):
+            frames.sort()
+            cache: dict[int, np.ndarray] = {}
+            paths: dict[str, dict[int, tuple[float, float, float]]] = {}
+            if link:  # every frame's candidates (the first frames' history repeats the earliest), then one path
+                from courtvision.nba.analyze import BallLinkConfig, DetectionCache, link_ball
+
+                caches = {m: DetectionCache() for m in models}
+                for i, f in enumerate(frames):
+                    for k, g in enumerate([frames[max(0, i - 2)], frames[max(0, i - 1)], f]):
+                        if g not in cache:
+                            img = cv2.imread(str(folder / "frames" / f"{clip:04d}" / f"{g:06d}.jpg"))
+                            cache[g] = preprocess_frames([img])
+                        x[0, 3 * k:3 * k + 3] = cache[g]
+                    size = tuple(rows[(clip, f)]["size"])
+                    for m, model in models.items():
+                        b, _ = run_model(model, x, size, LINK_THRESH, 0.99)
+                        caches[m].balls[f] = np.asarray(b, np.float32).reshape(-1, 3)
+                        caches[m].persons[f] = np.zeros((0, 5), np.float32)
+                size0 = tuple(rows[(clip, frames[0])]["size"])
+                for m in models:
+                    paths[m] = link_ball(caches[m], _IdentityCamera(29.97, size0), BallLinkConfig())  # type: ignore[arg-type]
+            for i, f in enumerate(frames):
+                lab = labels.get((clip, f))
+                if not lab or lab.get("xy") is None or lab.get("w", 0) < min_weight or i < 2:
                     continue
-                bx, by, _ = balls[0]
-                d = float(np.hypot(bx - lab["xy"][0], by - lab["xy"][1]))
-                o["hit" if d <= tol else "wrong"] += 1
-                if d <= tol:
-                    o["err_px_1080"].append(d * 1080.0 / size[1])
-        if not quiet:
-            msg = " ".join(f"{Path(m).name}: {o['hit']}/{o['hit'] + o['wrong'] + o['miss']}" for m, o in out.items())
-            print(f"clip {clip}: {msg}", file=sys.stderr, flush=True)
+                if not link:
+                    for k, g in enumerate(frames[i - 2:i + 1]):
+                        if g not in cache:
+                            img = cv2.imread(str(folder / "frames" / f"{clip:04d}" / f"{g:06d}.jpg"))
+                            cache[g] = preprocess_frames([img])
+                        x[0, 3 * k:3 * k + 3] = cache[g]
+                size = tuple(rows[(clip, f)]["size"])
+                tol = tol_1080 * size[1] / 1080.0
+                for m, model in models.items():
+                    if link:
+                        p = paths[m].get(f)
+                        balls = [] if p is None else [(p[0], p[1], 1.0)]
+                    else:
+                        balls, _ = run_model(model, x, size, ball_thresh, 0.99)
+                    o = out[m]
+                    if not balls:
+                        o["miss"] += 1
+                        o["hits"].append(0)
+                        continue
+                    bx, by, _ = balls[0]
+                    d = float(np.hypot(bx - lab["xy"][0], by - lab["xy"][1]))
+                    o["hit" if d <= tol else "wrong"] += 1
+                    o["hits"].append(int(d <= tol))
+                    if d <= tol:
+                        o["err_px_1080"].append(d * 1080.0 / size[1])
+            if not quiet:
+                msg = " ".join(f"{Path(m).name}: {o['hit']}/{o['hit'] + o['wrong'] + o['miss']}"
+                               for m, o in out.items())
+                print(f"{folder.name} clip {clip}: {msg}", file=sys.stderr, flush=True)
+    first = next(iter(out.values()))["hits"] if out else []
     for o in out.values():
         n = o["hit"] + o["wrong"] + o["miss"]
         o.update({"n": n, "hit_rate": o["hit"] / n if n else None, "wrong_rate": o["wrong"] / n if n else None,
                   "miss_rate": o["miss"] / n if n else None,
-                  "median_err_px_1080": float(np.median(o["err_px_1080"])) if o["err_px_1080"] else None})
+                  "median_err_px_1080": float(np.median(o["err_px_1080"])) if o["err_px_1080"] else None,
+                  "vs_first": mcnemar(first, o["hits"])})
         del o["err_px_1080"]
+    return out
+
+
+PERSON_CLASSES = ("player", "referee")  # COCO-export classes counted as people; "player-<action>" are players too
+
+
+def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, ball_thresh: float, tol_1080: float,
+               history: str, quiet: bool) -> dict[str, dict[str, Any]]:
+    """Players, referees and the ball against a COCO-format export of human labels (e.g. the Roboflow Universe
+    ``basketball-player-detection-2`` frames: NBA broadcasts, square crops of the full frame height). People:
+    ``player`` and every ``player-<action>`` class are players, ``referee`` referees; recall and AP50 are reported for
+    players alone and for players with referees. Ball: on frames with a labelled ball, the top ball within
+    ``tol_1080`` px of 1080 lines of frame height (the crop keeps the full height) is a hit, elsewhere wrong, nothing
+    above ``ball_thresh`` missed; on frames without one, any ball above ``ball_thresh`` is a false alarm. The frames
+    are sampled sparsely from clips, so the network's two earlier input frames are the frame itself (``history``
+    "static") or the clip's previous exported frames ("prev")."""
+    import re
+
+    d = json.loads(ann.read_text())
+    cats = {c["id"]: c["name"] for c in d["categories"]}
+    by_img: dict[int, list[dict[str, Any]]] = {}
+    for a in d["annotations"]:
+        by_img.setdefault(a["image_id"], []).append(a)
+    clips: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for im in d["images"]:
+        m = re.match(r"(.*)[-_](\d{4})_jpg\.rf\.", im["file_name"])
+        key, idx = (m.group(1), int(m.group(2))) if m else (im["file_name"], 0)
+        clips.setdefault(key, []).append((idx, im))
+    tally = {m: {"players": Tally(), "people": Tally(), "hit": 0, "wrong": 0, "miss": 0, "false_alarm": 0,
+                 "no_ball_frames": 0, "hits": []} for m in models}
+    x = np.empty((1, 9, *INPUT_HW), np.float32)
+    skipped = 0
+    for key in sorted(clips):
+        frames = sorted(clips[key], key=lambda t: t[0])
+        cache: dict[int, np.ndarray] = {}
+        for i, (_, im) in enumerate(frames):
+            hist = [frames[max(0, i - 2)], frames[max(0, i - 1)], frames[i]] if history == "prev" else [frames[i]] * 3
+            for _, h in hist:
+                if h["id"] not in cache:
+                    img = cv2.imread(str(images / h["file_name"]))
+                    cache[h["id"]] = None if img is None else preprocess_frames([img])
+            if cache[im["id"]] is None:
+                skipped += 1  # an image that is not there (or not an image): left out, and counted
+                continue
+            for k, (_, h) in enumerate(hist):
+                x[0, 3 * k:3 * k + 3] = cache[h["id"]] if cache[h["id"]] is not None else cache[im["id"]]
+            size = (int(im["width"]), int(im["height"]))
+            anns = by_img.get(im["id"], [])
+
+            def boxes(names: tuple[str, ...], prefix: str | None = None) -> np.ndarray:
+                b = [a["bbox"] for a in anns
+                     if cats[a["category_id"]] in names or (prefix and cats[a["category_id"]].startswith(prefix))]
+                return np.array([[bx, by, bx + bw, by + bh] for bx, by, bw, bh in b], float).reshape(-1, 4)
+
+            players = boxes(("player",), "player-")
+            people = np.vstack([players, boxes(("referee",))])
+            balls_gt = boxes(("ball",))
+            tol = tol_1080 * size[1] / 1080.0
+            for m, model in models.items():
+                balls, persons = run_model(model, x, size, ball_thresh, DECODE_FLOOR)
+                pb = np.array([p[:4] for p in persons]).reshape(-1, 4)
+                sc = np.array([p[4] for p in persons])
+                for tag, gt in (("players", players), ("people", people)):
+                    t = tally[m][tag]
+                    t.scores += sc.tolist()
+                    t.tp += greedy_match(pb, sc, gt).tolist()
+                    t.n_truth += len(gt)
+                    t.ref_kept += [True] * len(sc)
+                o = tally[m]
+                if len(balls_gt):
+                    c = balls_gt[:, :2] + (balls_gt[:, 2:] - balls_gt[:, :2]) / 2
+                    if not balls:
+                        o["miss"] += 1
+                        o["hits"].append(0)
+                    else:
+                        dist = float(np.min(np.hypot(c[:, 0] - balls[0][0], c[:, 1] - balls[0][1])))
+                        o["hit" if dist <= tol else "wrong"] += 1
+                        o["hits"].append(int(dist <= tol))
+                else:
+                    o["no_ball_frames"] += 1
+                    o["false_alarm"] += int(bool(balls))
+        if not quiet:
+            msg = " ".join(f"{Path(m).name}: R {t['players'].summary(thresh)['recall']:.3f}" for m, t in tally.items())
+            print(f"{key[:60]} ({len(frames)} frames) {msg}", file=sys.stderr, flush=True)
+    first = next(iter(tally.values()))["hits"] if tally else []
+    if skipped:
+        print(f"{ann.name}: {skipped} frames without a readable image left out", file=sys.stderr)
+    out: dict[str, dict[str, Any]] = {}
+    for m, o in tally.items():
+        n = o["hit"] + o["wrong"] + o["miss"]
+        out[m] = {"frames_skipped": skipped, "players": o["players"].summary(thresh), "people": o["people"].summary(thresh),
+                  "ball": {"frames": n, "hit_rate": o["hit"] / n if n else None,
+                           "wrong_rate": o["wrong"] / n if n else None, "miss_rate": o["miss"] / n if n else None,
+                           "no_ball_frames": o["no_ball_frames"],
+                           "false_alarm_rate": o["false_alarm"] / o["no_ball_frames"] if o["no_ball_frames"] else None,
+                           "vs_first": mcnemar(first, o["hits"]), "hits": o["hits"]}}
     return out
 
 
@@ -404,29 +563,73 @@ def main(argv: list[str] | None = None) -> int:
                    help="run ONNX models with student_onnx's sparse heads (same detections, less compute)")
     p.add_argument("--zoom", type=float, default=1.0, help="probe: shrink each frame by this inside the network input")
     p.add_argument("--json", type=Path, default=None)
-    p.add_argument("--ball-folder", type=Path, default=None,
-                   help="score the ball instead: a teacher folder (frames, detections.jsonl, ball_labels.jsonl)")
+    p.add_argument("--ball-folder", default=None,
+                   help="score the ball instead: comma list of teacher folders (frames, detections.jsonl, "
+                        "ball_labels.jsonl)")
     p.add_argument("--ball-tol", type=float, default=15.0, help="ball hit radius in px of a 1080-line frame")
+    p.add_argument("--coco", default=None,
+                   help="score against COCO-format human labels instead: comma list of <split>_ann.json files whose "
+                        "images are in the folder <split> beside them (or annotation files inside their image folder)")
+    p.add_argument("--coco-history", choices=("static", "prev"), default="static",
+                   help="COCO frames are sampled sparsely: the two earlier input frames are the frame itself (static) "
+                        "or the clip's previous exported frames (prev)")
     p.add_argument("--ball-min-weight", type=float, default=0.5)
+    p.add_argument("--link", action="store_true",
+                   help="ball: score each clip's linked path (nba_ball_bench.py's protocol) instead of the top candidate")
     p.add_argument("-q", "--quiet", action="store_true")
     a = p.parse_args(argv)
+
+    if a.coco is not None:
+        paths = [Path(m.strip()) for m in a.models.split(",") if m.strip()]
+        models = {str(pth): load_model(pth, a.threads, a.sparse) for pth in paths}
+        res: dict[str, Any] = {}
+        for ann in [Path(c.strip()) for c in a.coco.split(",") if c.strip()]:
+            part = coco_bench(ann, ann.parent / ann.name.split("_ann")[0], models, a.thresh, a.ball_thresh,
+                              a.ball_tol, a.coco_history, a.quiet) if ann.name.endswith("_ann.json") else \
+                coco_bench(ann, ann.parent, models, a.thresh, a.ball_thresh, a.ball_tol, a.coco_history, a.quiet)
+            res[str(ann)] = part
+        print(f"\nCOCO human labels ({a.coco}); input history {a.coco_history}; people at IoU {IOU_MATCH}, "
+              f"threshold {a.thresh}; ball within {a.ball_tol:g} px of 1080 lines, threshold {a.ball_thresh}\n")
+        print("| set | model | players AP50 | players recall | people AP50 | people recall | ball hit | wrong | missed |"
+              " false alarms | vs first: only it / only first, p |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|")
+        for ann, part in res.items():
+            for i, (m, o) in enumerate(part.items()):
+                pl, pe, b = o["players"], o["people"], o["ball"]
+                v = b["vs_first"]
+                cmp = "—" if i == 0 else f"{v['only_second']} / {v['only_first']}, p {v['p_value']:.3g}"
+                fa = b["false_alarm_rate"]
+                print(f"| {Path(ann).name} | {Path(m).name} | {pl['ap50']:.4f} | {pl['recall']:.4f} | {pe['ap50']:.4f} | "
+                      f"{pe['recall']:.4f} | {b['hit_rate']:.4f} | {b['wrong_rate']:.4f} | {b['miss_rate']:.4f} | "
+                      f"{'—' if fa is None else f'{fa:.4f}'} | {cmp} |")
+        if a.json:
+            a.json.parent.mkdir(parents=True, exist_ok=True)
+            a.json.write_text(json.dumps({"coco": a.coco, "history": a.coco_history, "thresh": a.thresh,
+                                          "ball_thresh": a.ball_thresh, "tol_px_1080": a.ball_tol, "results": res},
+                                         indent=1))
+        return 0
 
     if a.ball_folder is not None:
         paths = [Path(m.strip()) for m in a.models.split(",") if m.strip()]
         models = {str(pth): load_model(pth, a.threads, a.sparse) for pth in paths}
-        res = ball_bench(a.ball_folder, models, a.ball_thresh, a.ball_tol, a.ball_min_weight, a.quiet)
+        folders = [Path(f.strip()) for f in a.ball_folder.split(",") if f.strip()]
+        res = ball_bench(folders, models, a.ball_thresh, a.ball_tol, a.ball_min_weight, a.quiet, a.link)
+        how = f"the linked path (link_ball, candidates from {LINK_THRESH})" if a.link else \
+            f"the top candidate, threshold {a.ball_thresh}"
         print(f"\nball within {a.ball_tol:g} px of 1080p, labelled frames of {a.ball_folder} (weight >= "
-              f"{a.ball_min_weight}), threshold {a.ball_thresh}\n")
-        print("| model | frames | hit | wrong | missed | median error px (1080p) |")
-        print("|---|---|---|---|---|---|")
-        for m, o in res.items():
-            med = o["median_err_px_1080"]
+              f"{a.ball_min_weight}), {how}\n")
+        print("| model | frames | hit | wrong | missed | median error px (1080p) | vs first: frames only it hits / "
+              "only first hits, McNemar p |")
+        print("|---|---|---|---|---|---|---|")
+        for i, (m, o) in enumerate(res.items()):
+            med, v = o["median_err_px_1080"], o["vs_first"]
+            cmp = "—" if i == 0 else f"{v['only_second']} / {v['only_first']}, p {v['p_value']:.3g}"
             print(f"| {Path(m).name} | {o['n']} | {o['hit_rate']:.4f} | {o['wrong_rate']:.4f} | {o['miss_rate']:.4f} | "
-                  f"{'—' if med is None else round(med, 2)} |")
+                  f"{'—' if med is None else round(med, 2)} | {cmp} |")
         if a.json:
             a.json.parent.mkdir(parents=True, exist_ok=True)
-            a.json.write_text(json.dumps({"ball_folder": str(a.ball_folder), "tol_px_1080": a.ball_tol,
-                                          "threshold": a.ball_thresh, "models": res}, indent=1))
+            a.json.write_text(json.dumps({"ball_folder": a.ball_folder, "tol_px_1080": a.ball_tol,
+                                          "threshold": a.ball_thresh, "linked": a.link, "models": res}, indent=1))
         return 0
 
     names: set[str] | None = None

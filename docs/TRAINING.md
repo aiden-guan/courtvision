@@ -516,9 +516,10 @@ exports:
 | A trainable checkpoint from the browser/CPU ONNX export (batch norms folded back exactly) | `python -m courtvision.training.student_from_onnx courtvision/server/static/nba-student.onnx --out runs/models/student-from-onnx.pt` |
 | Players from human boxes: SportsMOT basketball sequences | `tools/student_finetune.py prep-mot data/sportsmot/train data/ft/mot_train` |
 | The ball from the network's own linked detections on NBA clips (pseudo labels, weight at most 0.5) | `tools/student_finetune.py prep-video <clips> data/ft/bard_calib` |
+| Players and the ball from COCO-format human labels (e.g. a Roboflow export; players only, each image a one-frame clip) | `tools/student_finetune.py prep-coco <ann.json> <images> data/ft/coco --games <prefixes>` |
 | Held-out ball labels from the RF-DETR teacher (the `nba_teacher_labels.py` recipe) | `tools/student_finetune.py prep-teacher <clips> data/ft/bard_check_teacher` |
-| Fine-tune (batch norms frozen; `--freeze` keeps modules fixed; `--hue` turns player-only frames' colours) | `tools/student_finetune.py train --data data/ft/mot_train --data data/ft/bard_calib --init runs/models/student-from-onnx.pt --out runs/models/student-ft` |
-| Export (the browser interface) and score | `tools/student_finetune.py export runs/models/student-ft/last.pt --out runs/models/student-ft.onnx`; `tools/detector_bench.py --models a.onnx,b.onnx --split val --sparse` |
+| Fine-tune (batch norms frozen; `--freeze` keeps modules fixed; `--hue` turns player-only frames' colours; `--balance` samples every folder equally; `--static-p` replaces the earlier input frames by the frame itself for that share of samples; `--bf16 --channels-last` for 3.6 times faster steps on CPUs with AMX) | `tools/student_finetune.py train --data data/ft/mot_train --data data/ft/bard_calib --init runs/models/student-from-onnx.pt --out runs/models/student-ft` |
+| Export (the browser interface) and score | `tools/student_finetune.py export runs/models/student-ft/last.pt --out runs/models/student-ft.onnx`; `tools/detector_bench.py --models a.onnx,b.onnx --split val --sparse` (SportsMOT), `--ball-folder` (teacher-labelled clips, with paired McNemar tests), `--coco` (COCO-format human labels) |
 | int8 for CPUs (calibrated on held-apart frames, checked against fp32) | `tools/quantize_student.py --calib <folder> --check <folder> --out runs/models/student-int8.onnx` |
 
 Every data folder uses `train_student.ClipDataset`'s layout and carries a `video` identity in `meta.json` (without

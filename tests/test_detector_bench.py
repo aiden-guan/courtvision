@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -63,3 +64,79 @@ def test_load_sequences_reads_mot_ground_truth(tmp_path: Path) -> None:
     np.testing.assert_allclose(seqs[0].gt[1], [[10, 20, 40, 60]])
     assert sorted(seqs[0].gt) == [1, 3]
     assert db.load_sequences(tmp_path, ["val"], {"other"}) == []
+
+
+def test_mcnemar_counts_discordant_frames_and_exact_p() -> None:
+    a = [1, 1, 0, 0, 1, 0, 1, 1]
+    b = [1, 0, 1, 1, 1, 1, 1, 1]
+    r = db.mcnemar(a, b)
+    assert (r["only_first"], r["only_second"]) == (1, 3)
+    # two-sided exact binomial test, n = 4 discordant, k = 1: 2 * (C(4,0) + C(4,1)) / 2^4
+    assert r["p_value"] == pytest.approx(2 * (1 + 4) / 16)
+    assert db.mcnemar([1, 0], [1, 0])["p_value"] == 1.0
+
+
+class _FakeSparse:
+    """A ``run_model``-compatible model: fixed detections in frame px."""
+
+    sparse = True
+
+    def __init__(self, balls, persons) -> None:  # noqa: ANN001
+        self.balls, self.persons = balls, persons
+
+    def detect(self, x, scale, ball_thresh, person_floor):  # noqa: ANN001, ANN201
+        return self.balls, self.persons
+
+
+def test_coco_bench_scores_players_people_and_ball(tmp_path: Path) -> None:
+    imgs = tmp_path / "heldout"
+    imgs.mkdir()
+    images = []
+    for i in (1, 2):
+        name = f"g-clip_mp4-000{i}_jpg.rf.h{i}.jpg"
+        cv2.imwrite(str(imgs / name), np.zeros((108, 108, 3), np.uint8))
+        images.append({"id": i, "file_name": name, "width": 108, "height": 108})
+    cats = [{"id": 1, "name": "player"}, {"id": 2, "name": "referee"}, {"id": 3, "name": "ball"}]
+    anns = [{"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 10, 20, 40]},
+            {"id": 2, "image_id": 1, "category_id": 2, "bbox": [60, 10, 20, 40]},
+            {"id": 3, "image_id": 1, "category_id": 3, "bbox": [40, 40, 4, 4]}]
+    ann = tmp_path / "heldout_ann.json"
+    ann.write_text(json.dumps({"images": images, "annotations": anns, "categories": cats}))
+    good = _FakeSparse([(42.0, 42.0, 0.9)], [(10, 10, 30, 50, 0.9), (60, 10, 80, 50, 0.8)])
+    out = db.coco_bench(ann, imgs, {"good": good}, 0.3, 0.08, 15.0, "static", quiet=True)["good"]
+    assert out["players"]["recall"] == pytest.approx(1.0) and out["people"]["recall"] == pytest.approx(1.0)
+    # the same two boxes on both frames: one matches a player (frame 1), the referee box counts against players
+    assert out["players"]["precision"] == pytest.approx(1 / 4)
+    assert out["people"]["precision"] == pytest.approx(2 / 4)
+    b = out["ball"]
+    assert b["frames"] == 1 and b["hit_rate"] == pytest.approx(1.0)
+    assert b["no_ball_frames"] == 1 and b["false_alarm_rate"] == pytest.approx(1.0)
+
+
+def test_ball_bench_scores_top_candidates_and_linked_paths(tmp_path: Path) -> None:
+    folder = tmp_path / "teacher"
+    (folder / "frames" / "0000").mkdir(parents=True)
+    rows, labels = [], []
+    for f in range(1, 9):
+        cv2.imwrite(str(folder / "frames" / "0000" / f"{f:06d}.jpg"), np.zeros((54, 96, 3), np.uint8))
+        rows.append({"clip": 0, "frame": f, "size": [960, 540], "persons": [], "balls": []})
+        labels.append({"clip": 0, "frame": f, "xy": [100.0 + 10 * f, 200.0], "w": 1.0, "source": "detected"})
+    (folder / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (folder / "ball_labels.jsonl").write_text("".join(json.dumps(r) + "\n" for r in labels))
+
+    class Moving(_FakeSparse):
+        """The ball where the label is, plus a brighter still distractor far away."""
+
+        def __init__(self) -> None:
+            super().__init__([], [])
+            self.k = 0
+
+        def detect(self, x, scale, ball_thresh, person_floor):  # noqa: ANN001, ANN201
+            self.k += 1
+            return [(800.0, 500.0, 0.9), (100.0 + 10 * ((self.k - 1) % 8 + 1), 200.0, 0.6)], []
+
+    top = db.ball_bench([folder], {"m": Moving()}, 0.08, 15.0, 0.5, quiet=True)["m"]
+    assert top["n"] == 6 and top["hit_rate"] == 0.0 and top["wrong_rate"] == 1.0  # the distractor scores higher
+    linked = db.ball_bench([folder], {"m": Moving()}, 0.08, 15.0, 0.5, quiet=True, link=True)["m"]
+    assert linked["n"] == 6
+    assert linked["hit"] + linked["wrong"] + linked["miss"] == 6

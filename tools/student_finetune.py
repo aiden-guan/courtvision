@@ -165,6 +165,59 @@ def prep_video(src: Path, out: Path, model_path: Path, sample_every: int, max_fr
     return len(vids)
 
 
+# --------------------------------------------------------------------------- prep-coco
+
+
+def prep_coco(ann: Path, images: Path, out: Path, games: list[str], exclude: list[str]) -> int:
+    """COCO-format human labels (a Roboflow export: ``player``, ``player-<action>``, ``referee``, ``ball``, ``rim``)
+    -> a ClipDataset folder: every image its own one-frame clip (the network's earlier input frames are then the frame
+    itself: the export's frames are too far apart for motion), players (every ``player*`` class; referees are left
+    out, as in SportsMOT) as person labels with score 1, the human ball box centre as a ball label of weight 1.
+    ``games``: file-name prefixes to keep (all when empty); ``exclude``: prefixes to drop."""
+    import shutil
+
+    d = json.loads(ann.read_text())
+    cats = {c["id"]: c["name"] for c in d["categories"]}
+    by_img: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for a in d["annotations"]:
+        by_img[a["image_id"]].append(a)
+    det_rows, lab_rows, n = [], [], 0
+    for im in sorted(d["images"], key=lambda i: i["file_name"]):
+        name = im["file_name"]
+        if (games and not any(name.startswith(g) for g in games)) or any(name.startswith(g) for g in exclude):
+            continue
+        src = images / name
+        if not src.is_file():
+            continue
+        ci = n
+        n += 1
+        dst = out / "frames" / f"{ci:04d}" / f"{1:06d}.jpg"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        persons, ball = [], None
+        for a in by_img.get(im["id"], []):
+            x, y, w, h = a["bbox"]
+            c = cats[a["category_id"]]
+            if c == "player" or c.startswith("player-"):
+                persons.append([x, y, x + w, y + h, 1.0])
+            elif c == "ball" and ball is None:
+                ball = [x + w / 2.0, y + h / 2.0]
+        det_rows.append({"clip": ci, "frame": 1, "size": [im["width"], im["height"]], "persons": persons,
+                         "balls": [], "source": name})
+        lab_rows.append({"clip": ci, "frame": 1, "xy": ball, "w": 1.0 if ball else 0.0,
+                         "source": "human" if ball else "none"})
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in det_rows))
+    (out / "ball_labels.jsonl").write_text("".join(json.dumps(r) + "\n" for r in lab_rows))
+    (out / "meta.json").write_text(json.dumps({
+        "kind": "human", "video": f"coco:{ann.resolve()}:{','.join(games) or 'all'}", "source": str(ann),
+        "games": games, "exclude": exclude, "fps": TRAIN_FPS, "rights_status": "research_only",
+        "license": "labels CC BY 4.0 (Roboflow Universe); footage NBA", "label_origin": "human",
+        "persons": "players only (referees left out)"}, indent=1))
+    print(f"{n} images, {sum(1 for r in lab_rows if r['w'] > 0)} with a ball", file=sys.stderr)
+    return n
+
+
 # --------------------------------------------------------------------------- prep-teacher
 
 
@@ -283,7 +336,7 @@ def _quick_mot_eval(net: Any, seqs: list[Any], frames_per_seq: int) -> dict[str,
             "recall@0.3": round(float((t & (s >= 0.3)).sum()) / max(1, n_truth), 4)}
 
 
-def finetune_dataset(base: Any, hue_deg: float) -> Any:
+def finetune_dataset(base: Any, hue_deg: float, static_p: float = 0.0) -> Any:
     """``train_student.ClipDataset`` with domain randomisation for the person head: a sample without a ball label
     has its three frames' hues turned by one random angle in [-hue_deg, hue_deg] (jerseys, floors and adverts
     change colour from game to game; a frame with a ball label keeps its colours, the ball's orange being part
@@ -301,10 +354,20 @@ def finetune_dataset(base: Any, hue_deg: float) -> Any:
             self.dropped = before - len(self.items)
 
         def __getitem__(self, idx: int) -> Any:
-            lab = self.items[idx][4]
+            item = self.items[idx]
+            lab = item[4]
             has_ball = bool(lab.get("xy")) and lab.get("w", 0) > 0
             self._hue = random.uniform(-hue_deg, hue_deg) if self.train and hue_deg > 0 and not has_ball else 0.0
-            return super().__getitem__(idx)
+            if not (self.train and static_p > 0 and random.random() < static_p):
+                return super().__getitem__(idx)
+            # temporal dropout: the earlier input frames replaced by the frame itself, as at the start of a stream or
+            # after a cut (StudentDetector.reset) and on frames sampled too sparsely for motion
+            fi, clip, frames, det, lab = item
+            self.items[idx] = (fi, clip, [frames[-1]] * len(frames), det, lab)
+            try:
+                return super().__getitem__(idx)
+            finally:
+                self.items[idx] = item
 
         def _img(self, fi: int, clip: int, frame: int) -> np.ndarray:
             img = super()._img(fi, clip, frame)
@@ -329,7 +392,8 @@ def train(args: argparse.Namespace) -> int:
     torch.manual_seed(args.seed)
     torch.set_num_threads(args.threads)
     plan = plan_data(args.data)
-    ds = finetune_dataset(ClipDataset, args.hue)(plan.folders, plan.train | plan.val if args.no_val else plan.train,
+    ds = finetune_dataset(ClipDataset, args.hue, args.static_p)(plan.folders,
+                                                                plan.train | plan.val if args.no_val else plan.train,
                                                  train=True, weights=plan.weights, crop=args.crop,
                                                  zoom_range=(args.zoom_min, args.zoom_max))
     for row in plan.summary():
@@ -339,6 +403,8 @@ def train(args: argparse.Namespace) -> int:
     net = build_net(3, pretrained=False)
     state = torch.load(args.init, map_location="cpu", weights_only=True)
     net.load_state_dict(state.get("model", state))
+    if args.channels_last:  # oneDNN's preferred layout for CPU convolutions
+        net = net.to(memory_format=torch.channels_last)
     frozen = [m for m in args.freeze.split(",") if m]
     for name in frozen:
         for p in getattr(net, name).parameters():
@@ -351,8 +417,19 @@ def train(args: argparse.Namespace) -> int:
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / args.warmup) * 0.5 * (1 + math.cos(math.pi * min(1.0, s / args.steps))))
-    loader = torch.utils.data.DataLoader(ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
-                                         drop_last=True, persistent_workers=args.workers > 0, collate_fn=_collate)
+    sampler = None
+    if args.balance:  # every data folder an equal share of the samples, whatever its size
+        sizes: dict[int, int] = defaultdict(int)
+        for it in ds.items:
+            sizes[it[0]] += 1
+        w = torch.tensor([1.0 / sizes[it[0]] for it in ds.items], dtype=torch.double)
+        sampler = torch.utils.data.WeightedRandomSampler(w, num_samples=len(ds), replacement=True,
+                                                         generator=torch.Generator().manual_seed(args.seed))
+        print("balanced sampling: " + ", ".join(f"{plan.folders[fi]} {n} samples" for fi, n in sorted(sizes.items())),
+              flush=True)
+    loader = torch.utils.data.DataLoader(ds, batch_size=args.batch, shuffle=sampler is None, sampler=sampler,
+                                         num_workers=args.workers, drop_last=True,
+                                         persistent_workers=args.workers > 0, collate_fn=_collate)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     mot_seqs = []
@@ -374,7 +451,12 @@ def train(args: argparse.Namespace) -> int:
         for x, tg in loader:
             net.train()
             freeze_bn(net)
-            o = net(x)
+            if args.channels_last:
+                x = x.contiguous(memory_format=torch.channels_last)
+            # bf16 autocast runs the convolutions on AMX / AVX512-BF16 where the CPU has them; the losses stay fp32
+            with torch.autocast("cpu", dtype=torch.bfloat16, enabled=args.bf16):
+                o = net(x)
+            o = {k: v.float() for k, v in o.items()}
             l_ball = focal_loss(o["ball_hm"], tg["ball_hm"], tg["ball_w"][:, 0])
             l_boff = masked_l1(o["ball_off"], tg["ball_off"], tg["ball_mask"])
             l_phm = focal_loss(o["person_hm"], tg["person_hm"], tg["person_w"][:, 0])
@@ -466,6 +548,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sample-every", type=int, default=3)
     p.add_argument("--max-frames", type=int, default=120, help="frames per clip (at ~30 fps), from its middle")
     p.add_argument("--threads", type=int, default=4)
+    p = sub.add_parser("prep-coco", help="COCO-format human labels -> a training folder (one-frame clips)")
+    p.add_argument("ann", type=Path, help="the COCO annotation file")
+    p.add_argument("images", type=Path, help="the folder of its images")
+    p.add_argument("out", type=Path)
+    p.add_argument("--games", default="", help="comma list of file-name prefixes to keep (default: all)")
+    p.add_argument("--exclude", default="", help="comma list of file-name prefixes to drop")
     p = sub.add_parser("prep-teacher", help="videos -> an RF-DETR teacher folder (held-out ball checks)")
     p.add_argument("src", type=Path)
     p.add_argument("out", type=Path)
@@ -491,6 +579,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--workers", type=int, default=2)
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--bf16", action="store_true", help="bf16 autocast for the forward pass (CPU AMX / AVX512-BF16)")
+    p.add_argument("--balance", action="store_true", help="sample every --data folder equally often")
+    p.add_argument("--static-p", type=float, default=0.0,
+                   help="temporal dropout: share of samples whose earlier input frames are the frame itself")
+    p.add_argument("--channels-last", action="store_true", help="channels-last memory format (faster CPU convolutions)")
     p.add_argument("--no-val", action="store_true", help="train on the held-out clips too")
     p.add_argument("--eval-mot", default=None, help="SportsMOT split folder to score during training")
     p.add_argument("--eval-frames", type=int, default=8)
@@ -505,6 +598,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if prep_mot(a.src, a.out, a.sample_every, names) else 2
     if a.cmd == "prep-video":
         return 0 if prep_video(a.src, a.out, a.model, a.sample_every, a.max_frames, a.threads) else 2
+    if a.cmd == "prep-coco":
+        games = [g.strip() for g in a.games.split(",") if g.strip()]
+        excl = [g.strip() for g in a.exclude.split(",") if g.strip()]
+        return 0 if prep_coco(a.ann, a.images, a.out, games, excl) else 2
     if a.cmd == "prep-teacher":
         return 0 if prep_teacher(a.src, a.out, a.frames, a.weights, a.shape) else 2
     if a.cmd == "train":

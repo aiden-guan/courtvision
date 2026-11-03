@@ -90,3 +90,56 @@ def test_calibration_reader_serves_ranges() -> None:
     assert [int(r.get_next()["frames"][0, 0]) for _ in range(2)] == [2, 3] and r.get_next() is None
     r.rewind()
     assert int(r.get_next()["frames"][0, 0]) == 0
+
+
+def _coco(tmp_path: Path) -> tuple[Path, Path]:
+    imgs = tmp_path / "imgs"
+    imgs.mkdir()
+    images, anns = [], []
+    for i, name in enumerate(("gameA-clip_mp4-0000_jpg.rf.x.jpg", "gameA-clip_mp4-0001_jpg.rf.y.jpg",
+                              "gameB-clip_mp4-0000_jpg.rf.z.jpg"), start=1):
+        cv2.imwrite(str(imgs / name), np.full((96, 96, 3), 60 * i, np.uint8))
+        images.append({"id": i, "file_name": name, "width": 96, "height": 96})
+    cats = [{"id": 1, "name": "player"}, {"id": 2, "name": "referee"}, {"id": 3, "name": "ball"},
+            {"id": 4, "name": "player-dribble"}, {"id": 5, "name": "number"}]
+    for aid, (img, cat, box) in enumerate([(1, 1, [10, 10, 20, 40]), (1, 2, [50, 10, 20, 40]), (1, 3, [30, 30, 6, 6]),
+                                           (2, 4, [5, 5, 20, 40]), (2, 5, [8, 8, 4, 4]), (3, 1, [1, 1, 9, 9])], start=1):
+        anns.append({"id": aid, "image_id": img, "category_id": cat, "bbox": box})
+    ann = tmp_path / "ann.json"
+    ann.write_text(json.dumps({"images": images, "annotations": anns, "categories": cats}))
+    return ann, imgs
+
+
+def test_prep_coco_keeps_players_and_human_balls(tmp_path: Path) -> None:
+    ann, imgs = _coco(tmp_path)
+    out = tmp_path / "coco"
+    assert sf.prep_coco(ann, imgs, out, ["gameA"], []) == 2
+    rows = [json.loads(line) for line in (out / "detections.jsonl").open()]
+    labels = [json.loads(line) for line in (out / "ball_labels.jsonl").open()]
+    assert [len(r["persons"]) for r in rows] == [1, 1]  # the referee and the jersey number are not people
+    assert rows[0]["persons"][0][:4] == [10, 10, 30, 50] and rows[1]["persons"][0][:4] == [5, 5, 25, 45]
+    assert labels[0]["xy"] == [33.0, 33.0] and labels[0]["w"] == 1.0
+    assert labels[1]["xy"] is None and labels[1]["w"] == 0.0
+    assert (out / "frames" / "0001" / "000001.jpg").is_file()
+    meta = json.loads((out / "meta.json").read_text())
+    assert meta["kind"] == "human" and meta["video"].startswith("coco:")
+    assert sf.prep_coco(ann, imgs, tmp_path / "none", [], ["gameA", "gameB"]) == 0
+
+
+def test_temporal_dropout_repeats_the_current_frame(tmp_path: Path) -> None:
+    human = _folder(tmp_path / "human", "human", "a", set(), persons=True)
+    for f in range(1, 7):  # frames that differ, so a repeated frame is visible in the input
+        img = np.full((540, 960, 3), 30 * f, np.uint8)
+        cv2.imwrite(str(human / "frames" / "0000" / f"{f:06d}.jpg"), img)
+    plan = plan_data([str(human)])
+    always = sf.finetune_dataset(ClipDataset, 0.0, static_p=1.0)(plan.folders, plan.train | plan.val, train=True,
+                                                                 weights=plan.weights, zoom_range=(1.0, 1.0))
+    never = sf.finetune_dataset(ClipDataset, 0.0, static_p=0.0)(plan.folders, plan.train | plan.val, train=True,
+                                                                weights=plan.weights, zoom_range=(1.0, 1.0))
+    random.seed(3)
+    x, _ = always[1]  # the sample at frame 6: inputs 4, 5, 6 unless dropped
+    np.testing.assert_allclose(x[0:3], x[6:9], atol=1e-5)
+    assert always.items[1][2] == [4, 5, 6]  # the item itself is left as it was
+    random.seed(3)
+    y, _ = never[1]
+    assert not np.allclose(y[0:3], y[6:9], atol=1e-3)
