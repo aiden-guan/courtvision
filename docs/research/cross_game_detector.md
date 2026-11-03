@@ -307,3 +307,122 @@ looked at, the test sets, candidates and measures were fixed as follows.
 * **Candidates**: the app model (`courtvision/server/static/nba-student.onnx`), `models/research/student-ft-r2.onnx`
   and its int8 file, and later models from the cloud rounds (T4, T5, the soups) or this round as they are made. Every
   candidate tried is reported. Paired ball comparisons are exact McNemar tests on the frames only one model hits.
+
+### 9.2 The ball and people on the two games
+
+All three files run on ONNX Runtime (fp32 or int8, the sparse heads of §3.1) on the Mac's CPU, so the backend is the
+same for every model (`runs/bench/local/*.json`, not in git).
+
+**Lakers @ Warriors**, the app model's 15 held-out clips (243 frames with a ball label and two frames before them):
+
+| Model | Top candidate: hit / wrong / missed | Linked path: hit / wrong / missed | Median error |
+|---|---:|---:|---:|
+| App model | **95.5 %** / 4.5 / 0.0 | **95.5 %** / 3.7 / 0.8 | 2.34 px |
+| Round 2 (T2) | 94.2 % / 5.8 / 0.0 | **95.5 %** / 3.7 / 0.8 | 2.18 px |
+| Round 2, int8 | 93.8 % / 6.2 / 0.0 | **95.5 %** / 3.7 / 0.8 | 2.19 px |
+
+Top candidate, the app model against round 2: 3 frames only the app model hits, none the other way (p 0.25). The
+linked paths hit the same 232 frames for all three. (The README's 95.7 % is the same protocol on 256 frames: it also
+scores each clip's first two frames, with their history padded.) On the game it was distilled on, the app model's ball
+is matched, not beaten, by a model that never saw this game.
+
+People against the teacher's boxes (score >= 0.5), each box placed on the court through the game's camera track
+(`camera_parts`, its foot point within 2 ft of the floor) and tested with the pipeline's referee check
+(`analyze.is_referee`):
+
+| Teacher boxes | App model | Round 2 |
+|---|---:|---:|
+| players on the court (1,311) | **99.0 %** | 95.9 % |
+| referees on the court (230) | 99.1 % | 27.0 % |
+| no court fit on the frame (close-ups, replays; 526) | 73.6 % | 52.5 % |
+| all (2,075) | 92.5 % | 77.2 % |
+
+Round 2 finds 41 fewer of the 1,311 players on the court than the app model on its own game, and has learnt from the
+SportsMOT labels to leave the referees out (§7). What either costs the pipeline is §9.3.
+
+**Cavaliers @ Warriors**, 60 new teacher clips of a game no model trained on (606 frames; the teacher labels the ball
+on 642 of 2,160 frames, fewer than on the 1080p game: 720p, 2017):
+
+| Model | Top candidate: hit / wrong / missed | vs app (only it / only app, p) | Linked: hit / wrong / missed | vs app |
+|---|---:|---|---:|---|
+| App model | 75.7 % / 22.4 / 1.8 | | 72.4 % / 6.4 / 21.1 | |
+| Round 2 (T2) | **78.1 %** / 21.9 / 0.0 | 20 / 6, p 0.0094 | **77.9 %** / 15.0 / 7.1 | 36 / 3, p 3.6e-8 |
+| Round 2, int8 | 77.7 % / 22.3 / 0.0 | 20 / 8, p 0.036 | **78.6 %** / 16.0 / 5.4 | 41 / 4, p 9.3e-9 |
+
+On this game the app model's linked path loses the ball on 21 % of the frames (its candidates there are too weak to
+link); round 2 loses it on 7 %. People against the teacher's boxes, split as above (the court is registered on fewer
+frames of this game):
+
+| Teacher boxes | App model | Round 2 |
+|---|---:|---:|
+| players on the court (3,535) | 80.2 % | **81.5 %** |
+| referees on the court (116) | 83.6 % | 12.1 % |
+| off the court: benches, the crowd (226) | 76.1 % | 4.9 % |
+| no court fit on the frame (836) | 47.6 % | 52.0 % |
+| all (4,713) | 74.3 % | 70.9 % |
+
+### 9.3 The pipeline on Lakers @ Warriors
+
+The whole game re-detected on the Neural Engine (Core ML, `nba_analyze.py detect --backend coreml`: 12 ms a frame,
+20 minutes for the game) with each model, then `ball`, `events` and `timeline` with the current code; the timeline,
+shot and free-throw models are fitted on one half of the game and scored on the other, both ways. The README's run
+`full` (the app model on PyTorch/MPS, older code: 96.2 %, 84.8 %) re-run with the current code gives 96.3 % and
+83.6 %, and on Core ML 96.4 % and 83.1 %: the backend changes little, the code a little more, so the two models are
+compared on the same backend and code. Shots are paired through the play-by-play shot each candidate is matched to
+(`label_candidates`); possession is reported per half, not tested per quarter second (neighbouring steps are not
+independent).
+
+| | App model | Round 2 (T2) |
+|---|---:|---:|
+| Team with the ball in settled live play, engine alone | 72.8 % | **79.1 %** |
+| the same, the possession timeline (first half / second half) | 96.4 % (96.5 / 96.2) | **97.0 %** (97.4 / 96.7) |
+| Candidates (real shots among them) | 246 (177) | 262 (178) |
+| Real shot or not, all candidates | **78.5 %** | 73.7 % |
+| Free throw or field goal, real shots | 94.9 % | 94.9 % |
+| Made or missed, real shots | 83.1 % | **85.4 %** |
+| the same, the 174 shots both found: only it right / only the other right, p | 12 / 17 | p 0.46 |
+| False candidates kept as shots | 28 of 69 | 37 of 84 |
+| Box-score error (timeline events) | **0.209** | 0.225 |
+| Steals F1 (8 true) / turnovers F1 (22 true) | **0.40 / 0.48** | 0.14 / 0.33 |
+| Ball path over the game | 81,654 frames, 960 flights | 89,648 frames, 995 flights |
+
+On the game the app model was distilled on, round 2 is no clear gain. Its ball path covers 10 % more frames and the
+engine's own possession calls improve by 6 points, the timeline's by 0.6; made or missed is 2 points higher, within
+chance (p 0.46). Against that, the longer ball path gives more rim visits and engine results that are not shots (84
+false candidates against 69), so the real-or-not decision falls by 5 points, and steals and turnovers (8 and 22 in
+the game) are found less well.
+
+### 9.4 The pipeline on Cavaliers @ Warriors
+
+The same comparison on the second game, which neither model trained on (`events --team-refit`, as for the README's
+run `base2`; the app model's run with the current code reproduces `base2` exactly). Its detections were made on Core ML
+for both models.
+
+| | App model | Round 2 (T2) |
+|---|---:|---:|
+| Team with the ball in settled live play, engine alone | **61.0 %** | 58.4 % |
+| the same, the possession timeline (first half / second half) | **75.8 %** (70.1 / 81.4) | 74.0 % (70.4 / 77.5) |
+| Candidates (real shots among them, of 229 in the play-by-play) | 254 (114) | 291 (120) |
+| Real shot or not, all candidates | 52.4 % | **63.9 %** |
+| Free throw or field goal, real shots | 91.2 % | 93.3 % |
+| Made or missed, real shots | **75.4 %** | 66.7 % |
+| the same, the 108 shots both found: only it right / only the other right, p | 18 / 11 | p 0.27 |
+| False candidates kept as shots | 61 of 140 | 46 of 171 |
+| Box-score error (timeline events) | **0.570** | 0.581 |
+
+Round 2's better ball on this game (§9.2: linked path 72.4 % to 77.9 %) does not reach the pipeline's numbers: the
+possession timeline and made-or-missed move within chance (made or missed 18 shots against 11, p 0.27), and the
+real-or-not decision improves because fewer false candidates are kept. What limits this game is upstream of the
+detector: the court is registered on about half of its frames (research note `made_shots_at_the_rim.md` §4), and the
+engine reports a candidate for only 114-120 of its 229 shots.
+
+### 9.5 What this round says about the fine-tunes where the app is shown
+
+* On the app model's own game the fine-tune matches its ball (95.5 % linked, the same frames), finds 3 points fewer
+  of the players on the court, drops the referees, and leaves the pipeline about where it was: possession slightly
+  better, shot decisions within chance, fewer steals and turnovers found (8 and 22 in the game).
+* On the second game, never trained on, the fine-tune's ball is clearly better (top candidate 75.7 % to 78.1 %, p
+  0.0094; linked 72.4 % to 77.9 %, p 3.6e-8) and it finds slightly more players, but the pipeline's numbers do not
+  move beyond chance.
+* So the fine-tunes measured so far are not yet a reason to replace the app model: the detector gains on footage it
+  never saw are real, but on these two games the pipeline's stages after the detector decide the results.
