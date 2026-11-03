@@ -511,6 +511,49 @@ Warriors clips, which stay out of all training), the SportsMOT `val` players (§
 (§5, labelled here again by the teacher recipe on the Mac's GPU, so the numbers are compared within this machine).
 Nothing is tuned on these sets; the runs' own training logs print a few SportsMOT `val` frames for monitoring only.
 
+### 10.7.1 Results of the two Mac runs
+
+Both ran 3,000 steps on MPS (16 minutes each). The ball labels: 31,689 of the 35,100 frames of the 390 clips labelled
+(round 2's: 32,053), stored at JPEG quality 80 to fit the disk (round 2's at 92). The BARD check games were labelled
+again on the Mac (`prep-teacher --device mps`, 1,097 frames with two frames before them); the app model scores 84.8 %
+there against 81.7 % on the container's labels, so these numbers compare models within this machine only.
+
+Ball, top candidate (and the linked path where marked), within 15 px of 1080p:
+
+| Test set (frames) | App model | Round 2 | T5 | M1-ctrl | M1 |
+|---|---:|---:|---:|---:|---:|
+| Lakers @ Warriors held out (243), top / linked | 95.5 / 95.5 % | 94.2 / 95.5 % | 95.1 / 95.9 % | 95.1 / 95.1 % | 95.1 / 95.5 % |
+| Cavaliers @ Warriors (606), top | 75.7 % | 78.1 % | 77.9 % | 76.2 % | **78.6 %** |
+| Cavaliers @ Warriors, linked | 72.4 % | 77.9 % | 78.7 % | 77.2 % | 77.7 % |
+| BARD check games (1,097), top | 84.8 % | 90.6 % | 89.7 % | **92.1 %** | 90.7 % |
+
+Paired (only the first model hits / only the second, exact McNemar p): BARD, M1-ctrl against round 2 22 / 6 (p 0.0037)
+and against T5 36 / 10 (p 0.00016): the further round of self-training improves the ball on 30 NBA games never trained
+on. Cavaliers @ Warriors top candidate, M1-ctrl against round 2 5 / 16 (p 0.027): not on the 2017 game. M1 against
+M1-ctrl: Cavaliers @ Warriors 21 / 7 (p 0.0125), BARD 5 / 20 (p 0.004): the app model's own game helps on the other
+broadcast game and costs on the NBA.com clips. All five models are within chance of each other on the Lakers @
+Warriors held-out clips.
+
+Players on the court (the teacher's boxes; §10.2's split; on Cavaliers @ Warriors paired per box and per clip over
+the 34 clips with a court fit):
+
+| | App model | Round 2 | T5 | M1-ctrl | M1 |
+|---|---:|---:|---:|---:|---:|
+| Lakers @ Warriors, players on the court (1,311) | **99.0 %** | 95.9 % | 95.2 % | 96.2 % | 98.1 % |
+| the same, referees on the court (230) | 99.1 % | 27.0 % | 10.0 % | 30.9 % | **99.6 %** |
+| Cavaliers @ Warriors, players on the court (3,535) | 80.2 % | 81.5 % | 80.1 % | 81.8 % | **87.2 %** |
+| the same, referees on the court (116) | **83.6 %** | 12.1 % | 12.1 % | 12.9 % | 32.8 % |
+
+M1 against the app model on Cavaliers @ Warriors: +7.0 points of players (95 % interval over clips +3.8 to +10.8; up on
+24 clips, down on 5, sign test p 0.00055); against M1-ctrl +5.4 points (+3.8 to +6.8; 24 / 5 clips). The teacher's
+boxes on the app model's own game taught M1 the referees back and lifted its players on a game it never saw. Round 2,
+T5 and M1-ctrl are within chance of the app model there (+1.3 to +1.6 points, intervals across zero).
+
+SportsMOT `val` players (NCAA and FIBA, held out of all five; `--split val`): AP50 / recall / precision at 0.3: app
+model 0.675 / 0.626 / 0.793, round 2 0.918 / 0.870 / 0.939 (both as measured in the container), M1-ctrl
+**0.921 / 0.879 / 0.941**, M1 0.892 / 0.844 / 0.869 (M1 boxes referees and benches again, which these labels count
+against it, and its recall falls 3.5 points).
+
 ### 10.8 One main model: the next version, fixed before training
 
 On 2026-11-03 the owner chose one main detector, improved in place: the app's model. Each round starts from the
