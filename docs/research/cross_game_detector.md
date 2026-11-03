@@ -510,3 +510,30 @@ Scored once each, after training, on the sets of §10.1 (the Lakers @ Warriors h
 Warriors clips, which stay out of all training), the SportsMOT `val` players (§6.2) and the BARD check games' ball
 (§5, labelled here again by the teacher recipe on the Mac's GPU, so the numbers are compared within this machine).
 Nothing is tuned on these sets; the runs' own training logs print a few SportsMOT `val` frames for monitoring only.
+
+## 11. Referees and the crowd (cloud): plan, fixed before training
+
+The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The
+detector has one person class; the NBA pipeline tells referees apart afterwards by their shirts
+(`nba/analyze.is_referee`: an achromatic torso with dark stripes) and the browser app not at all. §10.2 measured both
+halves of the problem on the README's two games: the app model boxes 76 % of the people off the court (benches, the
+crowd) and 99 % of the referees; the fine-tunes, taught by SportsMOT's player-only labels that everyone else is
+background, box 5-8 % of the first and 10-27 % of the second. No new output is added; the aim is a person head that
+boxes the players and the referees and leaves the crowd alone.
+
+Two changes, each tried on T5's recipe (§9) with nothing else changed:
+
+* **R4a**: the Roboflow games' referees count as people (`prep-coco --referees`; until now they were left out like
+  SportsMOT's). The crowd, benches and coaches, never labelled there, stay background.
+* **R4b**: R4a plus *ignore regions* on SportsMOT (`mark-ignore`): the app model's people on each SportsMOT sample
+  that overlap no labelled player (IoU below 0.3) but stand among the players (foot point inside the hull of the
+  labelled players' foot points, grown by 5 % of the frame height) are left out of the person heatmap loss
+  (`ClipDataset`'s `ignore` boxes, `focal_loss(pixel_weight=...)`). These are mostly referees; people in the stands
+  fall outside the hull and stay background.
+
+Measures, on the 5 held-out Roboflow games (§9; `detector_bench.py --coco`, detections at 0.3, IoU 0.5): the share of
+the 506 labelled referees a box matches; the share of detections that match no labelled player or referee (the crowd,
+benches and coaches; also per frame); players AP50, recall and precision; and the referee rule's calls on the matched
+boxes. On the 1,153 BARD frames: the ball (§5), so that it is not paid for. Candidates: T5, R4a, R4b, with the app
+model and T2 for reference; all reported. The referee rule is also scored on the labelled boxes themselves, per game,
+so that any change to it would be fitted on the 3 training games and tested on the 5 held-out ones.

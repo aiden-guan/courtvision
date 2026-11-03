@@ -296,12 +296,28 @@ class ClipDataset:
             t["person_wh"][:, int(cv), int(cu)] = (math.log(wc), math.log(hc))
             t["person_off"][:, int(cv), int(cu)] = (cu - int(cu), cv - int(cv))
             t["person_mask"][0, int(cv), int(cu)] = fw.person
+        # people a folder leaves unlabelled on purpose (``ignore`` boxes, label px; e.g. SportsMOT's referees, which
+        # its player-only labels would otherwise teach as background): their cells count for nothing in the person
+        # heatmap loss, except near a labelled person's centre
+        valid = np.ones((1, oh, ow), np.float32)
+        for g in det.get("ignore") or ():
+            a, b = tf(g[0], g[1])
+            c, d = tf(g[2], g[3])
+            u1, u2 = sorted((a / STRIDE, c / STRIDE))
+            v1, v2 = sorted((b / STRIDE, d / STRIDE))
+            iu1, iv1 = max(0, int(math.floor(u1))), max(0, int(math.floor(v1)))
+            iu2, iv2 = min(ow, int(math.ceil(u2)) + 1), min(oh, int(math.ceil(v2)) + 1)
+            if iu2 > iu1 and iv2 > iv1:
+                valid[0, iv1:iv2, iu1:iu2] = 0.0
+        if det.get("ignore"):
+            valid[t["person_hm"] > 0.3] = 1.0
+        t["person_valid"] = valid
         return x, t
 
 
-def focal_loss(logits, target, weight=None):  # noqa: ANN001, ANN201 (torch)
+def focal_loss(logits, target, weight=None, pixel_weight=None):  # noqa: ANN001, ANN201 (torch)
     """CenterNet focal loss (alpha 2, beta 4), summed over the batch and divided by the positive count; ``weight``
-    (B,) scales each sample."""
+    (B,) scales each sample, ``pixel_weight`` (shaped like ``target``) each cell (0: ignored)."""
     import torch
 
     p = torch.sigmoid(logits).clamp(1e-4, 1 - 1e-4)
@@ -309,7 +325,10 @@ def focal_loss(logits, target, weight=None):  # noqa: ANN001, ANN201 (torch)
     neg = 1.0 - pos
     pos_l = torch.log(p) * (1 - p) ** 2 * pos
     neg_l = torch.log(1 - p) * p**2 * (1 - target) ** 4 * neg
-    per = -(pos_l + neg_l).flatten(1).sum(1)
+    cell = pos_l + neg_l
+    if pixel_weight is not None:
+        cell = cell * pixel_weight
+    per = -cell.flatten(1).sum(1)
     if weight is not None:
         per = per * weight
     n = pos.flatten(1).sum(1)
@@ -428,7 +447,7 @@ def main() -> int:
             o = net(x)
             l_ball = focal_loss(o["ball_hm"], tg["ball_hm"], tg["ball_w"][:, 0])
             l_boff = masked_l1(o["ball_off"], tg["ball_off"], tg["ball_mask"])
-            l_phm = focal_loss(o["person_hm"], tg["person_hm"], tg["person_w"][:, 0])
+            l_phm = focal_loss(o["person_hm"], tg["person_hm"], tg["person_w"][:, 0], tg.get("person_valid"))
             l_pwh = masked_l1(o["person_wh"], tg["person_wh"], tg["person_mask"])
             l_poff = masked_l1(o["person_off"], tg["person_off"], tg["person_mask"])
             loss = 2.0 * l_ball + l_boff + l_phm + 0.5 * l_pwh + l_poff
