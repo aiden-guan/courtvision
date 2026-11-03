@@ -278,9 +278,46 @@ Recall by broadcast: Warriors at Oracle 0.689, 0.690, 0.706; Lakers at New Orlea
 0.508, **0.787**. With the trunk free to change, footage of other leagues lifts NBA player detection far more than the
 retrained heads did; the broadcast that was already handled best gains little.
 
-## 9. Round 3 on the owner's Mac (M3 Pro): the README's two games
+## 9. Round 3: NBA human labels and temporal dropout
 
-### 9.1 Protocol, fixed before any result of this round was read
+T4 is T2's recipe on all seven SportsMOT broadcasts (`train` and `val`) plus the round-2 ball labels, so no SportsMOT
+broadcast is held out of it. T5 adds human labels of 3 NBA games of Roboflow Universe's "basketball-player-detection-2"
+set (CC BY 4.0; Hugging Face `koppolusameer/basketball-coco-player-detection`; `prep-coco`: 1,071 single frames,
+players boxed and the ball where labelled, referees left out) and *temporal dropout*: for a quarter of the samples the
+two earlier input frames are replaced by the current one (`--static-p 0.25`), so the network also learns to work
+without motion. 4,000 steps; the four data folders are sampled equally often.
+
+**Held-out NBA games, human labels.** 5 other games of the same set (211 frames of 7 clips; 1,961 player boxes,
+2,467 with the referees; the ball labelled on 194 frames), never trained on (`tools/detector_bench.py --coco`; IoU
+0.5, recall and precision at 0.3; ball within 15 px of 1080 lines of frame height). The frames are sampled sparsely
+from their clips, so each one is fed as its own history (the frame three times):
+
+| Model | Players AP50 | Recall | Precision | Players and referees AP50 | Ball hit | vs published (only it / only published, p) |
+|---|---:|---:|---:|---:|---:|---|
+| Published student | 0.396 | 0.396 | 0.691 | 0.505 | 22.7 % | |
+| Round 1, full fine-tune | 0.743 | 0.710 | 0.796 | 0.689 | 33.5 % | 26 / 5, p 1.9e-4 |
+| T2 (round 2, [`student-ft-r2`](../../models/research/README.md)) | 0.761 | 0.733 | 0.820 | 0.687 | 34.5 % | 29 / 6, p 1.2e-4 |
+| T3 (no NBA player label) | 0.748 | 0.691 | 0.846 | 0.632 | 34.5 % | 29 / 6, p 1.2e-4 |
+| T4 (all seven SportsMOT broadcasts) | 0.770 | 0.725 | 0.850 | 0.674 | 34.5 % | 31 / 8, p 2.9e-4 |
+| T5 (+3 NBA games' human labels, temporal dropout; [`student-ft-r3`](../../models/research/README.md)) | **0.870** | **0.821** | **0.913** | **0.768** | **68.0 %** | 90 / 2, p 1.7e-24 |
+| T5, int8 | 0.869 | 0.821 | 0.914 | 0.767 | 67.5 % | 90 / 3, p 2.7e-23 |
+
+T5's ball gain here is mostly about the missing motion: only T5 trained on repeated frames, and the earlier models'
+ball heads lean on the difference between frames, which these inputs do not have. Its 3 human-labelled games also come
+from the same set as the 5 held-out ones (other games, the same labelling), which favours it over models that never
+saw this set's labels. The player gain over T4 (AP50 0.770 to 0.870, precision 0.850 to 0.913) is the clearer
+evidence, though the shared labelling still favours T5 there. On the ball T5 hits 68 frames T4 misses against 3 (p
+5.1e-17). The person head was taught to leave referees alone, so with them counted as people (2,467 boxes) recall stays
+lower (T5 0.663).
+
+**Video.** On the 1,153 BARD frames, with three real frames: T4 89.4 %, T5 89.5 % (T2 89.1 %; T5 against T2 27 frames
+to 22, p 0.57; against T4 23 to 22, p 1.0; int8 89.4 %). Temporal dropout and the extra labels did not cost the
+ball in video. T5 and its int8 export are in [`models/research/`](../../models/research/README.md) as
+`student-ft-r3`; by the benchmarks here it is the best model so far, but no SportsMOT broadcast is held out of it.
+
+## 10. On the owner's Mac (M3 Pro): the README's two games
+
+### 10.1 Protocol, fixed before any result of this round was read
 
 The fine-tunes above never saw the README's two games, whose footage is only on the Mac. Before any number below was
 looked at, the test sets, candidates and measures were fixed as follows.
@@ -308,7 +345,7 @@ looked at, the test sets, candidates and measures were fixed as follows.
   and its int8 file, and later models from the cloud rounds (T4, T5, the soups) or this round as they are made. Every
   candidate tried is reported. Paired ball comparisons are exact McNemar tests on the frames only one model hits.
 
-### 9.2 The ball and people on the two games
+### 10.2 The ball and people on the two games
 
 All three files run on ONNX Runtime (fp32 or int8, the sparse heads of §3.1) on the Mac's CPU, so the backend is the
 same for every model (`runs/bench/local/*.json`, not in git).
@@ -338,7 +375,7 @@ People against the teacher's boxes (score >= 0.5), each box placed on the court 
 | all (2,075) | 92.5 % | 77.2 % |
 
 Round 2 finds 41 fewer of the 1,311 players on the court than the app model on its own game, and has learnt from the
-SportsMOT labels to leave the referees out (§7). What either costs the pipeline is §9.3.
+SportsMOT labels to leave the referees out (§7). What either costs the pipeline is §10.3.
 
 **Cavaliers @ Warriors**, 60 new teacher clips of a game no model trained on (606 frames; the teacher labels the ball
 on 642 of 2,160 frames, fewer than on the 1080p game: 720p, 2017):
@@ -361,7 +398,7 @@ frames of this game):
 | no court fit on the frame (836) | 47.6 % | 52.0 % |
 | all (4,713) | 74.3 % | 70.9 % |
 
-### 9.3 The pipeline on Lakers @ Warriors
+### 10.3 The pipeline on Lakers @ Warriors
 
 The whole game re-detected on the Neural Engine (Core ML, `nba_analyze.py detect --backend coreml`: 12 ms a frame,
 20 minutes for the game) with each model, then `ball`, `events` and `timeline` with the current code; the timeline,
@@ -392,7 +429,7 @@ chance (p 0.46). Against that, the longer ball path gives more rim visits and en
 false candidates against 69), so the real-or-not decision falls by 5 points, and steals and turnovers (8 and 22 in
 the game) are found less well.
 
-### 9.4 The pipeline on Cavaliers @ Warriors
+### 10.4 The pipeline on Cavaliers @ Warriors
 
 The same comparison on the second game, which neither model trained on (`events --team-refit`, as for the README's
 run `base2`; the app model's run with the current code reproduces `base2` exactly). Its detections were made on Core ML
@@ -410,13 +447,13 @@ for both models.
 | False candidates kept as shots | 61 of 140 | 46 of 171 |
 | Box-score error (timeline events) | **0.570** | 0.581 |
 
-Round 2's better ball on this game (§9.2: linked path 72.4 % to 77.9 %) does not reach the pipeline's numbers: the
+Round 2's better ball on this game (§10.2: linked path 72.4 % to 77.9 %) does not reach the pipeline's numbers: the
 possession timeline and made-or-missed move within chance (made or missed 18 shots against 11, p 0.27), and the
 real-or-not decision improves because fewer false candidates are kept. What limits this game is upstream of the
 detector: the court is registered on about half of its frames (research note `made_shots_at_the_rim.md` §4), and the
 engine reports a candidate for only 114-120 of its 229 shots.
 
-### 9.5 What this round says about the fine-tunes where the app is shown
+### 10.5 What this round says about the fine-tunes where the app is shown
 
 * On the app model's own game the fine-tune matches its ball (95.5 % linked, the same frames), finds 3 points fewer
   of the players on the court, drops the referees, and leaves the pipeline about where it was: possession slightly
@@ -427,7 +464,7 @@ engine reports a candidate for only 114-120 of its 229 shots.
 * So the fine-tunes measured so far are not yet a reason to replace the app model: the detector gains on footage it
   never saw are real, but on these two games the pipeline's stages after the detector decide the results.
 
-### 9.6 Training on the Mac's GPU
+### 10.6 Training on the Mac's GPU
 
 `student_finetune.py train --device mps` (PyTorch's Metal backend). One A/B on the same data (the Lakers @ Warriors
 teacher folder) and start, 60 steps of the recipe each, timed from step 20 to step 60: MPS fp32 0.33 s a step, bf16
@@ -438,21 +475,22 @@ the CPU agree to the fourth decimal. A 3,000-step run takes about 16 minutes on 
 AMX. Getting there needed one fix: data-loader workers on macOS start by spawn and must unpickle the dataset, which
 was a class defined inside a function.
 
-### 9.7 Round 3 training on the Mac: plan, fixed before training
+### 10.7 Two training runs on the Mac: plan, fixed before training
 
 Two runs, each changing one thing against the one before it, from the same start (the exact copy of the app model,
 `student_from_onnx`) with round 2's recipe (§8: 3,000 steps, batch 4, AdamW 2e-4 cosine, stem and first stage
 frozen, batch norms frozen, hue ±30°, scale 0.7-1.4, ball loss weight 2, folders sampled equally, seed 0, the last
 step kept):
 
-* **R3-ctrl**: players from the 15 SportsMOT `train` sequences, the ball from pseudo labels on the 390 BARD clips of
+* **M1-ctrl**: players from the 15 SportsMOT `train` sequences, the ball from pseudo labels on the 390 BARD clips of
   the 30 calibration games. Round 2's labels came from the round-1 network, which is not on this machine, so these
-  are made by round 2's int8 file (`models/research/student-ft-r2-int8.onnx`): a third round of self-training.
-* **R3**: R3-ctrl plus the Lakers @ Warriors teacher folder the app model was distilled on (players, referees and
+  are made by round 2's int8 file (`models/research/student-ft-r2-int8.onnx`): a further round of self-training
+  (not the cloud's round 3 of §9, which kept round 2's labels).
+* **M1**: M1-ctrl plus the Lakers @ Warriors teacher folder the app model was distilled on (players, referees and
   the crowd as the teacher boxes them, and the ball), with `train_student`'s held-out clips left out (`plan_data`
   holds out every 10th clip of a teacher folder and the clips within 2 s of them).
 
-Scored once each, after training, on the sets of §9.1 (the Lakers @ Warriors held-out clips, the 60 Cavaliers @
+Scored once each, after training, on the sets of §10.1 (the Lakers @ Warriors held-out clips, the 60 Cavaliers @
 Warriors clips, which stay out of all training), the SportsMOT `val` players (§6.2) and the BARD check games' ball
 (§5, labelled here again by the teacher recipe on the Mac's GPU, so the numbers are compared within this machine).
 Nothing is tuned on these sets; the runs' own training logs print a few SportsMOT `val` frames for monitoring only.

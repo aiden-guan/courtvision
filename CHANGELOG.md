@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased] — The detector fine-tunes on the README's two games; fine-tuning on a Mac
 
-Measured on 2026-11-03 on the owner's M3 Pro with the local footage; [research note §9](docs/research/cross_game_detector.md),
+Measured on 2026-11-03 on the owner's M3 Pro with the local footage; [research note §10](docs/research/cross_game_detector.md),
 tables in [BENCHMARKS.md](docs/BENCHMARKS.md).
 
 - **The round-2 fine-tune where the app is shown.** On Lakers @ Warriors (the game the app model learnt from) it
@@ -29,19 +29,24 @@ tables in [BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ---
 
-## [Unreleased] — Detector round 2: faster training, iterated self-training, NBA players held out, research weights
+## [Unreleased] — Detector rounds 2 and 3: faster training, iterated self-training, NBA human labels, research weights
 
 Measured on 2026-11-03 in the same 4-core container; [research note §8](docs/research/cross_game_detector.md), tables in
 [BENCHMARKS.md](docs/BENCHMARKS.md).
 
-- **Research weights in the repo** ([models/research](models/research/README.md)): the round-2 fine-tune, fp32 (47.3 MB)
-  and int8 (12.7 MB), in the app's interface and at its cost per frame, with the datasets to credit and their terms.
+- **Research weights in the repo** ([models/research](models/research/README.md)): the round-3 and round-2 fine-tunes,
+  fp32 (47.3 MB) and int8 (12.7 MB) each, in the app's interface and at its cost per frame, with the datasets to credit
+  and their terms.
   Research and evaluation only (SportsMOT CC BY-NC 4.0 labels, NBA footage; TRAINING.md §1); the app's shipped
   `nba-student.onnx` is unchanged.
 - **Iterated self-training**: the ball re-labelled on 390 clips of the 30 calibration games by the round-1 fine-tune.
   The round-2 model puts its top ball candidate on the label on **89.1%** of 1,153 frames of 30 NBA games it never saw
   (round 1 86.7%, p 9.9e-5; the published detector 81.7%, p 4.3e-18; int8 89.2%), players on four unseen NCAA and FIBA
   broadcasts AP50 0.918 (round 1 0.922).
+- **Round 3: NBA human labels and temporal dropout** (3 games of Roboflow Universe's "basketball-player-detection-2",
+  CC BY 4.0; `--static-p 0.25`): on 5 other NBA games of that set, players AP50 0.396 (published) and 0.761 (round 2) to
+  **0.870**, the ball in their single frames 22.7% and 34.5% to **68.0%**; in video the ball stays at **89.5%** (round
+  2 89.1%, p 0.57). No SportsMOT broadcast is held out of it; its training games share the test games' labelling.
 - **NBA players held out of a full fine-tune**: trained on NCAA and FIBA player boxes and NBA ball pseudo-labels (no
   NBA player label), AP50 on the two NBA SportsMOT broadcasts 0.599 to **0.860** (person heads alone 0.721), recall 0.606
   to 0.736, precision 0.693 to 0.914.

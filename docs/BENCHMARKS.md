@@ -9,7 +9,7 @@ box score and play-by-play (research use, [NBA.md](NBA.md)). Newest first.
 The published student (the app model) against the round-2 research fine-tune (T2, `models/research/`) where the app
 is shown: Lakers @ Warriors, the game the app model was distilled on (its 15 held-out teacher clips), and Cavaliers @
 Warriors, which neither trained on (60 new teacher clips). Ball and people on ONNX Runtime for both models; the
-pipeline re-detected on Core ML for both, current code; [research note §9](research/cross_game_detector.md).
+pipeline re-detected on Core ML for both, current code; [research note §10](research/cross_game_detector.md).
 
 **Ball** (teacher labels; within 15 px of 1080p; paired exact McNemar test on the frames only one model hits):
 
@@ -88,12 +88,31 @@ teacher recipe, RF-DETR Small at 1312x736 plus path linking; top ball candidate 
 | Round 2, T1 (round 1's data, bf16 training) | 86.9 % | 13.1 % | 0.0 % | 2.06 px | 73 / 13, p 2.7e-11 |
 | Round 2, T2 (round-2 pseudo-labels) | **89.1 %** | 10.9 % | 0.0 % | 2.12 px | 96 / 11, p 4.3e-18 |
 | Round 2, T2, int8 | **89.2 %** | 10.8 % | 0.0 % | 2.16 px | 98 / 11, p 1.3e-18 |
+| Round 2, T4 (all seven SportsMOT broadcasts) | 89.4 % | 10.6 % | 0.0 % | 2.12 px | 103 / 14, p 6.4e-18 |
+| Round 3, T5 (+3 NBA games' human labels, temporal dropout) | **89.5 %** | 10.5 % | 0.0 % | 2.23 px | 104 / 14, p 3.6e-18 |
+| Round 3, T5, int8 | 89.4 % | 10.6 % | 0.0 % | 2.24 px | 104 / 15, p 1.5e-17 |
 
 T2 against the full fine-tune: 37 frames only T2 hits, 10 only the full fine-tune (p 9.9e-5); T2's int8 against its
-fp32: 2 and 0 (p 0.5). The person heads retrained alone leave the ball heads untouched (the published network's ball).
+fp32: 2 and 0 (p 0.5). T4 and T5 against T2: 14 / 10 (p 0.54) and 27 / 22 (p 0.57), no difference shown. The person heads retrained alone leave the ball heads untouched (the published network's ball).
 This is the top candidate of each frame; the README's 95.7 % on the two training games scores the linked ball path
 (`tools/nba_ball_bench.py`), a different measure. On the first 30 clips (368 frames) the published student scored
 86.1 %, the full fine-tune 90.8 %.
+
+**Players and the ball, 5 NBA games with human labels** (Roboflow Universe "basketball-player-detection-2", CC BY 4.0;
+211 single frames of 7 clips, 1,961 player boxes, the ball on 194 frames; never trained on; `--coco`: IoU 0.5, recall
+and precision at 0.3, ball within 15 px of 1080 lines; each frame fed as its own history, three times):
+
+| Model | Players AP50 | Recall | Precision | Ball hit | Only it hits / only published hits, p |
+|---|---:|---:|---:|---:|---|
+| Published student | 0.396 | 0.396 | 0.691 | 22.7 % | |
+| Round 1, full fine-tune | 0.743 | 0.710 | 0.796 | 33.5 % | 26 / 5, p 1.9e-4 |
+| Round 2, T2 ([weights](../models/research/README.md)) | 0.761 | 0.733 | 0.820 | 34.5 % | 29 / 6, p 1.2e-4 |
+| Round 2, T4 (all seven SportsMOT broadcasts) | 0.770 | 0.725 | 0.850 | 34.5 % | 31 / 8, p 2.9e-4 |
+| Round 3, T5 (+3 other NBA games of this set, temporal dropout; [weights](../models/research/README.md)) | **0.870** | **0.821** | **0.913** | **68.0 %** | 90 / 2, p 1.7e-24 |
+| Round 3, T5, int8 | 0.869 | 0.821 | 0.914 | 67.5 % | 90 / 3, p 2.7e-23 |
+
+T5 trained on 3 other games of the same set (the same labelling) and, alone, on repeated frames (a quarter of its
+samples), which favours it on these single frames, the ball most of all; in video its ball is T2's and T4's (above).
 
 **CPU paths** (`tools/student_speed.py`; one detection, network and decoding, median of 40 on 12 BARD inputs, 4
 threads, idle machine; `runs/bench/speed_4t.json`):
