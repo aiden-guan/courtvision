@@ -510,3 +510,24 @@ Scored once each, after training, on the sets of §10.1 (the Lakers @ Warriors h
 Warriors clips, which stay out of all training), the SportsMOT `val` players (§6.2) and the BARD check games' ball
 (§5, labelled here again by the teacher recipe on the Mac's GPU, so the numbers are compared within this machine).
 Nothing is tuned on these sets; the runs' own training logs print a few SportsMOT `val` frames for monitoring only.
+
+### 10.8 One main model: the next version, fixed before training
+
+On 2026-11-03 the owner chose one main detector, improved in place: the app's model. Each round starts from the
+current main model, uses everything the earlier rounds learnt from, and replaces it only when it is better somewhere
+and worse nowhere that matters. Two candidates for the next main version, named before either is trained or scored:
+
+* **A, everything at once**: from the app model, T5's recipe (§9: temporal dropout 0.25, 4,000 steps, folders sampled
+  equally) on every training source of the earlier rounds: the 15 SportsMOT `train` and 15 `val` sequences, the 3
+  Roboflow training games, the newest ball pseudo labels (§10.7's, made by round 2's int8 file on the 390 BARD
+  calibration clips) and the Lakers @ Warriors teacher folder (its held-out clips left out). No SportsMOT broadcast is
+  then held out.
+* **B, a soup**: the uniform weight average of the four fine-tunes that share the app model as their start (round 2,
+  T5, M1-ctrl, M1; `student_finetune.py soup`), at the same cost per frame.
+
+Held out of both, and scored once: the Lakers @ Warriors held-out clips, the 60 Cavaliers @ Warriors clips, the 30 BARD
+check games (the Mac's teacher labels) and the 5 held-out Roboflow games; then the whole pipeline on both games for the
+candidate that passes. **Rule for replacing the main model**: no paired test against the app model significantly worse
+(p < 0.05) on the ball or the players on the court of any of these sets, and the pipeline's possession and made-or-missed
+on both games not worse beyond chance; among candidates that pass, the one with more significant gains over the app
+model; on a tie, the single fine-tune over the soup. M1 (§10.7) is scored by the same rule.
