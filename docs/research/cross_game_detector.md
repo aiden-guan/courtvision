@@ -584,3 +584,29 @@ Where it runs: the NBA pipeline (`analyze.CachedDetector`, through `are_referees
 (`browser/runtime.py`: a person read as a referee is tracked and still counts as a person near the ball, but is never
 a player of either team, and is published as a grey "Referee" box), and the Studio's student detector
 (`StudentConfig(referees=True)`; off by default elsewhere).
+
+## 12. Round 5: weight averaging (no gain)
+
+Three weight-space ensembles, named before T4 and T5 existed (`student_finetune.py soup`): the uniform average of T4
+and T5, of T2, T4 and T5 (a "uniform soup", Wortsman et al. 2022, arXiv:2203.05482), and T5 pulled halfway back to
+the shared start (WiSE-FT, alpha 0.5, arXiv:2109.01903). Each fine-tune lies 0.14 to 0.16 of the start's norm away
+from it, but the averages only 0.08 to 0.10: the fine-tunes moved in nearly unrelated directions, so an average is
+mostly a step back towards the start. Scored as T5 (`runs/bench/ball_check12_r5.json`, `..._linked_r5.json`,
+`coco_heldout_r5.json`):
+
+| Model | Ball per frame (1,153) | Ball, linked path | Players AP50, 5 Roboflow games (single frames) | Ball, those frames |
+|---|---:|---:|---:|---:|
+| T5 | 89.5 % | 91.6 % | **0.870** | **68.0 %** |
+| T4 | 89.4 % | 91.6 % | 0.770 | 34.5 % |
+| Average of T4 and T5 | 89.6 % (14 / 13, p 1) | 91.8 % (14 / 11, p 0.69) | 0.410 | 53.6 % |
+| Average of T2, T4 and T5 | 90.1 % (22 / 15, p 0.32) | 91.9 % (16 / 12, p 0.57) | 0.271 | 48.5 % |
+| T5 halfway back to the start | 88.2 % (14 / 29, p 0.032) | 89.4 % (4 / 29, p 1.1e-5) | 0.777 | 49.0 % |
+
+(Paired against T5: frames only the candidate hits / only T5.) In video the averages match T5 on the ball (their
+linked paths miss less and are wrong more often: 6.3 % against 3.0 %); on single frames they collapse, because only
+T5 learnt to work without motion and averaging it with models that did not undoes that. No average is kept; T5
+(`student-ft-r3`) stays the best model.
+
+The new measures of §11 on these frames also show what the fine-tunes did to the referees: of the 506 labelled
+referees, T5 boxes 26 and T4 33 (T5 halfway back: 103). The detections that match nobody labelled (the crowd, benches,
+coaches) are 7.2 % of T5's (0.60 a frame) and 13.1 % of T4's.
