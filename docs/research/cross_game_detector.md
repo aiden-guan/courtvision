@@ -664,6 +664,21 @@ out one at a time (players called referee), the 160 hand-labelled boxes of §10.
 and the pipeline on both games with the learned check unguarded (§10.11's table). It becomes the pipeline's default only
 if neither game's possession timeline or made-or-missed is worse than the shirt rule's beyond chance.
 
+**Result.** The refit of the current check on the same data reproduces it exactly (the 8 games left out in turn:
+referees 5,753 of 6,101, players called referee 1,730 of 22,440, F1 0.847). With the SportsMOT players added (108,344
+samples of 15 games): referees 5,747 of 6,101, players called referee **1,424**, F1 **0.866**; on the SportsMOT
+broadcasts, each left out, it still calls 469 of 7,575 players referees (the rule 272). On the 160 hand-labelled boxes
+of the two games: Lakers @ Warriors 56 of 80 right (the current check 56, the rule 44); Cavaliers @ Warriors **45** of 80
+(the current check 32, the rule **66**; against the rule 13 boxes only it gets right, 34 only the rule, p 0.0031).
+Through the pipeline on Cavaliers @ Warriors (unguarded): the possession timeline 38.8 % again (the rule 75.8 %),
+made or missed 56.5 %; the timeline again finds no swap of baskets at half time. It does not pass, so the shirt rule
+stays the default and the packaged weights are unchanged (the refit is `tools/referee_classifier.py ... --players
+data/ft/mot_train --players data/ft/mot_val`). More players in more uniforms make the learned check better everywhere
+it was measured, but not enough: in the 2024-25 games it learnt from, the referees wear dark shirts, and a team in
+black still looks more like them than like most players. The fix to try next is in the game rather than in the
+weights: within one game the referees are a small group dressed alike, apart from the two teams the pipeline already
+clusters.
+
 ## 11. Referees and the crowd (cloud): plan, fixed before training
 
 The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The
