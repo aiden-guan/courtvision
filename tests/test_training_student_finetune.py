@@ -163,3 +163,40 @@ def test_soup_averages_float_tensors_and_interpolates_with_the_start(tmp_path: P
                     "--alpha", "0.5", "--out", str(out)]) == 0
     got = torch.load(out, weights_only=True)
     assert torch.equal(got["model"]["w"], torch.full((2, 2), 1.5)) and got["alpha"] == 0.5
+
+
+def test_prep_video_appends_batches_to_one_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import courtvision.perception.student_onnx as so
+
+    class _Fake:
+        def __init__(self, path: Path, threads: int = 4) -> None:
+            pass
+
+        def detect(self, x, scale, ball_thresh, person_thresh):  # noqa: ANN001, ANN201
+            return [(640.0, 360.0, 0.9)], []
+
+    monkeypatch.setattr(so, "OnnxStudent", _Fake)
+    src, out = tmp_path / "clips", tmp_path / "folder"
+
+    def video(name: str) -> None:
+        (src / "g").mkdir(parents=True, exist_ok=True)
+        vw = cv2.VideoWriter(str(src / "g" / name), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (1280, 720))
+        for _ in range(8):
+            vw.write(np.full((720, 1280, 3), 90, np.uint8))
+        vw.release()
+
+    video("1.mp4")
+    assert sf.prep_video(src, out, tmp_path / "m.onnx", 3, 6, 1) == 1
+    identity = json.loads((out / "meta.json").read_text())["video"]
+    (src / "g" / "1.mp4").unlink()  # a batch's videos deleted before the next is fetched
+    video("2.mp4")
+    sf.prep_video(src, out, tmp_path / "m.onnx", 3, 6, 1, append=True)
+    meta = json.loads((out / "meta.json").read_text())
+    assert meta["video"] == identity and [Path(c["video"]).name for c in meta["clips"]] == ["1.mp4", "2.mp4"]
+    rows = [json.loads(line) for line in (out / "detections.jsonl").open()]
+    assert sorted({r["clip"] for r in rows}) == [0, 1] and len(rows) == 12
+    assert (out / "frames" / "0001" / "000006.jpg").is_file()
+    labels = [json.loads(line) for line in (out / "ball_labels.jsonl").open()]
+    assert sorted({r["clip"] for r in labels}) == [0, 1]
+    with pytest.raises(SystemExit):  # another labeller into the same folder
+        sf.prep_video(src, out, tmp_path / "other.onnx", 3, 6, 1, append=True)

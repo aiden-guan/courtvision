@@ -112,15 +112,29 @@ def _videos(folder: Path) -> list[Path]:
     return sorted(out)
 
 
-def prep_video(src: Path, out: Path, model_path: Path, sample_every: int, max_frames: int, threads: int) -> int:
-    """Videos -> a pseudo ClipDataset folder with the model's own linked ball labels (no person labels)."""
+def prep_video(src: Path, out: Path, model_path: Path, sample_every: int, max_frames: int, threads: int,
+               append: bool = False) -> int:
+    """Videos -> a pseudo ClipDataset folder with the model's own linked ball labels (no person labels). With
+    ``append`` the clips are added after those already in ``out`` (one folder, and one ``video`` identity, filled
+    batch by batch: the videos of a batch can then be deleted before the next is fetched), and every clip's labels
+    are linked again."""
     from courtvision.perception.student_onnx import OnnxStudent
     from courtvision.training.ball_labels import label_folder
 
     model = OnnxStudent(model_path, threads=threads)
-    det_rows, clips = [], []
-    vids = _videos(src)
-    for ci, vid in enumerate(vids):
+    det_rows: list[dict[str, Any]] = []
+    clips: list[dict[str, Any]] = []
+    old_meta: dict[str, Any] | None = None
+    if append and (out / "meta.json").is_file():
+        old_meta = json.loads((out / "meta.json").read_text())
+        det_rows = [json.loads(line) for line in (out / "detections.jsonl").open()]
+        clips = list(old_meta["clips"])
+        if old_meta.get("model") not in (None, str(model_path)):
+            raise SystemExit(f"{out} was labelled by {old_meta['model']}, not {model_path}")
+    done = {c["video"] for c in clips}
+    vids = [v for v in _videos(src) if str(v) not in done]
+    n_clips = len(clips) + len(vids)
+    for ci, vid in enumerate(vids, start=len(clips)):
         cap = cv2.VideoCapture(str(vid))
         fps = cap.get(cv2.CAP_PROP_FPS) or TRAIN_FPS
         step = history_step(fps)
@@ -152,14 +166,17 @@ def prep_video(src: Path, out: Path, model_path: Path, sample_every: int, max_fr
             det_rows.append(row)
         cap.release()
         clips.append({"clip": ci, "video": str(vid), "first_frame": first, "frames": n, "frame_step": step})
-        print(f"[{ci + 1}/{len(vids)}] {vid.parent.name}/{vid.name}: {n} frames {time.time() - t0:.0f}s",
+        print(f"[{ci + 1}/{n_clips}] {vid.parent.name}/{vid.name}: {n} frames {time.time() - t0:.0f}s",
               file=sys.stderr, flush=True)
     out.mkdir(parents=True, exist_ok=True)
     (out / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in det_rows))
-    (out / "meta.json").write_text(json.dumps({
-        "kind": "pseudo", "video": f"videos:{src.resolve()}", "person_weight": 0.0,
-        "source": f"{model_path.name} on {src}", "fps": TRAIN_FPS,
-        "rights_status": "research_only", "label_origin": "pseudo", "clips": clips}, indent=1))
+    meta = {"kind": "pseudo", "video": f"videos:{src.resolve()}", "person_weight": 0.0,
+            "source": f"{model_path.name} on {src}", "model": str(model_path), "fps": TRAIN_FPS,
+            "rights_status": "research_only", "label_origin": "pseudo", "clips": clips}
+    if old_meta is not None:  # the folder keeps its identity; each batch's source is listed
+        meta["video"] = old_meta["video"]
+        meta["source"] = "; ".join(dict.fromkeys(old_meta["source"].split("; ") + [meta["source"]]))
+    (out / "meta.json").write_text(json.dumps(meta, indent=1))
     rows = label_folder(out)
     (out / "ball_labels.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     labelled = sum(1 for r in rows if r["w"] > 0)
@@ -611,6 +628,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sample-every", type=int, default=3)
     p.add_argument("--max-frames", type=int, default=120, help="frames per clip (at ~30 fps), from its middle")
     p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--append", action="store_true",
+                   help="add these videos' clips to the folder already in OUT (videos already in it are skipped)")
     p = sub.add_parser("prep-coco", help="COCO-format human labels -> a training folder (one-frame clips)")
     p.add_argument("ann", type=Path, help="the COCO annotation file")
     p.add_argument("images", type=Path, help="the folder of its images")
@@ -671,7 +690,7 @@ def main(argv: list[str] | None = None) -> int:
         names = {s.strip() for s in a.seqs.split(",")} if a.seqs else None
         return 0 if prep_mot(a.src, a.out, a.sample_every, names) else 2
     if a.cmd == "prep-video":
-        return 0 if prep_video(a.src, a.out, a.model, a.sample_every, a.max_frames, a.threads) else 2
+        return 0 if prep_video(a.src, a.out, a.model, a.sample_every, a.max_frames, a.threads, a.append) else 2
     if a.cmd == "prep-coco":
         games = [g.strip() for g in a.games.split(",") if g.strip()]
         excl = [g.strip() for g in a.exclude.split(",") if g.strip()]

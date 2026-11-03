@@ -102,14 +102,14 @@ def cmd_ball(root: Path, args: argparse.Namespace) -> None:
     _, camera = load_game(root)
     t0 = time.time()
     track = build_ball_track(load_cache(root, args.det_dir), camera)
-    track.save(root / "ball_track.json")
+    track.save(root / args.ball_track)
     print(f"ball path {len(track.path)} frames, {len(track.flights)} flights ({time.time() - t0:.0f}s)")
 
 
 def cmd_events(root: Path, args: argparse.Namespace) -> None:
     game, camera = load_game(root)
     cache = load_cache(root, args.det_dir)
-    ball = BallTrack.load(root / "ball_track.json")
+    ball = BallTrack.load(root / args.ball_track)
     reads = load_scorebug(root / "scorebug.jsonl")
     cfg = PerceiveConfig(use_3d_flights=args.use_3d, home_color_bgr=tuple(game["home_color_bgr"]) if game.get("home_color_bgr") else None,
                          away_color_bgr=tuple(game["away_color_bgr"]) if game.get("away_color_bgr") else None,
@@ -168,7 +168,7 @@ def cmd_fuse(root: Path, args: argparse.Namespace) -> None:
     cfg = fusion_config(overrides)
     if overrides:
         print(f"FusionConfig overrides: {json.dumps(overrides)}")
-    flights = BallTrack.load(root / "ball_track.json").flights if (root / "ball_track.json").exists() else []
+    flights = BallTrack.load(root / args.ball_track).flights if (root / args.ball_track).exists() else []
     from courtvision.geometry.court import court_for
 
     fused = fuse(events, bug, cfg, PlayDirection.from_camera(camera), periods, flights, court_for("nba"))
@@ -188,7 +188,7 @@ def cmd_timeline(root: Path, args: argparse.Namespace) -> None:
     game, camera = load_game(root)
     out = root / "runs" / args.tag
     events = [Event.from_dict(json.loads(line)) for line in (out / "events.jsonl").open()]
-    ball = BallTrack.load(root / "ball_track.json") if (root / "ball_track.json").exists() else None
+    ball = BallTrack.load(root / args.ball_track) if (root / args.ball_track).exists() else None
     flights = ball.flights if ball is not None else []
     court = court_for("nba")
     direction = PlayDirection.from_camera(camera)
@@ -451,6 +451,9 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--chunks", type=int, default=1, help="detect: split the range into this many files (resumable)")
     ap.add_argument("--det-dir", default="detections", help="detect / ball / events: detection folder in the game folder")
+    ap.add_argument("--ball-track", default="ball_track.json",
+                    help="ball writes, events / fuse / timeline read this ball track in the game folder (another name "
+                         "keeps a second detector's track beside the game's own)")
     ap.add_argument("--weights", default="runs/models/student/best.pt")
     ap.add_argument("--backend", choices=("auto", "coreml", "torch", "onnx"), default="auto",
                     help="detect: the student on the Neural Engine (coreml; auto where it loads), on torch "
