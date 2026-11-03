@@ -603,6 +603,26 @@ B (the soup) is unchanged. Added measures, from §11: referees found and detecti
 5 held-out Roboflow games, and on the two games the teacher's off-court people found (lower is better) beside the
 players and referees on the court.
 
+### 10.10 The learned referee check on the README's two games
+
+§11.1's learned check (now the pipeline's default) has no labels on these two games, so the boxes where it and the shirt
+rule disagree were labelled by eye: on each game's test frames, the teacher's people at 0.5 or more placed on the court
+(§10.2), both checks run on each box, and a random 60 of the disagreements plus a random 20 of the boxes both call a
+referee cut out and labelled referee, player or other
+([`referee_check_two_games.json`](referee_check_two_games.json): positions and labels, no footage).
+
+| Game | On-court boxes | The two disagree | Of 60 disagreements: learned right / rule right (sign test) | The learned check's wrong calls in the 60 | Both call a referee: not one (of 20) |
+|---|---:|---:|---|---|---:|
+| Lakers @ Warriors (held-out clips) | 2,788 | 149 | 36 / 24 (p 0.16) | 16 people by the baseline (a dancing fan, a fan in white) and 5 players called referees | 0 |
+| Cavaliers @ Warriors | 9,310 | 3,053 | 13 / **47** (p 1.2e-5) | **45 Cavaliers players** (black jerseys) and 2 others called referees | 1 |
+
+On the 2024 game the learned check is no worse than the rule (the rule's misses are Lakers players called referees;
+the learned check's are fans standing at the baseline). On the 2017 game it calls the Cavaliers' black jerseys
+referees: about three quarters of the 3,053 disagreements, roughly a quarter of all the on-court boxes of that game,
+if the sample holds. Like the Denver games of §11.1, a dark uniform passes for a referee's shirt. The pipeline keeps
+referees out of the teams, so this can cost the second game's possession timeline; the pipeline is re-run with the
+learned check on both games (§10.11).
+
 ## 11. Referees and the crowd (cloud): plan, fixed before training
 
 The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The
