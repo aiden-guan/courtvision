@@ -33,6 +33,7 @@ Research use only: SportsMOT is CC BY-NC 4.0, and NBA footage is research-only (
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -359,44 +360,59 @@ def finetune_dataset(base: Any, hue_deg: float, static_p: float = 0.0) -> Any:
     """``train_student.ClipDataset`` with domain randomisation for the person head: a sample without a ball label
     has its three frames' hues turned by one random angle in [-hue_deg, hue_deg] (jerseys, floors and adverts
     change colour from game to game; a frame with a ball label keeps its colours, the ball's orange being part
-    of what the network knows a ball by)."""
+    of what the network knows a ball by). ``base`` must be ``ClipDataset``; the class is defined at module level
+    (``FineTuneDataset``) so that DataLoader workers started by spawn (macOS) can unpickle it."""
+    from courtvision.training.train_student import ClipDataset
 
-    class FineTuneDataset(base):
-        _hue = 0.0
+    if base is not ClipDataset:
+        raise TypeError("finetune_dataset extends train_student.ClipDataset only")
+    return functools.partial(FineTuneDataset, hue_deg=hue_deg, static_p=static_p)
 
-        def __init__(self, *a: Any, **k: Any) -> None:
-            super().__init__(*a, **k)
-            # a sample of a folder without person labels and with no ball label of its own trains nothing
-            before = len(self.items)
-            self.items = [it for it in self.items
-                          if self.weights[it[0]].person > 0 or (it[4].get("xy") and it[4].get("w", 0) > 0)]
-            self.dropped = before - len(self.items)
 
-        def __getitem__(self, idx: int) -> Any:
-            item = self.items[idx]
-            lab = item[4]
-            has_ball = bool(lab.get("xy")) and lab.get("w", 0) > 0
-            self._hue = random.uniform(-hue_deg, hue_deg) if self.train and hue_deg > 0 and not has_ball else 0.0
-            if not (self.train and static_p > 0 and random.random() < static_p):
-                return super().__getitem__(idx)
-            # temporal dropout: the earlier input frames replaced by the frame itself, as at the start of a stream or
-            # after a cut (StudentDetector.reset) and on frames sampled too sparsely for motion
-            fi, clip, frames, det, lab = item
-            self.items[idx] = (fi, clip, [frames[-1]] * len(frames), det, lab)
-            try:
-                return super().__getitem__(idx)
-            finally:
-                self.items[idx] = item
+def _clip_dataset() -> Any:
+    from courtvision.training.train_student import ClipDataset
 
-        def _img(self, fi: int, clip: int, frame: int) -> np.ndarray:
-            img = super()._img(fi, clip, frame)
-            if self._hue and img is not None:
-                hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-                hsv[..., 0] = ((hsv[..., 0].astype(np.int16) + round(self._hue / 2.0)) % 180).astype(np.uint8)
-                img = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-            return img
+    return ClipDataset
 
-    return FineTuneDataset
+
+class FineTuneDataset(_clip_dataset()):  # type: ignore[misc]
+    """``finetune_dataset``'s dataset: label-free samples dropped, hue turns, temporal dropout."""
+
+    _hue = 0.0
+
+    def __init__(self, *a: Any, hue_deg: float = 0.0, static_p: float = 0.0, **k: Any) -> None:
+        super().__init__(*a, **k)
+        self.hue_deg, self.static_p = hue_deg, static_p
+        # a sample of a folder without person labels and with no ball label of its own trains nothing
+        before = len(self.items)
+        self.items = [it for it in self.items
+                      if self.weights[it[0]].person > 0 or (it[4].get("xy") and it[4].get("w", 0) > 0)]
+        self.dropped = before - len(self.items)
+
+    def __getitem__(self, idx: int) -> Any:
+        item = self.items[idx]
+        lab = item[4]
+        has_ball = bool(lab.get("xy")) and lab.get("w", 0) > 0
+        hue_deg, static_p = self.hue_deg, self.static_p
+        self._hue = random.uniform(-hue_deg, hue_deg) if self.train and hue_deg > 0 and not has_ball else 0.0
+        if not (self.train and static_p > 0 and random.random() < static_p):
+            return super().__getitem__(idx)
+        # temporal dropout: the earlier input frames replaced by the frame itself, as at the start of a stream or
+        # after a cut (StudentDetector.reset) and on frames sampled too sparsely for motion
+        fi, clip, frames, det, lab = item
+        self.items[idx] = (fi, clip, [frames[-1]] * len(frames), det, lab)
+        try:
+            return super().__getitem__(idx)
+        finally:
+            self.items[idx] = item
+
+    def _img(self, fi: int, clip: int, frame: int) -> np.ndarray:
+        img = super()._img(fi, clip, frame)
+        if self._hue and img is not None:
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            hsv[..., 0] = ((hsv[..., 0].astype(np.int16) + round(self._hue / 2.0)) % 180).astype(np.uint8)
+            img = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        return img
 
 
 def train(args: argparse.Namespace) -> int:

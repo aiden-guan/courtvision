@@ -426,3 +426,22 @@ engine reports a candidate for only 114-120 of its 229 shots.
   move beyond chance.
 * So the fine-tunes measured so far are not yet a reason to replace the app model: the detector gains on footage it
   never saw are real, but on these two games the pipeline's stages after the detector decide the results.
+
+### 9.6 Round 3 training on the Mac: plan, fixed before training
+
+Two runs, each changing one thing against the one before it, from the same start (the exact copy of the app model,
+`student_from_onnx`) with round 2's recipe (§8: 3,000 steps, batch 4, AdamW 2e-4 cosine, stem and first stage
+frozen, batch norms frozen, hue ±30°, scale 0.7-1.4, ball loss weight 2, folders sampled equally, seed 0, the last
+step kept):
+
+* **R3-ctrl**: players from the 15 SportsMOT `train` sequences, the ball from pseudo labels on the 390 BARD clips of
+  the 30 calibration games. Round 2's labels came from the round-1 network, which is not on this machine, so these
+  are made by round 2's int8 file (`models/research/student-ft-r2-int8.onnx`): a third round of self-training.
+* **R3**: R3-ctrl plus the Lakers @ Warriors teacher folder the app model was distilled on (players, referees and
+  the crowd as the teacher boxes them, and the ball), with `train_student`'s held-out clips left out (`plan_data`
+  holds out every 10th clip of a teacher folder and the clips within 2 s of them).
+
+Scored once each, after training, on the sets of §9.1 (the Lakers @ Warriors held-out clips, the 60 Cavaliers @
+Warriors clips, which stay out of all training), the SportsMOT `val` players (§6.2) and the BARD check games' ball
+(§5, labelled here again by the teacher recipe on the Mac's GPU, so the numbers are compared within this machine).
+Nothing is tuned on these sets; the runs' own training logs print a few SportsMOT `val` frames for monitoring only.
