@@ -521,13 +521,15 @@ exports:
 | Fine-tune (batch norms frozen; `--freeze` keeps modules fixed; `--hue` turns player-only frames' colours; `--balance` samples every folder equally; `--static-p` replaces the earlier input frames by the frame itself for that share of samples; `--bf16 --channels-last` for 3.6 times faster steps on CPUs with AMX) | `tools/student_finetune.py train --data data/ft/mot_train --data data/ft/bard_calib --init runs/models/student-from-onnx.pt --out runs/models/student-ft` |
 | Export (the browser interface) and score | `tools/student_finetune.py export runs/models/student-ft/last.pt --out runs/models/student-ft.onnx`; `tools/detector_bench.py --models a.onnx,b.onnx --split val --sparse` (SportsMOT), `--ball-folder` (teacher-labelled clips, with paired McNemar tests), `--coco` (COCO-format human labels) |
 | int8 for CPUs (calibrated on held-apart frames, checked against fp32) | `tools/quantize_student.py --calib <folder> --check <folder> --out runs/models/student-int8.onnx` |
+| Weight averaging of fine-tunes from one start (a uniform soup; `--base` and `--alpha` pull it back towards the start, WiSE-FT) | `tools/student_finetune.py soup a/last.pt b/last.pt --out runs/models/soup.pt [--base runs/models/student-from-onnx.pt --alpha 0.5]` |
 
 Every data folder uses `train_student.ClipDataset`'s layout and carries a `video` identity in `meta.json` (without
 one, `plan_data` treats two folders as one video and leaves out every clip near the other's held-out clips).
 
 **Rights.** SportsMOT is CC BY-NC 4.0, so a model fine-tuned on it is evaluation and research only (§1, rule 3), like
 everything trained on NBA footage. These tools write weights under `runs/` (git-ignored); the shipped browser asset
-`courtvision/server/static/nba-student.onnx` is not replaced by them.
+`courtvision/server/static/nba-student.onnx` is not replaced by them. The round-2 research fine-tune is published, for
+research use only, in `models/research/`; its README lists the datasets to credit and their terms.
 
 ---
 

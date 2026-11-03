@@ -29,6 +29,8 @@ data/
 !showcase/media/nba-analysis-*.mp4
 # Published browser inference asset: exported from the existing NBA checkpoint, not source training data.
 !courtvision/server/static/nba-student.onnx
+# Research-only fine-tunes of it, with their sources and terms: models/research/README.md.
+!models/research/*.onnx
 *.mlpackage/
 *.mlmodel
 

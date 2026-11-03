@@ -147,7 +147,7 @@ scored on the other, or fitted on one game and scored on the other.
 | Made or missed, real shots | **84.8%** from the video, **87.6%** adding TypeSafe Jev on rim crops | half vs half, Lakers @ Warriors |
 | Made or missed, Studio shot judge across games | **84.0% / 77.8%** vs the engine's own 83.3% / 68.9% | each game judged by models fitted on the other |
 | Studio made-shot F1 | **0.32 → 0.81** after moving the call from the scorebug to the rim | a 10-minute stretch the judge was not fitted on |
-| Ball found within 15 px | **95.7%** (RF-DETR Nano starter: 25.8%) | 256 labelled held-out frames |
+| Ball found within 15 px (linked ball path) | **95.7%** (RF-DETR Nano starter: 25.8%) | 256 labelled held-out frames |
 | Court registered, no clicks | 22,160 of 26,103 first-quarter frames tracking; 3,726 without the court (out of view or not found) | Lakers @ Warriors Q1 |
 
 Gains shrink across games, and the second game exposes failures the first did not (see [Limitations](#limitations)).
@@ -156,13 +156,15 @@ More, varied games are the main lever. All tables, including the simulator round
 
 **The detector beyond its two games** (2026-11-03, [details](docs/research/cross_game_detector.md)). Footage it never
 trained on, scored against human player boxes (SportsMOT basketball) and teacher-labelled NBA ball positions (BARD,
-2024-25 season); both datasets are research-only, and so are the fine-tuned weights, which are not shipped:
+2024-25 season); both datasets are research-only, and so are the fine-tuned weights: the round-2 fine-tune is
+published for research in [models/research](models/research/README.md) (sources and terms there), not shipped in the
+app:
 
-| What | Published detector | Research fine-tune | Held out how |
+| What | Published detector | Research fine-tune (round 2) | Held out how |
 |---|---|---|---|
-| Players found, 4 NCAA and FIBA broadcasts | 62.6% (AP50 0.675) | **87.9%** (AP50 **0.922**) | human labels, broadcasts never trained on |
-| Ball found within 15 px, 30 NBA games | 86.1% (95.7% on its own games) | **90.8%** | teacher labels, games never trained on |
-| Players, 2 NBA broadcasts (person heads retrained on NCAA and FIBA footage only) | AP50 0.599 | AP50 **0.721** | human labels, broadcasts never trained on |
+| Players found, 4 NCAA and FIBA broadcasts | 62.6% (AP50 0.675) | **87.0%** (AP50 **0.918**) | human labels, broadcasts never trained on |
+| Ball's top candidate within 15 px, 30 NBA games (1,153 frames) | 81.7% | **89.1%** | teacher labels, games never trained on |
+| Players, 2 NBA broadcasts (a separate round-2 fine-tune that saw no NBA player label) | AP50 0.599 | AP50 **0.860** | human labels, broadcasts never trained on |
 | One detection on a 4-core x86 CPU | 222 ms (PyTorch) | **106 ms** same detections; **50 ms** int8 | idle machine, median of 40 |
 
 **Simulator, held-out seeds 101–104** (macro-F1 over 9 event kinds, [report](docs/bench/round5-heldout.md)):

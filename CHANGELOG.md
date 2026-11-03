@@ -5,6 +5,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Detector round 2: faster training, iterated self-training, NBA players held out, research weights
+
+Measured on 2026-11-03 in the same 4-core container; [research note §8](docs/research/cross_game_detector.md), tables in
+[BENCHMARKS.md](docs/BENCHMARKS.md).
+
+- **Research weights in the repo** ([models/research](models/research/README.md)): the round-2 fine-tune, fp32 (47.3 MB)
+  and int8 (12.7 MB), in the app's interface and at its cost per frame, with the datasets to credit and their terms.
+  Research and evaluation only (SportsMOT CC BY-NC 4.0 labels, NBA footage; TRAINING.md §1); the app's shipped
+  `nba-student.onnx` is unchanged.
+- **Iterated self-training**: the ball re-labelled on 390 clips of the 30 calibration games by the round-1 fine-tune.
+  The round-2 model puts its top ball candidate on the label on **89.1%** of 1,153 frames of 30 NBA games it never saw
+  (round 1 86.7%, p 9.9e-5; the published detector 81.7%, p 4.3e-18; int8 89.2%), players on four unseen NCAA and FIBA
+  broadcasts AP50 0.918 (round 1 0.922).
+- **NBA players held out of a full fine-tune**: trained on NCAA and FIBA player boxes and NBA ball pseudo-labels (no
+  NBA player label), AP50 on the two NBA SportsMOT broadcasts 0.599 to **0.860** (person heads alone 0.721), recall 0.606
+  to 0.736, precision 0.693 to 0.914.
+- **3.6 times faster fine-tuning** on CPUs with AMX (`student_finetune.py train --bf16 --channels-last`): a step 1.34 s
+  to 0.37 s, a 3,000-step run 115 min to 30 min, the same quality (players AP50 0.917 against 0.922; ball 86.9% against
+  86.7%, p 0.88). `--balance` samples each data folder equally.
+- **Tools**: `detector_bench.py --ball-folder` pools folders and adds exact McNemar tests, `--link` scores the linked
+  ball path, `--coco` scores COCO-format human labels; `student_finetune.py prep-coco`, `--static-p` (temporal
+  dropout) and `soup` (weight averaging, WiSE-FT).
+- **Corrected**: the previous entry set the per-frame 86.1% beside the README's 95.7%, which scores the linked ball
+  path (`nba_ball_bench.py`), a different measure. Its int8 "same counts" held on those 368 frames; on 1,153 frames
+  int8 hits 3 frames fp32 misses and misses 8 it hits (81.3% against 81.7%, p 0.23).
+
+---
+
 ## [Unreleased] — The detector on broadcasts it never saw: a benchmark, a faster CPU path, fine-tuning tools
 
 Measured on 2026-11-03 in a 4-core Linux container (Xeon, AVX-512 VNNI and AMX, no GPU) from the published ONNX export;

@@ -16,8 +16,10 @@ was worked around. Two public research datasets stood in:
 | SportsMOT, basketball sequences ([Cui et al., ICCV 2023](https://github.com/MCG-NJU/SportsMOT); Hugging Face `MCG-NJU/SportsMOT`) | 720p 25 fps broadcast clips, every player on the court boxed by hand in every frame (referees, coaches and the crowd are not). 30 sequences with public labels from 7 broadcasts: 2 NBA, 1 NCAA, 4 FIBA (men's and women's) | CC BY-NC 4.0 | the person benchmark (§2); the 15 `train` sequences (2 NBA broadcasts and 1 FIBA) as fine-tuning labels, the 15 `val` sequences (1 NCAA, 3 FIBA) held out |
 | BARD ([Giudici et al., CVIU 2026](https://github.com/GabrieleGiudic/BARD); Hugging Face `GabrieleGiudici/BARD`) | NBA.com event clips of 60 games of the 2024-25 season (720p 60 fps, ~8.5 s each) with play-by-play labels | CC BY 4.0 (the footage is the NBA's) | 3 clips per game (180): int8 calibration and checks, ball pseudo-labels; games split into 30 + 30 by alternation |
 
-Both are research-only here (docs/TRAINING.md §1). Nothing from them is committed: footage stays under `data/`
-(git-ignored), and the only artefacts are tools, tests and the numbers below.
+Both are research-only here (docs/TRAINING.md §1). No footage or label from them is committed (`data/` is
+git-ignored). The round-2 fine-tune's weights (§8.2) are, for research use, in
+[`models/research/`](../../models/research/README.md) with these sources and their terms. The exact splits (games, clips, sequences;
+file names only) are in [`cross_game_detector_splits.json`](cross_game_detector_splits.json).
 
 ## 2. The benchmark: players on seven other broadcasts
 
@@ -132,29 +134,33 @@ Two variants:
 
 ## 5. The ball on 30 NBA games never trained on
 
-The SportsMOT labels have no ball, so the ball is checked on NBA footage held out of everything: one clip from each
-of the 30 BARD check games, labelled by the student's own teacher recipe (`tools/nba_teacher_labels.py`: RF-DETR
-Small, COCO, at 1312 x 736, threshold 0.04, linked by `link_ball_path`) on 24 frames at ~30 fps each, 720 frames in
-all: 402 carry a ball label of weight 0.5 or more (373 detected, 29 filled), 368 of them with two frames before them
-to score. `tools/detector_bench.py --ball-folder` counts the network's top ball (threshold 0.08) within 15 px of 1080p
-of the label (hit), elsewhere (wrong) or nowhere (missed), as the README's "ball found within 15 px" does on the two
-training games' own held-out clips (95.7 %).
+The SportsMOT labels have no ball, so the ball is checked on NBA footage held out of everything: 90 clips of the 30
+BARD check games (one per game, then two more per game), labelled by the student's own teacher recipe
+(`tools/nba_teacher_labels.py`: RF-DETR Small, COCO, at 1312 x 736, threshold 0.04, linked by `link_ball_path`) on 24
+frames at ~30 fps each: 1,153 frames carry a ball label of weight 0.5 or more with two frames before them to score
+(368 of them in the first 30 clips). `tools/detector_bench.py --ball-folder` counts the network's top ball candidate
+(threshold 0.08) within 15 px of 1080p of the label (hit), elsewhere (wrong) or nowhere (missed), and compares two
+models with an exact McNemar test on the frames where only one of them hits (`runs/bench/ball_check12_r1.json`):
 
-| Model | Hit | Wrong | Missed | Median error (px of 1080p) |
-|---|---:|---:|---:|---:|
-| Published student, fp32 | 86.1 % | 13.6 % | 0.3 % | 2.12 |
-| int8 | 86.1 % | 13.6 % | 0.3 % | 2.18 |
-| Heads-only fine-tune | 86.1 % | 13.6 % | 0.3 % | 2.12 |
-| Full fine-tune | **90.8 %** | 9.2 % | 0.0 % | 2.05 |
-| Full fine-tune, int8 | 90.5 % | 9.5 % | 0.0 % | 2.14 |
+| Model | Hit | Wrong | Missed | Median error (px of 1080p) | vs published: frames only it hits / only published, p |
+|---|---:|---:|---:|---:|---|
+| Published student, fp32 | 81.7 % | 18.0 % | 0.3 % | 2.18 | |
+| int8 | 81.3 % | 18.4 % | 0.3 % | 2.27 | 3 / 8, p 0.23 |
+| Full fine-tune | **86.7 %** | 13.3 % | 0.0 % | 2.10 | 70 / 12, p 4.1e-11 |
+| Full fine-tune, int8 | 86.6 % | 13.4 % | 0.0 % | 2.15 | 71 / 15, p 7.1e-10 |
 
-On games it never saw the published student puts its best ball candidate on the labelled ball 86.1 % of the time
-against 95.7 % on its own games. The int8 model gets the same hit, wrong and missed counts. The full fine-tune's
-ball labels came only from the published network's linked detections on 30 *other* NBA games, and it puts its top
-ball on the teacher's label on 90.8 % of these frames (wrong 13.6 % to 9.2 %): self-training with the path linker's
-temporal consistency improved the ball on footage that played no part in it. The fine-tuned network also reports more
-ball candidates above 0.08 (704 against 475 on 120 frames, `runs/bench/int8_ft_full.json`); this benchmark scores the
-top candidate only, so what the extra candidates do to the path linking (`nba/analyze.link_ball`) was not measured.
+The heads-only fine-tune leaves both ball heads untouched, so its ball detections are the published network's.
+
+On games it never saw the published student puts its top ball candidate on the labelled ball on 81.7 % of the frames
+(86.1 % on the first 30 clips). The README's 95.7 % on its own two games' held-out clips is a different measure: it
+scores the ball path that `nba/analyze.link_ball` links through every frame's candidates (`tools/nba_ball_bench.py`),
+not each frame's top candidate, so the two numbers are not comparable. An earlier version of this note said that
+int8 gets the same hit, wrong and missed counts as fp32: that held on the first 368 frames only; on all 1,153 the
+difference (3 frames against 8) is within chance. The full fine-tune's ball labels came only from the published
+network's linked detections on 30 *other* NBA games, and it hits on 70 frames the published network misses against 12
+the other way: self-training with the path linker's temporal consistency improved the ball on footage that played no
+part in it. The fine-tuned network also reports more ball candidates above 0.08 (704 against 475 on 120 frames,
+`runs/bench/int8_ft_full.json`); this benchmark scores the top candidate only.
 
 ## 6. Players on broadcasts held out of the fine-tuning
 
@@ -200,21 +206,74 @@ sequences (a 90-frame sample of them was printed during training for monitoring 
 
 ## 7. Limits, and what was tried and dropped
 
-* **No NBA person labels are held out of the full fine-tune**: its person training includes the two NBA SportsMOT
-  broadcasts. §6.1 shows the NBA direction for the person heads only. The full model's effect on NBA players, and on
-  the two games of the README, has to be measured on the Mac against `train_student.evaluate`'s held-out frames
-  before anyone uses it there.
+* **The two games of the README were not measured**: their footage is not in the container. The fine-tunes' effect
+  there has to be measured on the Mac against `train_student.evaluate`'s held-out frames before anyone uses them in
+  the pipeline. (NBA players held out of a full fine-tune: §8.3.)
 * **Players only**: the fine-tuned person head was taught that referees, benches and the crowd are not people to box.
   The pipeline keeps referees out of the teams anyway (`analyze.is_referee`), but it also hands every tracked
   person's box, referees included, to the ball tracker as the people near the ball (`perception/pipeline.py`); what
   losing the referees' boxes does there was not measured.
-* **Rights**: the fine-tuned weights learnt from CC BY-NC labels and NBA footage. They are research-only and are not
-  committed or shipped; the published browser export is unchanged.
+* **Rights**: the fine-tuned weights learnt from CC BY-NC labels and NBA footage, so they are research-only. The
+  round-2 fine-tune is published for research in `models/research/` (sources and terms in its README) and is not
+  shipped: the app's browser export is unchanged.
 * **Labels**: the ball references are the RF-DETR teacher's linked path, not human labels, as for the README's
-  95.7 %; 30 games at one clip each is breadth, not depth.
+  95.7 %; 30 games at three clips each is breadth, not depth.
 * **The simulator's monocular blocks** (held-out F1 0.25) were studied and left alone. On the train seeds 1-6 the
   engine finds 3 of 19 blocks; a blocked shot it misses becomes a steal and a turnover, a miss called seconds later, or
   nothing. A learned check where a defender gains a released ball that is not a shot (the steal decision) was
   prototyped: over the six games that point saw 128 candidates holding only 3 of the 19 blocks, too few for any
   classifier there to matter, so nothing was changed.
 
+## 8. Round 2: faster training, iterated self-training, NBA players held out
+
+Every model in this section starts from the same exact copy of the published export (`student_from_onnx`), keeps
+round 1's recipe (stem and first stage frozen, batch norms frozen, AdamW 2e-4 with cosine decay, batch 4, hue ±30°,
+scale 0.7-1.4, ball loss weight 2) and is taken at its last step. Ball scores are on the 1,153 teacher-labelled frames
+of §5 (per-frame top candidate unless marked linked); paired differences are exact McNemar tests on the frames where
+exactly one of the two models hits.
+
+### 8.1 Training 3.6 times faster on the same CPU
+
+bf16 autocast for the forward pass plus channels-last tensors (oneDNN's preferred layout; the container's Xeon has
+AMX): one training step went from 1.34 s to 0.37 s in a controlled A/B (fp32 channels-last alone 1.01 s, bf16 alone
+0.61 s). The full 3,000-step runs took 115 min (round 1) and 30 min (T1). T1 is round 1's data and recipe plus bf16,
+channels-last and balanced sampling (each data folder drawn equally often): players on the held-out NCAA and FIBA
+broadcasts AP50 0.917 (round 1 0.922), F1 0.903 (0.900); ball 86.9 % (86.7 %; 24 frames only T1 hits, 22 only round
+1, p 0.88). Same model quality, a quarter of the time.
+
+### 8.2 Iterated self-training (round 2)
+
+Round 2 re-labelled the ball on 390 clips of the 30 calibration games (35,100 frames, 4.3 times round 1's 90 clips)
+with the round-1 network (int8), linked into one path per clip as before (32,053 frames labelled, 346 of them filled).
+T2 = T1's recipe on these labels:
+
+| Model | Players AP50 (val) | Players F1 | Ball hit | Wrong | vs round 1 (only it / only round 1, p) |
+|---|---:|---:|---:|---:|---|
+| Published student | 0.675 | 0.700 | 81.7 % | 18.0 % | |
+| Round 1 (full fine-tune) | 0.922 | 0.900 | 86.7 % | 13.3 % | |
+| T1 (bf16, balanced) | 0.917 | 0.903 | 86.9 % | 13.1 % | 24 / 22, p 0.88 |
+| T2 (round-2 labels) | 0.918 | 0.903 | **89.1 %** | 10.9 % | 37 / 10, p 9.9e-5 |
+
+Against the published network T2 hits on 96 frames it misses and misses 11 it hits (p 4.3e-18). Two things changed
+at once (a better labeller and 4.3 times the clips), so this does not say which one helped. T2's int8 export
+(`tools/quantize_student.py`, as in §3.2) hits 89.2 % (2 frames fp32 misses, none the other way, p 0.5); against fp32
+on 120 held-out inputs 98.2 % of its person boxes and 91.6 % of its ball points match. Both files are in
+[`models/research/`](../../models/research/README.md), research use only.
+
+### 8.3 NBA players held out of a full fine-tune (T3)
+
+The round-1 full fine-tune had seen the two NBA SportsMOT broadcasts' player boxes (§6.2 holds out NCAA and FIBA
+only). T3 is T2's
+recipe with the person labels swapped to the four NCAA and FIBA broadcasts (`val`) and the round-2 NBA ball labels kept
+(those carry no person loss, so NBA video is seen but no NBA player is labelled). Scored on the 11 NBA sequences
+(every 10th labelled frame, 1,014 frames; `runs/bench/sportsmot_nba_t3.json`):
+
+| Model | AP50 | Recall at 0.3 | Precision at 0.3 | F1 |
+|---|---:|---:|---:|---:|
+| Published student | 0.599 | 0.606 | 0.693 | 0.647 |
+| Person heads retrained on NCAA and FIBA (§6.1) | 0.721 | 0.622 | 0.760 | 0.684 |
+| T3, full fine-tune, NBA players held out | **0.860** | **0.736** | **0.914** | **0.815** |
+
+Recall by broadcast: Warriors at Oracle 0.689, 0.690, 0.706; Lakers at New Orleans (a re-streamed local feed) 0.467,
+0.508, **0.787**. With the trunk free to change, footage of other leagues lifts NBA player detection far more than the
+retrained heads did; the broadcast that was already handled best gains little.

@@ -22,25 +22,37 @@ pipeline's 0.3; SportsMOT boxes players only, so precision counts referees and t
 | Person heads retrained on 2 NBA + 1 FIBA broadcast | NCAA + 3 FIBA (`val`) | 0.796 | 0.709 | 0.830 |
 | Full fine-tune on 2 NBA + 1 FIBA broadcast (+ NBA ball pseudo-labels) | NCAA + 3 FIBA (`val`) | **0.922** | **0.879** | 0.921 |
 | Full fine-tune, int8 | NCAA + 3 FIBA (`val`) | 0.921 | 0.881 | 0.920 |
+| Round 2, T1: round 1's data, bf16 training, folders sampled equally | NCAA + 3 FIBA (`val`) | 0.917 | 0.865 | 0.944 |
+| Round 2, T2: ball pseudo-labels from round 1's model on 4.3 times the clips ([weights](../models/research/README.md)) | NCAA + 3 FIBA (`val`) | 0.918 | 0.870 | 0.939 |
 | Published student | 2 NBA + 1 FIBA (`train`, 15 sequences) | 0.592 | 0.594 | 0.701 |
 | Person heads retrained on NCAA + 3 FIBA | 2 NBA + 1 FIBA (`train`) | **0.714** | 0.615 | 0.766 |
 | Published student | the 2 NBA broadcasts alone (11 sequences) | 0.599 | 0.606 | 0.693 |
-| Person heads retrained on NCAA + 3 FIBA | the 2 NBA broadcasts alone | **0.721** | 0.622 | 0.760 |
+| Person heads retrained on NCAA + 3 FIBA | the 2 NBA broadcasts alone | 0.721 | 0.622 | 0.760 |
+| Round 2, T3: full fine-tune on NCAA + 3 FIBA players (+ NBA ball pseudo-labels, no NBA player label) | the 2 NBA broadcasts alone | **0.860** | **0.736** | **0.914** |
 
 Recall by held-out broadcast (published, heads retrained, full fine-tune): NCAA, Kentucky v Wichita State 0.824,
 0.847, 0.886; FIBA Asia Championship 0.730, 0.809, 0.931; FIBA Women's World Cup 2018 0.406, 0.546, 0.881; FIBA, USA v
 Russia 0.517, 0.639, 0.839.
 
-**Ball, 30 NBA games never trained on** (one BARD clip each, 368 frames labelled by the student's own teacher recipe,
-RF-DETR Small at 1312x736 plus path linking; top ball within 15 px of 1080p, threshold 0.08):
+**Ball, 30 NBA games never trained on** (90 BARD clips, three per game, 1,153 frames labelled by the student's own
+teacher recipe, RF-DETR Small at 1312x736 plus path linking; top ball candidate within 15 px of 1080p, threshold
+0.08; paired exact McNemar test against the published student on the frames only one of the two hits):
 
-| Model | Hit | Wrong | Missed | Median error |
-|---|---:|---:|---:|---:|
-| Published student (95.7 % on its own two games' held-out clips) | 86.1 % | 13.6 % | 0.3 % | 2.12 px |
-| int8 | 86.1 % | 13.6 % | 0.3 % | 2.18 px |
-| Person heads retrained (ball path untouched) | 86.1 % | 13.6 % | 0.3 % | 2.12 px |
-| Full fine-tune (ball pseudo-labels from 30 *other* BARD games) | **90.8 %** | 9.2 % | 0.0 % | 2.05 px |
-| Full fine-tune, int8 | 90.5 % | 9.5 % | 0.0 % | 2.14 px |
+| Model | Hit | Wrong | Missed | Median error | Only it hits / only published hits, p |
+|---|---:|---:|---:|---:|---|
+| Published student | 81.7 % | 18.0 % | 0.3 % | 2.18 px | |
+| int8 | 81.3 % | 18.4 % | 0.3 % | 2.27 px | 3 / 8, p 0.23 |
+| Full fine-tune (ball pseudo-labels from 30 *other* BARD games) | 86.7 % | 13.3 % | 0.0 % | 2.10 px | 70 / 12, p 4.1e-11 |
+| Full fine-tune, int8 | 86.6 % | 13.4 % | 0.0 % | 2.15 px | 71 / 15, p 7.1e-10 |
+| Round 2, T1 (round 1's data, bf16 training) | 86.9 % | 13.1 % | 0.0 % | 2.06 px | 73 / 13, p 2.7e-11 |
+| Round 2, T2 (round-2 pseudo-labels) | **89.1 %** | 10.9 % | 0.0 % | 2.12 px | 96 / 11, p 4.3e-18 |
+| Round 2, T2, int8 | **89.2 %** | 10.8 % | 0.0 % | 2.16 px | 98 / 11, p 1.3e-18 |
+
+T2 against the full fine-tune: 37 frames only T2 hits, 10 only the full fine-tune (p 9.9e-5); T2's int8 against its
+fp32: 2 and 0 (p 0.5). The person heads retrained alone leave the ball heads untouched (the published network's ball).
+This is the top candidate of each frame; the README's 95.7 % on the two training games scores the linked ball path
+(`tools/nba_ball_bench.py`), a different measure. On the first 30 clips (368 frames) the published student scored
+86.1 %, the full fine-tune 90.8 %.
 
 **CPU paths** (`tools/student_speed.py`; one detection, network and decoding, median of 40 on 12 BARD inputs, 4
 threads, idle machine; `runs/bench/speed_4t.json`):
@@ -50,12 +62,13 @@ threads, idle machine; `runs/bench/speed_4t.json`):
 | PyTorch fp32 (`StudentDetector`'s CPU fallback until now) | 222.0 ms | 191-265 | reference |
 | ONNX Runtime fp32, whole graph | 129.8 ms | 116-162 | within 5e-6 of PyTorch |
 | ONNX Runtime fp32, offset and size heads at the peaks only (`backend="onnx"`) | **105.9 ms** | 95-137 | the whole graph's detections |
-| ONNX Runtime int8, heads at the peaks only | **49.6 ms** | 47-62 | the same ball hit / wrong / missed counts (below) |
+| ONNX Runtime int8, heads at the peaks only | **49.6 ms** | 47-62 | ball hits 81.3 % against fp32's 81.7 % (p 0.23, above) |
 
 The sparse path (`perception/student_onnx.py`) gives the full network's detections (heatmaps identical, offsets
 within 1.4e-6). int8 against fp32 on 120 frames of 30 held-out NBA games: person boxes 98.4 % matched, ball points
 92.8 % (int8 mostly adds low-score candidates: on 60 of the frames it found all 112 fp32 balls scored 0.2 or more);
-on the 368 labelled frames above, the same hit, wrong and missed counts. File 47.3 MB fp32, 12.7 MB int8.
+on the 1,153 labelled frames above, 81.3 % against 81.7 % (3 frames only int8 hits, 8 only fp32; p 0.23). File 47.3 MB
+fp32, 12.7 MB int8. The fine-tunes have the same graph, so the same cost per frame.
 
 ## NBA broadcast accuracy
 
