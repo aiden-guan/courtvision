@@ -25,6 +25,10 @@ wraps it for broadcast footage:
 * **Live overlap.** A causal court worker can fit the current frame while the student runs its raw inference.
   Prepared OCR is applied only on accepted live frames. While awaiting OCR, at most one decoded next frame may
   be inferred; its court gate and box rectification still run in order, and a cut discards its cached inference.
+* **Ball detections in the scorebug** (``drop_scorebug_balls``): while the reader sees the bug, BALL detections
+  centred where it covers the frame (``OCRScorebugReader.bug_boxes``: the boxes the court tracker masks) are dropped
+  before the wrapped pipeline tracks the ball. The bug is an opaque overlay, so nothing in it is the game ball, but a
+  team logo there can outscore the real ball.
 
 Thresholds are design choices tuned on simulator broadcast renders (``sim/broadcast.py``).
 """
@@ -32,23 +36,24 @@ Thresholds are design choices tuned on simulator broadcast renders (``sim/broadc
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import cv2
 import numpy as np
 
 from courtvision.geometry.homography import Calibration, Homography
-from courtvision.types import BBox, FrameState
+from courtvision.types import BBox, FrameDetections, FrameState, ObjClass
 
 from .court_tracker import CourtTracker, CourtTrackerConfig, TrackResult, _camera, _rotation
 from .pipeline import PerceptionPipeline
 from .scorebug import ScorebugReader
+from .scorebug_cover import DROP_BALLS_IN_BUG, in_boxes
 from .runtime import configure_live_thread
 
-__all__ = ["BroadcastPerception", "BroadcastPerceptionConfig", "GateState", "ShotBoundaryDetector"]
+__all__ = ["BroadcastPerception", "BroadcastPerceptionConfig", "GateState", "ShotBoundaryDetector", "drop_balls_in"]
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +69,8 @@ class BroadcastPerceptionConfig:
     rectify_boxes: bool = False
     # Cut each rim in view out of the frame (FrameState.rim_crops) for the shot judge's rim model (nba/live_judge.py)
     rim_crops: bool = False
+    # Drop BALL detections centred in the scorebug while the reader sees it (its bug_boxes, the court tracker's mask)
+    drop_scorebug_balls: bool = DROP_BALLS_IN_BUG
 
 
 @dataclass(frozen=True)
@@ -72,6 +79,7 @@ class GateState:
     reason: str  # "live" | "court_lost" | "no_scorebug"
     cut: bool
     track: TrackResult
+    scorebug: bool = True  # the reader sees the bug (True without a reader: nothing says it is hidden)
 
 
 class ShotBoundaryDetector:
@@ -200,7 +208,7 @@ class BroadcastPerception:
             reason = "no_scorebug"
         else:
             reason = "live"
-        return GateState(reason == "live", reason, cut, track)
+        return GateState(reason == "live", reason, cut, track, bool(bug))
 
     def process(self, frame_bgr: np.ndarray, frame_idx: int, t: float) -> FrameState:
         h, w = frame_bgr.shape[:2]
@@ -294,10 +302,14 @@ class BroadcastPerception:
             if fields_future is not None:
                 self.scorebug.read_prepared(frame_bgr, t, fields_future.result())
             raise detection_error
+        cover = self._ball_cover(frame_bgr, g)
         if prefetched is not None:
             if isinstance(self.inner.detector, _Rectifying):
                 prefetched = self.inner.detector.rectify(prefetched)
-            state = self.inner.process(frame_bgr, frame_idx, t, detections=prefetched)
+        elif cover:
+            prefetched = self.inner.detector.detect(frame_bgr, frame_idx, t)  # what the pipeline would detect
+        if prefetched is not None:
+            state = self.inner.process(frame_bgr, frame_idx, t, detections=drop_balls_in(prefetched, cover))
         else:
             state = self.inner.process(frame_bgr, frame_idx, t)
         if self.config.rim_crops and self.inner.calibration.rims:
@@ -315,6 +327,14 @@ class BroadcastPerception:
         if center is not None:
             state.camera_xyz = (float(center[0]), float(center[1]), float(center[2]))
         return state
+
+    def _ball_cover(self, frame_bgr: np.ndarray, gate: GateState) -> list[tuple[int, int, int, int]]:
+        """Where this frame's BALL detections are dropped (``drop_scorebug_balls``): the boxes the reader's bug covers
+        (frame px) while the reader sees it; none without a reader that knows its boxes."""
+        boxes = getattr(self.scorebug, "bug_boxes", None)
+        if not (self.config.drop_scorebug_balls and gate.scorebug and callable(boxes)):
+            return []
+        return list(boxes(frame_bgr))
 
     def _start_scoreboard_read(self, frame_bgr: np.ndarray, t: float) -> Future[Any] | None:
         """The frame's scorebug read when one is due (``scoreboard_hz``), running on this perception's reader thread:
@@ -347,6 +367,19 @@ class BroadcastPerception:
         close = getattr(self.auto, "close", None)  # a court tracker working in another process
         if callable(close):
             close()
+
+
+def drop_balls_in(fd: FrameDetections, boxes: Sequence[tuple[int, int, int, int]]) -> FrameDetections:
+    """``fd`` without its BALL detections centred in ``boxes`` (x, y, w, h, frame px: ``scorebug_cover.in_boxes``, as
+    ``analyze.without_balls_in`` drops cached candidates); ``fd`` itself when none is."""
+    balls = [d for d in fd.detections if d.cls is ObjClass.BALL] if boxes else []
+    if not balls:
+        return fd
+    inside = in_boxes([((d.bbox.x1 + d.bbox.x2) / 2.0, (d.bbox.y1 + d.bbox.y2) / 2.0) for d in balls], boxes)
+    if not inside.any():
+        return fd
+    drop = {id(d) for d, i in zip(balls, inside, strict=True) if i}
+    return replace(fd, detections=[d for d in fd.detections if id(d) not in drop])
 
 
 class _Rectifying:

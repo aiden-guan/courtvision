@@ -1,7 +1,7 @@
 """Analyse a whole NBA broadcast and score it against the official box score (research use).
 
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> detect [--workers 2] [--backend auto|coreml|torch]
-    .venv/bin/python tools/nba_analyze.py runs/nba/<game> ball
+    .venv/bin/python tools/nba_analyze.py runs/nba/<game> ball [--scorebug-filter on|off] [--ball-track NAME]
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> events [--tag baseline] [--3d] [--start S --end S]
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> eval --tag baseline
     .venv/bin/python tools/nba_analyze.py runs/nba/<game> fuse --tag baseline [--fusion-file calib.json] [--fusion '{}']
@@ -15,6 +15,12 @@ weights; ``ball`` and ``events`` read the same one), ``ball`` writes ``ball_trac
 team with the ball over the run (``courtvision/nba/timeline.py``, no scorebug) and writes ``runs/<tag>/timeline.jsonl``
 (the engine's events rebuilt from it; ``eval --file timeline.jsonl`` scores them) and ``timeline.json``; with the
 play-by-play it is fitted on one half of the game and scored on the other, both ways.
+
+``ball --scorebug-filter on`` first drops the ball candidates centred in the scorebug (the boxes nba_track_court.py
+keeps out of the court evidence: the game's ``scorebug_profile.json``, else the ESPN 2024 bug; ``--scorebug-profile``
+names another) and records the boxes in the ball track. ``--ball-track NAME`` writes the ball track under another
+name, so a run with the filter leaves ``ball_track.json`` alone: ``events --ball-track NAME`` reads it and records it
+in ``run.json``, and ``fuse`` and ``timeline`` then read the run's ball track (docs/NBA.md, "The scorebug filter").
 """
 
 from __future__ import annotations
@@ -28,8 +34,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy as np  # noqa: E402
+
 from courtvision.nba import espn  # noqa: E402
 from courtvision.nba.analyze import (  # noqa: E402
+    BallLinkConfig,
     BallTrack,
     CameraTrack,
     DetectionCache,
@@ -39,14 +48,18 @@ from courtvision.nba.analyze import (  # noqa: E402
     load_scorebug,
     perceive,
     run_engine,
+    without_balls_in,
 )
 from courtvision.nba.evaluate import compare  # noqa: E402
+from courtvision.perception.scorebug_cover import DROP_BALLS_IN_BUG, frame_boxes, in_boxes  # noqa: E402
 from courtvision.training.align_pbp import AlignConfig, ClockTimeline, align_pbp, score_changes  # noqa: E402
 
 # ESPN's scorebug shows a basket about 2 s after the play-by-play clock time of the make (median over the made
 # field goals of Lakers @ Warriors 2024-12-25); its play-by-play clock is the event's own time (no entry lag)
 ESPN_ALIGN = AlignConfig(score_update_lag_s=2.0, lag_s={"nba": 0.0}, estimate_lag=False)
 TEAM_REFIT = (150, 600, 1500, 3000)  # TeamConfig.refit_at for broadcasts (--team-refit; the Studio too)
+BALL_TRACK = "ball_track.json"  # the game's ball track (--ball-track: another file beside it)
+SCOREBUG_FILTER = "on" if DROP_BALLS_IN_BUG else "off"  # ball --scorebug-filter default
 from courtvision.types import Event, Team  # noqa: E402
 
 
@@ -98,18 +111,71 @@ def load_cache(root: Path, det_dir: str = "detections") -> DetectionCache:
     return cache
 
 
+def scorebug_boxes(root: Path, game: dict, camera: CameraTrack,
+                   profile: str | None = None) -> list[tuple[int, int, int, int]]:
+    """The game's scorebug in pixels of its camera track's frames: the boxes tools/nba_track_court.py keeps out of the
+    court evidence (``bug_exclude``: ``profile``, else the scorebug_profile.json saved for the game, else the ESPN
+    2024 bug)."""
+    from tools.nba_track_court import bug_exclude
+
+    return frame_boxes(bug_exclude(str(root / "scorebug.jsonl"), game.get("video"), profile), camera.image_size)
+
+
+def drop_scorebug_balls(cache: DetectionCache, boxes: list[tuple[int, int, int, int]],
+                        size: tuple[int, int]) -> DetectionCache:
+    """``without_balls_in`` the scorebug, printing what it dropped: all candidates, those the linker reads (its
+    ``min_score``) and the frames whose best candidate was in the bug."""
+    kept = without_balls_in(cache, boxes)
+    floor = BallLinkConfig().min_score
+    total = dropped = linkable = best = 0
+    for f, b in cache.balls.items():
+        total += len(b)
+        if kept.balls[f] is b:
+            continue
+        inside = in_boxes(b, boxes)
+        dropped += int(inside.sum())
+        linkable += int((inside & (b[:, 2] >= floor)).sum())
+        top = int(np.argmax(b[:, 2]))
+        best += int(bool(inside[top]) and bool(b[top, 2] >= floor))
+    print(f"scorebug filter: boxes {boxes} (x, y, w, h px of the {size[0]}x{size[1]} frame): {dropped} of {total} "
+          f"ball candidates dropped, {linkable} of them scored {floor} or more (what the linker reads); the frame's "
+          f"best candidate on {best} of {len(cache.balls)} frames", flush=True)
+    return kept
+
+
+def run_ball_track(args: argparse.Namespace, out: Path) -> str:
+    """The ball track a run's later stages read: ``--ball-track``, else the one its events were made with (run.json),
+    else ball_track.json."""
+    name = getattr(args, "ball_track", None)
+    if not name and (out / "run.json").is_file():
+        try:
+            name = json.loads((out / "run.json").read_text()).get("ball_track")
+        except (OSError, ValueError, AttributeError):
+            name = None
+    return name or BALL_TRACK
+
+
 def cmd_ball(root: Path, args: argparse.Namespace) -> None:
-    _, camera = load_game(root)
+    game, camera = load_game(root)
     t0 = time.time()
-    track = build_ball_track(load_cache(root, args.det_dir), camera)
-    track.save(root / "ball_track.json")
-    print(f"ball path {len(track.path)} frames, {len(track.flights)} flights ({time.time() - t0:.0f}s)")
+    cache = load_cache(root, args.det_dir)
+    boxes: list[tuple[int, int, int, int]] = []
+    if getattr(args, "scorebug_filter", SCOREBUG_FILTER) == "on":
+        boxes = scorebug_boxes(root, game, camera, getattr(args, "scorebug_profile", None))
+        cache = drop_scorebug_balls(cache, boxes, camera.image_size)
+    track = build_ball_track(cache, camera)
+    track.scorebug_boxes = boxes
+    name = getattr(args, "ball_track", None) or BALL_TRACK
+    track.save(root / name)
+    print(f"ball path {len(track.path)} frames, {len(track.flights)} flights ({time.time() - t0:.0f}s)"
+          + ("" if name == BALL_TRACK else f" -> {root / name}"))
 
 
 def cmd_events(root: Path, args: argparse.Namespace) -> None:
     game, camera = load_game(root)
     cache = load_cache(root, args.det_dir)
-    ball = BallTrack.load(root / "ball_track.json")
+    ball_track = getattr(args, "ball_track", None) or BALL_TRACK
+    ball = BallTrack.load(root / ball_track)
     reads = load_scorebug(root / "scorebug.jsonl")
     cfg = PerceiveConfig(use_3d_flights=args.use_3d, home_color_bgr=tuple(game["home_color_bgr"]) if game.get("home_color_bgr") else None,
                          away_color_bgr=tuple(game["away_color_bgr"]) if game.get("away_color_bgr") else None,
@@ -125,7 +191,8 @@ def cmd_events(root: Path, args: argparse.Namespace) -> None:
         for e in events:
             fh.write(json.dumps(e.to_dict()) + "\n")
     (out / "run.json").write_text(json.dumps({"start": args.start, "end": args.end, "use_3d": args.use_3d,
-                                              "engine": args.engine, "seconds": time.time() - t0}))
+                                              "engine": args.engine, "ball_track": ball_track,
+                                              "seconds": time.time() - t0}))
     print(f"{len(events)} events in {time.time() - t0:.0f}s -> {out}")
 
 
@@ -168,7 +235,8 @@ def cmd_fuse(root: Path, args: argparse.Namespace) -> None:
     cfg = fusion_config(overrides)
     if overrides:
         print(f"FusionConfig overrides: {json.dumps(overrides)}")
-    flights = BallTrack.load(root / "ball_track.json").flights if (root / "ball_track.json").exists() else []
+    ball_path = root / run_ball_track(args, out)
+    flights = BallTrack.load(ball_path).flights if ball_path.exists() else []
     from courtvision.geometry.court import court_for
 
     fused = fuse(events, bug, cfg, PlayDirection.from_camera(camera), periods, flights, court_for("nba"))
@@ -188,7 +256,8 @@ def cmd_timeline(root: Path, args: argparse.Namespace) -> None:
     game, camera = load_game(root)
     out = root / "runs" / args.tag
     events = [Event.from_dict(json.loads(line)) for line in (out / "events.jsonl").open()]
-    ball = BallTrack.load(root / "ball_track.json") if (root / "ball_track.json").exists() else None
+    ball_path = root / run_ball_track(args, out)
+    ball = BallTrack.load(ball_path) if ball_path.exists() else None
     flights = ball.flights if ball is not None else []
     court = court_for("nba")
     direction = PlayDirection.from_camera(camera)
@@ -341,11 +410,14 @@ def decide_shots(events: list[Event], timeline, attack, aligned, split: float, a
 
 def zone_reader(root: Path, camera: CameraTrack, court, ball, det_dir: str):  # noqa: ANN001, ANN201
     """Each candidate's ball-zone series (``rim_clips.ball_zone_series``): the detector's ball candidates about the rim
-    around the moment the linked ball passes nearest it (``rim_jev.rim_centre``)."""
+    around the moment the linked ball passes nearest it (``rim_jev.rim_centre``); without those in the scorebug when the
+    ball was linked without them (``BallTrack.scorebug_boxes``)."""
     from courtvision.nba.rim_clips import ball_zone_series
     from courtvision.nba.rim_jev import rim_centre
 
     cache = load_cache(root, det_dir)
+    if ball is not None and ball.scorebug_boxes:
+        cache = without_balls_in(cache, ball.scorebug_boxes)
     path = {f: (p[0], p[1]) for f, p in ball.path.items()} if ball is not None else {}
 
     def read(c):  # noqa: ANN001, ANN202
@@ -451,6 +523,16 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--chunks", type=int, default=1, help="detect: split the range into this many files (resumable)")
     ap.add_argument("--det-dir", default="detections", help="detect / ball / events: detection folder in the game folder")
+    ap.add_argument("--scorebug-filter", choices=("on", "off"), default=SCOREBUG_FILTER,
+                    help="ball: drop the ball candidates centred in the scorebug before linking (the boxes "
+                         "nba_track_court.py masks: the game's scorebug_profile.json, else the ESPN 2024 bug); "
+                         f"default {SCOREBUG_FILTER} (scorebug_cover.DROP_BALLS_IN_BUG)")
+    ap.add_argument("--scorebug-profile", default=None,
+                    help="ball --scorebug-filter on: this profile's scorebug (a name such as espn-2024, or a saved "
+                         "JSON) instead of the game's")
+    ap.add_argument("--ball-track", default=None,
+                    help="ball: write the ball track to this file in the game folder (default ball_track.json); "
+                         "events: read it (recorded in run.json); fuse / timeline: read it (default: the run's)")
     ap.add_argument("--weights", default="runs/models/student/best.pt")
     ap.add_argument("--backend", choices=("auto", "coreml", "torch"), default="auto",
                     help="detect: the student on the Neural Engine (coreml; auto where it loads) or on torch "

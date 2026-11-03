@@ -34,12 +34,15 @@ from courtvision.nba.analyze import (
     rate_ratio,
     rectify_box,
     scale_frames,
+    without_balls_in,
 )
 from courtvision.nba.espn import TeamBox
 from courtvision.nba.evaluate import BOX_STATS, box_error
 from courtvision.perception import student
 from courtvision.perception.ball3d import FlightSearchConfig
 from courtvision.perception.court_search import CameraParams
+from courtvision.perception.scorebug_cover import frame_boxes
+from courtvision.perception.scorebug_ocr import ESPN_2024, bug_boxes
 from courtvision.types import Team
 
 C = np.array([47.0, -94.0, 36.0])
@@ -202,6 +205,58 @@ def test_link_ball_keeps_the_chain_through_a_fast_camera_pan() -> None:
     # told the camera stood still, the same candidates link the logo: removing the pan is what keeps the ball
     still = link_ball(cache, track({f: params[0] for f in params}))
     assert sorted(still) == list(range(12)) and all(np.allclose(still[f][:2], logo) for f in still)
+
+
+# --------------------------------------------------------------------------- the scorebug
+
+
+def test_a_ball_candidate_centred_in_the_scorebug_is_dropped_and_one_outside_it_kept() -> None:
+    bug = [(468, 944, 1000, 125)]  # the ESPN 2024 bug and its lower row, px of a 1920x1080 frame
+    logo = (530.0, 979.0, 0.7)  # a team logo in the bug
+    ball = (960.0, 600.0, 0.45)  # the ball, in the shooter's hands
+    edge = (1468.0, 1000.0, 0.3)  # just right of the box (a box covers [x, x + w))
+    cache = DetectionCache({1: np.array([logo, ball, edge], np.float32), 2: np.array([ball], np.float32),
+                            3: np.zeros((0, 3), np.float32)},
+                           {1: np.array([[500.0, 900.0, 560.0, 1060.0, 0.9]], np.float32)})
+    kept = without_balls_in(cache, bug)
+    np.testing.assert_array_equal(kept.balls[1], np.array([ball, edge], np.float32))
+    assert kept.balls[2] is cache.balls[2] and kept.balls[3] is cache.balls[3]  # nothing dropped: the same arrays
+    np.testing.assert_array_equal(kept.persons[1], cache.persons[1])  # a person box over the bug stays
+    np.testing.assert_array_equal(cache.balls[1], np.array([logo, ball, edge], np.float32))  # the input is unchanged
+    assert without_balls_in(cache, []) is cache
+
+
+def test_a_still_logo_in_the_scorebug_holds_the_linked_ball_unless_its_candidates_are_dropped() -> None:
+    """A free throw: the ball still in the shooter's hands, and a team logo in the bug, as still and scoring higher.
+    The linker follows the logo; without the bug's candidates, the ball."""
+    frames = range(200, 260)
+    cam = track({f: (0.0, 15.0, 0.0, 3000.0) for f in frames})  # the camera holds still on the shooter
+    logo, ball = (530.0, 979.0, 0.7), (960.0, 600.0, 0.45)
+    cache = DetectionCache({f: np.array([logo, ball], np.float32) for f in frames})
+    path = link_ball(cache, cam)
+    assert sorted(path) == list(frames) and all(np.allclose(p[:2], logo[:2]) for p in path.values())
+    kept = without_balls_in(cache, frame_boxes(bug_boxes(ESPN_2024), SIZE))
+    path = link_ball(kept, cam)
+    assert sorted(path) == list(frames) and all(np.allclose(p[:2], ball[:2]) for p in path.values())
+    # the bug's candidates go before the linker keeps a frame's best ones: with room for one, the frames as detected
+    # give the logo, the filtered frames the ball
+    one = BallLinkConfig(max_candidates=1)
+    path = link_ball(cache, cam, one)
+    assert sorted(path) == list(frames) and all(np.allclose(p[:2], logo[:2]) for p in path.values())
+    path = link_ball(kept, cam, one)
+    assert sorted(path) == list(frames) and all(np.allclose(p[:2], ball[:2]) for p in path.values())
+
+
+def test_the_ball_track_records_the_boxes_it_was_linked_without_and_is_written_as_before_without_them(
+        tmp_path: Path) -> None:
+    track_ = BallTrack({3: (1.0, 2.0, 0.5)}, [])
+    track_.save(tmp_path / "plain.json")
+    assert json.loads((tmp_path / "plain.json").read_text()) == {"path": {"3": [1.0, 2.0, 0.5]}, "flights": []}
+    assert BallTrack.load(tmp_path / "plain.json").scorebug_boxes == []
+    track_.scorebug_boxes = [(468, 944, 1000, 125)]
+    track_.save(tmp_path / "filtered.json")
+    back = BallTrack.load(tmp_path / "filtered.json")
+    assert back.scorebug_boxes == [(468, 944, 1000, 125)] and back.path == {3: (1.0, 2.0, 0.5)}
 
 
 # --------------------------------------------------------------------------- person boxes

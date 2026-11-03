@@ -9,7 +9,8 @@ players, events) can be re-run quickly while they are improved:
    ball candidates and person boxes (``DetectionCache``).
 4. ``link_ball``: one ball path through the candidates (a dynamic programme like ``training/ball_labels.py``,
    with the camera's turn between frames removed from the motion cost), then ``ball3d.find_flights`` for the
-   ballistic parts of the path (passes, shots) in 3-D.
+   ballistic parts of the path (passes, shots) in 3-D. ``without_balls_in`` can first drop the candidates centred
+   in the scorebug (``nba_analyze.py ball --scorebug-filter on``).
 5. ``perceive``: ``FrameState`` per frame: players (ByteTrack on the cached boxes with camera-motion
    compensation, team colours, referees left out, court positions through the frame's camera), the ball (image
    point; floor point and height inside fitted flights) and the rims projected through the camera. Frames
@@ -39,7 +40,7 @@ import queue
 import shutil
 import subprocess
 import threading
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
@@ -52,6 +53,7 @@ from courtvision.geometry.court import CourtSpec, court_for
 from courtvision.geometry.homography import Calibration, Homography
 from courtvision.perception.ball3d import Flight3D, FlightSearchConfig, find_flights
 from courtvision.perception.court_search import CameraParams
+from courtvision.perception.scorebug_cover import in_boxes
 from courtvision.types import (
     BallState,
     BBox,
@@ -63,7 +65,7 @@ from courtvision.types import (
 )
 
 __all__ = ["REF_FPS", "REF_HEIGHT", "BallTrack", "CameraTrack", "DetectionCache", "VideoInfo", "detect_video",
-           "link_ball", "load_scorebug", "prefetch", "probe_video", "rate_ratio", "scale_frames"]
+           "link_ball", "load_scorebug", "prefetch", "probe_video", "rate_ratio", "scale_frames", "without_balls_in"]
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -461,6 +463,22 @@ class DetectionCache:
         self.persons.update(other.persons)
 
 
+def without_balls_in(cache: DetectionCache, boxes: Sequence[tuple[int, int, int, int]]) -> DetectionCache:
+    """The cache without the ball candidates centred in ``boxes`` (x, y, w, h in the cache's full-resolution px; a box
+    covers [x, x + w) x [y, y + h)): the broadcast's scorebug (``scorebug_ocr.bug_boxes`` in the frame's pixels,
+    ``scorebug_cover.frame_boxes``). The bug is an opaque overlay, so nothing in it is the game ball, but a team logo
+    there can outscore the real ball and, when both stand still (a free throw), hold the linked path. Dropping them
+    before ``link_ball`` lets the frame's next candidates into its ``max_candidates``. The person boxes are kept and a
+    frame with nothing dropped keeps its array; ``cache`` itself without boxes."""
+    if not boxes:
+        return cache
+    out = DetectionCache(persons=dict(cache.persons))
+    for f, b in cache.balls.items():
+        inside = in_boxes(b, boxes)
+        out.balls[f] = b[~inside] if inside.any() else b
+    return out
+
+
 def iter_frames(video: Path, start: int = 0, end: int | None = None, exact: bool = False
                 ) -> Iterator[tuple[int, np.ndarray]]:
     """Frames [start, end) of ``video`` with their numbers (the order the decoder gives them, from 0). OpenCV's frame
@@ -643,10 +661,12 @@ def flight_config_for(fps: float, config: FlightSearchConfig | None = None) -> F
 
 @dataclass
 class BallTrack:
-    """The linked ball path (frame -> x, y, score) and the 3-D flights along it."""
+    """The linked ball path (frame -> x, y, score) and the 3-D flights along it. ``scorebug_boxes``: the boxes
+    (x, y, w, h, full-resolution px) whose ball candidates were dropped before linking (``without_balls_in``)."""
 
     path: dict[int, tuple[float, float, float]] = field(default_factory=dict)
     flights: list[Flight3D] = field(default_factory=list)
+    scorebug_boxes: list[tuple[int, int, int, int]] = field(default_factory=list)
 
     def flight_at(self, frame: int) -> Flight3D | None:
         for f in self.flights:  # few hundred per game; linear scan is fine per frame
@@ -655,15 +675,19 @@ class BallTrack:
         return None
 
     def save(self, path: Path) -> None:
-        path.write_text(json.dumps({"path": {str(k): [round(v, 2) for v in xy] for k, xy in self.path.items()},
-                                    "flights": [f.to_dict() for f in self.flights]}))
+        doc: dict[str, Any] = {"path": {str(k): [round(v, 2) for v in xy] for k, xy in self.path.items()},
+                               "flights": [f.to_dict() for f in self.flights]}
+        if self.scorebug_boxes:  # (a track linked without the filter is written as before)
+            doc["scorebug_boxes"] = [[int(v) for v in b] for b in self.scorebug_boxes]
+        path.write_text(json.dumps(doc))
 
     @classmethod
     def load(cls, path: Path) -> BallTrack:
         d = json.loads(path.read_text())
         flights = [Flight3D(f["t0"], f["t1"], np.array(f["p0"]), np.array(f["v0"]), f["rms_px"], f["n_obs"],
                             tuple(f["frames"])) for f in d["flights"]]  # type: ignore[arg-type]
-        return cls({int(k): tuple(v) for k, v in d["path"].items()}, flights)  # type: ignore[misc]
+        boxes = [(int(b[0]), int(b[1]), int(b[2]), int(b[3])) for b in d.get("scorebug_boxes") or ()]
+        return cls({int(k): tuple(v) for k, v in d["path"].items()}, flights, boxes)  # type: ignore[misc]
 
 
 def _segments(frames: list[int]) -> list[list[int]]:

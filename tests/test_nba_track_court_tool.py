@@ -82,6 +82,25 @@ def test_the_bug_leaves_the_line_evidence_of_a_1080p_and_a_720p_video(size, tmp_
         assert not lines(tool.bug_exclude(reads, profile=str(path))).any()
 
 
+@pytest.mark.parametrize("size", [(1920, 1080), (1280, 720)])
+def test_the_ball_filter_and_the_court_evidence_mask_the_same_pixels(size, tmp_path) -> None:  # noqa: ANN001
+    """``frame_boxes`` of a mask and ``in_boxes`` cover exactly the pixels the court evidence blocks for it, so the
+    ball filter (nba_analyze.py ball --scorebug-filter on, the Studio) and the court tracker see one scorebug."""
+    from courtvision.perception.court_search import court_evidence
+    from courtvision.perception.scorebug_cover import frame_boxes, in_boxes
+
+    tool = load_tool()
+    W, H = size
+    path = save_profile(TOP_RIGHT_720, tmp_path / "profile.json")
+    img = np.full((H, W, 3), (120, 170, 215), np.uint8)
+    jj, ii = np.meshgrid(np.arange(W), np.arange(H))
+    centres = np.column_stack([jj.ravel() + 0.5, ii.ravel() + 0.5])  # each pixel's centre
+    for exclude in (tool.ESPN_EXCLUDE, tool.bug_exclude(str(tmp_path / "scorebug.jsonl"), profile=str(path))):
+        blocked = court_evidence(img, EvidenceConfig(exclude=exclude)).blocked
+        inside = in_boxes(centres, frame_boxes(exclude, size)).reshape(H, W)
+        assert blocked is not None and blocked.any() and np.array_equal(inside, blocked)
+
+
 def test_the_profile_option_and_the_profile_saved_for_the_video(tmp_path) -> None:  # noqa: ANN001
     tool = load_tool()
     video = tmp_path / "runs" / "studio" / "v1" / "source.video"

@@ -29,6 +29,10 @@ normalised correlation of the profile's static region (``logo_box``: a logo or t
 region learned from the first good read (not learned while that region is flat: no texture to match). Scores read
 as None until seen: ESPN draws a lone 0 as a ring that the recogniser skips; ``zero_until_seen`` reads a missing
 score as 0 while that team has not scored yet.
+
+**Where the bug covers the picture** (``bug_boxes``, ``OCRScorebugReader.bug_boxes``): the court tracker keeps it out
+of the line evidence (tools/nba_track_court.py), and a ball candidate centred in it is not the game ball
+(``scorebug_cover.py``).
 """
 
 from __future__ import annotations
@@ -45,10 +49,11 @@ import numpy as np
 
 from courtvision.types import ScoreboardReading
 
+from .scorebug_cover import frame_boxes
 from .vision_ocr import OCRLine, VisionOCR
 
-__all__ = ["ESPN_2024", "FIELDS", "Box", "OCRScorebugReader", "ScorebugProfile", "Token", "join_ordinals",
-           "line_tokens", "parse_lines"]
+__all__ = ["ESPN_2024", "ESPN_2024_COVER", "FIELDS", "Box", "OCRScorebugReader", "ScorebugProfile", "Token",
+           "bug_boxes", "join_ordinals", "line_tokens", "parse_lines"]
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +153,28 @@ ESPN_2024 = ScorebugProfile(
     clock_panel_x=(1128, 1460),
     logo_box=(478, 962, 104, 34),
 )
+
+
+# --------------------------------------------------------------------------- where the bug covers the picture
+
+# The ESPN 2024 bug and its lower row (x, y, w, h of a 1920x1080 frame), as the court tracker has always masked it
+ESPN_2024_COVER: tuple[Box, ...] = ((ESPN_2024.logo_box[0] - 10, ESPN_2024.ocr_box[1] - 6, 1000, 125),)
+
+
+def bug_boxes(profile: ScorebugProfile) -> list[Box]:
+    """The parts of a 1920x1080 frame (x, y, w, h) that ``profile``'s scorebug covers: for ESPN 2024 the measured bug
+    and its lower row (``ESPN_2024_COVER``); for any other profile its text crop and its static region (``ocr_box``,
+    ``logo_box``), each with a margin of 10 px of a 1080-line frame left and right and half its height above and below
+    for a second row. ``scorebug_cover.frame_boxes`` gives them in another frame size."""
+    if profile.name == ESPN_2024.name:
+        return list(ESPN_2024_COVER)
+    sx, sy = 1920.0 / profile.ref_size[0], 1080.0 / profile.ref_size[1]
+    out = []
+    for x, y, w, h in (profile.ocr_box, profile.logo_box):
+        mx, my = 10.0 / sy, 0.5 * h  # profile px: the same mask whatever size the profile was measured at
+        out.append((int(round((x - mx) * sx)), int(round((y - my) * sy)), int(round((w + 2 * mx) * sx)),
+                    int(round((h + 2 * my) * sy))))
+    return out
 
 
 def _period(text: str) -> int | None:
@@ -425,12 +452,21 @@ class OCRScorebugReader:
     _logo: np.ndarray | None = None
     _scaled: ScorebugProfile | None = None
     _seen: dict[str, bool] = field(default_factory=dict)
+    _cover: tuple[tuple[int, int], list[Box]] | None = None
 
     def _prof(self, frame: np.ndarray) -> ScorebugProfile:
         size = (frame.shape[1], frame.shape[0])
         if self._scaled is None or self._scaled.ref_size != size:
             self._scaled = self.profile.scaled(size)
         return self._scaled
+
+    def bug_boxes(self, frame: np.ndarray) -> list[Box]:
+        """Where the profile's bug covers this frame (``bug_boxes``, in the frame's pixels: ``frame_boxes``)."""
+        size = (frame.shape[1], frame.shape[0])
+        cover = self._cover
+        if cover is None or cover[0] != size:
+            cover = self._cover = (size, frame_boxes(bug_boxes(self.profile), size))
+        return cover[1]
 
     @staticmethod
     def _norm(patch: np.ndarray) -> np.ndarray:

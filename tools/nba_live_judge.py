@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from courtvision.eval.events import latest_revisions  # noqa: E402
 from courtvision.geometry.court import court_for  # noqa: E402
 from courtvision.nba import makes as mk  # noqa: E402
-from courtvision.nba.analyze import BallTrack  # noqa: E402
+from courtvision.nba.analyze import BallTrack, without_balls_in  # noqa: E402
 from courtvision.nba.live_judge import CNN_FEATURES, JUDGE_FEATURES, cue_features  # noqa: E402
 from courtvision.nba.rim_clips import ball_zone_series  # noqa: E402
 from courtvision.nba.rim_jev import rim_centre  # noqa: E402
@@ -61,6 +61,8 @@ def game_rows(root: Path, tag: str, det_dir: str, min_score: float,
     folder = next((d for d in (det_dir, "detections-full", "detections") if (root / d).is_dir()), det_dir)
     cache = load_cache(root, folder)
     ball = BallTrack.load(root / "ball_track.json")
+    if ball.scorebug_boxes:  # the candidates the ball was linked from (nba_analyze.py ball --scorebug-filter on)
+        cache = without_balls_in(cache, ball.scorebug_boxes)
     path = {f: (p[0], p[1]) for f, p in ball.path.items()}
     events = [Event.from_dict(json.loads(line)) for line in (root / "runs" / tag / "events.jsonl").open()]
     events = [e for e in latest_revisions(events) if e.status is not EventStatus.RETRACTED]

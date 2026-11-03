@@ -44,9 +44,9 @@ from courtvision.perception.broadcast_court import (  # noqa: E402
     estimate_center,
 )
 from courtvision.perception.court_search import EvidenceConfig  # noqa: E402
-from courtvision.perception.scorebug_ocr import ESPN_2024  # noqa: E402
+from courtvision.perception.scorebug_ocr import ESPN_2024_COVER, bug_boxes  # noqa: E402
 
-ESPN_EXCLUDE = [(ESPN_2024.logo_box[0] - 10, ESPN_2024.ocr_box[1] - 6, 1000, 125)]  # the bug and its lower row
+ESPN_EXCLUDE = list(ESPN_2024_COVER)  # the bug and its lower row
 
 
 def bug_exclude(scorebug_path: str, video: str | None = None,
@@ -54,7 +54,8 @@ def bug_exclude(scorebug_path: str, video: str | None = None,
     """Boxes (x, y, w, h of a 1920x1080 frame) the court evidence ignores: the scorebug of ``profile`` (a name or a
     JSON path), else the one ``nba_scan_scorebug.py`` found for this video (``find_saved_profile``: beside its reads
     first), with a margin of 10 px of a 1080-line frame left and right and half its height above and below for a
-    second row; else the ESPN 2024 bug."""
+    second row; else the ESPN 2024 bug (``scorebug_ocr.bug_boxes``). The ball linker drops the candidates in the same
+    boxes (``nba_analyze.py ball --scorebug-filter on``)."""
     from courtvision.perception.scorebug_layout import find_saved_profile, load_profile, resolve_profile
 
     if profile:
@@ -68,15 +69,7 @@ def bug_exclude(scorebug_path: str, video: str | None = None,
         except (OSError, ValueError, KeyError, TypeError) as exc:
             print(f"warning: {path}: {exc}; masking the ESPN 2024 bug", file=sys.stderr, flush=True)
             return ESPN_EXCLUDE
-    if prof.name == ESPN_2024.name:
-        return ESPN_EXCLUDE
-    sx, sy = 1920.0 / prof.ref_size[0], 1080.0 / prof.ref_size[1]
-    out = []
-    for x, y, w, h in (prof.ocr_box, prof.logo_box):
-        mx, my = 10.0 / sy, 0.5 * h  # profile px: the same mask whatever size the profile was measured at
-        out.append((int(round((x - mx) * sx)), int(round((y - my) * sy)), int(round((w + 2 * mx) * sx)),
-                    int(round((h + 2 * my) * sy))))
-    return out
+    return bug_boxes(prof)
 
 
 def main() -> int:

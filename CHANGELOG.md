@@ -5,6 +5,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Ball candidates in the scorebug, off until measured
+
+- `nba_analyze.py ball --scorebug-filter on` drops the ball candidates centred in the broadcast scorebug before the
+  ball is linked (`analyze.without_balls_in`): the boxes the court tracker already masks (`nba_track_court.py`'s
+  `bug_exclude`: the game's `scorebug_profile.json`, else the ESPN 2024 bug), in the frames' pixels. The bug is an
+  opaque overlay; a team logo in it can outscore the real ball and, when both stand still, hold the linked path. The
+  ball track records the boxes (`scorebug_boxes`). `--ball-track NAME` writes it beside `ball_track.json`;
+  `events --ball-track NAME` records it in `run.json`, and `fuse` and `timeline` then use the run's. The rim zones
+  (`timeline --zones`, `nba_live_judge.py`) read the candidates the ball was linked from.
+- The Studio: `perception.broadcast_config.drop_scorebug_balls` drops ball detections centred in the OCR reader's bug
+  while the reader sees it, before the ball is tracked; an analysis ahead records the filtered candidates, so its
+  possession analysis follows.
+- `tools/nba_ball_bench.py` reports `student_scorebug_filter` beside `student` from the same detections, and counts
+  the held-out frames whose best candidate or linked ball lies in the bug, and the labels that do.
+- Both switches default to `scorebug_cover.DROP_BALLS_IN_BUG`, **off**: the filter's effect on Lakers @ Warriors and
+  Cavaliers @ Warriors is not measured yet (the commands are in docs/NBA.md, "The scorebug filter").
+- The box geometry of `bug_exclude` moved to `scorebug_ocr.bug_boxes` (and `scorebug_cover.frame_boxes`,
+  `in_boxes`); the court tracker's masks are unchanged.
+
+---
+
 ## [Unreleased] — Parallel Live processing with unchanged frame evidence
 
 - Live now enables parallel court tracking for video playback by default (`pipeline.parallel_live`). Camera/stream

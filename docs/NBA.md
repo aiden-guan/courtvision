@@ -11,7 +11,7 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
 | Scorebug | `perception/scorebug_ocr.py`, `perception/scorebug_layout.py`, `perception/vision_ocr.py` | Reads the bug (scores, period, game clock with tenths, shot clock) with Apple Vision text recognition. No glyph training. The ESPN/ABC layout is hand-measured; other broadcasters' layouts are discovered per video (see "Adding a game"). Its layout moves when the shot clock is off, so fields are told apart by pattern and order rather than by fixed boxes. |
 | Court | `perception/court_search.py`, `perception/broadcast_court.py` | **No clicks.** The main NBA camera sits at half court, high behind the near sideline, and only pans, tilts and zooms. The camera centre is estimated once per game; each frame then needs only pan, tilt, roll and zoom. |
 | Detection | `perception/student.py`, `training/train_student.py` | A ResNet-18 CenterNet trained on this footage. It sees the current and two previous frames (motion makes a blurred ball stand out), at 960x544. On a Mac it runs on the Neural Engine through Core ML (exported once per weights and cached; `nba_analyze.py detect --backend torch` gives the MPS detections of before bit for bit; [docs/research/analysis_speed.md](research/analysis_speed.md)). |
-| Ball | `nba/analyze.py` (`link_ball`), `perception/ball3d.py` | One ball path through the per-frame candidates (dynamic programme; the camera's turn between frames is removed from the motion cost). Ballistic stretches are fitted in 3-D: gravity fixes the depth a single camera cannot see. |
+| Ball | `nba/analyze.py` (`link_ball`), `perception/ball3d.py` | One ball path through the per-frame candidates (dynamic programme; the camera's turn between frames is removed from the motion cost). Ballistic stretches are fitted in 3-D: gravity fixes the depth a single camera cannot see. Candidates centred in the scorebug can be dropped first (off by default; see "The scorebug filter"). |
 | Players | `nba/analyze.py` (`rectify_box`, `is_referee`) | Boxes re-drawn as a standing player at the box centre through the camera (feet within a few px); referees (grey with black stripes) are kept out of the teams. |
 | Events | `events/engine.py` | The existing monocular event engine on these frame states. |
 | Scorebug fusion | `nba/scorebug_events.py`, `nba/fusion.py` | Score changes are made baskets of a known team and value (a shot the camera saw goes before the engine's own guess); shot-clock resets to 24 mark rim touches (a reset that starts counting at once is a change of possession), and an engine miss the shot clock shows no sign of is dropped; a shot takes the team attacking the half the camera aims at when the ball reaches the rim; after a miss, a reset to 14 (the offence kept the ball) or a count from a fresh 24 (the defence got it) decides the rebound, and an engine rebound with no miss just before it (after a make, or after no shot) is dropped; a steal or turnover needs a reset to 24 that no shot or score explains, and such a reset in play with no shot before it (the camera then leaving the half) is a steal; assists follow the corrected makes and take the last pass in the scorer's possession (no shot-clock reset since it), whatever team the engine gave the pass. Each pass has a switch in `FusionConfig`; `tools/nba_fusion_ab.py` measures each one on a game in seconds, and `tools/nba_bug_study.py --split` checks the shot-clock rules on the part of a game they were not tuned on. |
@@ -148,6 +148,44 @@ The teacher is RF-DETR Small (COCO) at 1312x736 on 150 clips of 36 frames. Its b
 where one consistent, ball-coloured path links them. Fast gaps are filled, so the student also learns the blurred
 balls the teacher misses.
 
+### The scorebug filter
+
+The scorebug is an opaque overlay, so no ball candidate centred in it is the game ball, but a team logo in it can
+score higher than the real ball. When both stand still (a free throw, the ball in the shooter's hands) the linker can
+follow the logo for as long as they do (a test in `tests/test_nba_analyze.py` shows it on synthetic candidates).
+`ball --scorebug-filter on` drops the candidates centred in the bug before linking (`analyze.without_balls_in`). The
+boxes are the ones `nba_track_court.py` keeps out of the court evidence (`bug_exclude`: the game's
+`scorebug_profile.json`, else the ESPN 2024 bug; `--scorebug-profile` names another), in the frames' pixels, and the
+ball track records them (`scorebug_boxes`, which `timeline --zones` and `nba_live_judge.py` then apply to their
+candidates too). Two limits: the boxes carry the court mask's margins (10 px of a 1080-line frame left and right, half
+a box's height above and below; ESPN's lower row), so a real ball centred in those margins, outside the bug itself, is
+dropped as well; and offline the filter applies on every frame with the game camera, whether the bug is shown then or
+not. In the Studio the same boxes apply only while the OCR reader sees its bug
+(`perception.broadcast_config.drop_scorebug_balls`).
+
+Both switches default to `scorebug_cover.DROP_BALLS_IN_BUG`, which is off until the filter is measured on the games.
+For each game, with the `events` flags of its other runs (for example `--team-refit` on Cavaliers @ Warriors):
+
+```bash
+G=runs/nba/2024-12-25-LAL-GSW
+.venv/bin/python tools/nba_ball_bench.py $G/teacher --out $G/ball_bench_scorebug.json   # off and on
+for f in off on; do
+  .venv/bin/python tools/nba_analyze.py $G ball --scorebug-filter $f --ball-track ball_track_bug-$f.json
+  .venv/bin/python tools/nba_analyze.py $G events --tag bug-$f --ball-track ball_track_bug-$f.json
+  .venv/bin/python tools/nba_analyze.py $G eval --tag bug-$f
+  .venv/bin/python tools/nba_analyze.py $G timeline --tag bug-$f
+  .venv/bin/python tools/nba_analyze.py $G eval --tag bug-$f --file timeline.jsonl
+done
+```
+
+`--ball-track` keeps both ball tracks beside `ball_track.json`, which stays as it is; `events` records the ball
+track in `run.json`, and `fuse` and `timeline` read the run's. `ball` prints how many candidates the filter dropped
+and on how many frames one of them was the best candidate. The bench scores both from the same detections and counts
+the held-out frames whose best candidate or linked ball lies in the bug, and the labels that do (a label there is one
+only the filter can lose). It scores only frames where the teacher found the ball, and a ball held in a player's
+hands is not labelled, so the filter's effect on held balls, such as a free throw's, can only show in the whole-game
+`eval` and `timeline` numbers.
+
 ## The learning loop: better with every game
 
 Every analysed game becomes training data for the next analysis. Three things learn:
@@ -183,7 +221,9 @@ Copy the trained student to `runs/studio/models/nba-student.pt` and the studio u
 With **Broadcast footage** on and no saved calibration, the court is registered automatically. Six frames, a second
 apart, give the camera centre, which is saved next to the video's calibration. On macOS the scorebug is read with
 Vision, using the `scorebug_profile.json` that `nba_scan_scorebug.py` saved for the video (beside it or in its game
-folder), else the ESPN 2024 layout. The **Model lab** view shows the learning loop above and can run its next step.
+folder), else the ESPN 2024 layout; with `perception.broadcast_config.drop_scorebug_balls` on, ball detections
+centred in that bug are dropped while it is shown ("The scorebug filter"). The **Model lab** view shows the learning
+loop above and can run its next step.
 
 ## Results
 
