@@ -2,6 +2,7 @@
 
     .venv/bin/python tools/fetch_data.py sportsmot --split val [--out data/sportsmot]
     .venv/bin/python tools/fetch_data.py bard --clips check_clips [--out data/bard/split/check]
+    .venv/bin/python tools/fetch_data.py roboflow [--out data/roboflow]
 
 ``sportsmot``: SportsMOT (Cui et al., ICCV 2023; CC BY-NC 4.0) is published on Hugging Face as one tar per split
 (``train`` 6.7 GB, ``val`` 6.6 GB) holding football, volleyball and basketball. This streams the split's tar once, in
@@ -14,7 +15,13 @@ read; the list itself goes to ``<out>/basketball.txt``. A failed stream starts t
 ``cross_game_detector_splits.json``'s ``bard`` part (``check_clips``, ``calib_clips_round1``,
 ``calib_clips_round2``), one file at a time, to ``<out>/<game>/<clip>.mp4``; files already there are skipped.
 
-Both are research and evaluation data only (docs/TRAINING.md §1). One HTTP request at a time; a rate-limited or
+``roboflow``: Roboflow Universe's "basketball-player-detection-2" (CC BY 4.0; human labels of NBA broadcast frames) from
+Hugging Face, its ``train`` split's annotation file and the images of the splits file's ``roboflow_coco`` games:
+the training games' to ``<out>/fit/`` with ``<out>/fit_ann.json``, the held-out games' to ``<out>/heldout/`` with
+``<out>/heldout_ann.json`` (``detector_bench.py --coco data/roboflow/heldout_ann.json``; ``student_finetune.py
+prep-coco data/roboflow/fit_ann.json data/roboflow/fit ...``).
+
+All are research and evaluation data only (docs/TRAINING.md §1). One HTTP request at a time; a rate-limited or
 failed request (HTTP 429 or 5xx, a dropped connection) is retried after an exponential back-off.
 """
 
@@ -36,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SPLITS = ROOT / "docs" / "research" / "cross_game_detector_splits.json"
 SPORTSMOT = "https://huggingface.co/datasets/MCG-NJU/SportsMOT/resolve/main"
 BARD = "https://huggingface.co/datasets/GabrieleGiudici/BARD/resolve/main"
+ROBOFLOW = "https://huggingface.co/datasets/koppolusameer/basketball-coco-player-detection/resolve/main"
 RETRY_S = (30, 60, 120, 240, 480)
 PAUSE_S = 0.5  # between two BARD files
 RETRYABLE = (429, 500, 502, 503, 504)
@@ -179,6 +187,48 @@ def fetch_bard(listing: str, out: Path, first: int = 0, count: int | None = None
     return 0
 
 
+# --------------------------------------------------------------------------- Roboflow
+
+
+def roboflow_split(ann: dict, prefixes: list[str]) -> dict:
+    """The annotation file reduced to the images whose names start with one of ``prefixes`` (and their labels)."""
+    keep = [im for im in ann["images"] if any(im["file_name"].startswith(p) for p in prefixes)]
+    ids = {im["id"] for im in keep}
+    return {**{k: v for k, v in ann.items() if k not in ("images", "annotations")}, "images": keep,
+            "annotations": [a for a in ann["annotations"] if a["image_id"] in ids]}
+
+
+def fetch_roboflow(out: Path, splits: Path = SPLITS) -> int:
+    rf = json.loads(splits.read_text())["roboflow_coco"]
+
+    def ann_file() -> dict:
+        with _get(f"{ROBOFLOW}/train/_annotations.coco.json") as resp:
+            return json.loads(resp.read().decode())
+
+    ann = _retry("train/_annotations.coco.json", ann_file)
+    for name, prefixes in (("fit", rf["train_prefixes"]), ("heldout", rf["heldout_prefixes"])):
+        part = roboflow_split(ann, prefixes)
+        folder = out / name
+        folder.mkdir(parents=True, exist_ok=True)
+        for im in part["images"]:
+            fn = im["file_name"]
+            if "/" in fn or fn.startswith(".") or (folder / fn).is_file():
+                continue
+
+            def one(fn: str = fn) -> None:
+                with _get(f"{ROBOFLOW}/train/{fn}") as resp:
+                    data = resp.read()
+                tmp = folder / (fn + ".part")
+                tmp.write_bytes(data)
+                tmp.replace(folder / fn)
+
+            _retry(fn, one)
+            time.sleep(PAUSE_S)
+        (out / f"{name}_ann.json").write_text(json.dumps(part))
+        print(f"{name}: {len(part['images'])} images, {len(part['annotations'])} labels in {folder}", flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -190,9 +240,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--first", type=int, default=0, help="start at this clip of the list (fetch it in batches)")
     p.add_argument("--count", type=int, default=None, help="fetch at most this many clips")
+    p = sub.add_parser("roboflow", help="the Roboflow NBA frames of the splits file's training and held-out games")
+    p.add_argument("--out", type=Path, default=Path("data/roboflow"))
     a = ap.parse_args(argv)
     if a.cmd == "sportsmot":
         return fetch_sportsmot(a.split, a.out)
+    if a.cmd == "roboflow":
+        return fetch_roboflow(a.out)
     return fetch_bard(a.clips, a.out, a.first, a.count)
 
 

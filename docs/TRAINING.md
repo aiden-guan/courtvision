@@ -527,10 +527,17 @@ exports:
 Every data folder uses `train_student.ClipDataset`'s layout and carries a `video` identity in `meta.json` (without
 one, `plan_data` treats two folders as one video and leaves out every clip near the other's held-out clips).
 
-**Rights.** SportsMOT is CC BY-NC 4.0, so a model fine-tuned on it is evaluation and research only (§1, rule 3), like
-everything trained on NBA footage. These tools write weights under `runs/` (git-ignored); the shipped browser asset
-`courtvision/server/static/nba-student.onnx` is not replaced by them. The round-2 research fine-tune is published, for
-research use only, in `models/research/`; its README lists the datasets to credit and their terms.
+**One main model.** On 2026-11-03 the owner chose to have one main detector, improved in place: the app's
+`courtvision/server/static/nba-student.onnx` (and the Mac's copy of it in the Studio's models folder). Each round fine-tunes
+from the current main model with everything the earlier rounds used; a candidate replaces the main model only when it
+beats it on the fixed held-out tests (`docs/research/cross_game_detector.md` §10), after the owner has seen the numbers.
+Candidates live under `runs/` (git-ignored); `models/research/` keeps the earlier rounds' candidates until what they
+taught is in the main model.
+
+**Rights.** SportsMOT is CC BY-NC 4.0, so a model fine-tuned on it is for non-commercial use (§1, rule 3), like
+everything trained on NBA footage, the app's own model included. The owner accepted that the app's model carries these
+terms once a fine-tune becomes the main model; the release gate of §1 still stands for any commercial product. The
+`models/research/` README lists the datasets to credit and their terms.
 
 ---
 

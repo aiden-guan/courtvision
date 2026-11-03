@@ -7,6 +7,14 @@ browser/CPU ONNX interface of the app's `courtvision/server/static/nba-student.o
 **not** replace. How they were made and measured: [docs/research/cross_game_detector.md](../../docs/research/cross_game_detector.md)
 (§8 round 2, §9 round 3).
 
+**One main model** (the owner's decision, 2026-11-03). The detector has one main model: the app's own
+`courtvision/server/static/nba-student.onnx`. Every round starts from the current main model and is checked on the
+same held-out tests (research note §10.1: the README's two games, the 30 BARD check games, the 5 held-out Roboflow
+games, and the full pipeline); a candidate replaces the main model only when it is better somewhere and worse nowhere
+that matters, after the owner has seen the numbers. The files below are candidates of earlier rounds, kept until what
+they taught is folded into the main model; then they retire to git history, their results stay in the research note.
+New candidates are not added here.
+
 **Research and evaluation only** (see [Sources and terms](#sources-and-terms)).
 
 | File | What | Bytes | sha256 |

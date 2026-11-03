@@ -34,3 +34,13 @@ def test_bard_clips_reads_a_list_and_refuses_odd_names(tmp_path: Path) -> None:
         fd.bard_clips("bad", splits)
     with pytest.raises(SystemExit):
         fd.bard_clips("missing", splits)
+
+
+def test_roboflow_split_keeps_the_named_games_and_their_labels() -> None:
+    ann = {"categories": [{"id": 1, "name": "player"}],
+           "images": [{"id": 1, "file_name": "game-a-q1_mp4-0001_jpg.rf.x.jpg"},
+                      {"id": 2, "file_name": "game-b-q2_mp4-0001_jpg.rf.y.jpg"}],
+           "annotations": [{"id": 10, "image_id": 1}, {"id": 11, "image_id": 2}]}
+    part = fd.roboflow_split(ann, ["game-a"])
+    assert [im["id"] for im in part["images"]] == [1] and [a["id"] for a in part["annotations"]] == [10]
+    assert part["categories"] == ann["categories"]
