@@ -623,6 +623,34 @@ if the sample holds. Like the Denver games of §11.1, a dark uniform passes for 
 referees out of the teams, so this can cost the second game's possession timeline; the pipeline is re-run with the
 learned check on both games (§10.11).
 
+### 10.11 The pipeline with each referee check
+
+The app model's detections on both games (Lakers @ Warriors on Core ML; `events`, then `timeline` fitted on one half and
+scored on the other), the referees told apart three ways (`nba_analyze.py events --referees`): the shirt rule; the
+learned check (§11.1); and the learned check *guarded* for the game (`analyze.RefereeCheck`: the rule from the frame on
+which it has called more than 3.5 referees a frame on average over at least 100 frames of 8 or more people; an NBA game
+has 3 referees). The guard's numbers were fixed before either game was run with it.
+
+| | Rule | Learned | Guarded |
+|---|---:|---:|---:|
+| Lakers @ Warriors: team with the ball, timeline / engine alone | 96.4 % / 72.8 % | 96.6 % / 68.3 % | 96.4 % / 67.3 % |
+| the same: real shot or not / made or missed | 78.5 % / 83.1 % | 77.2 % / 83.7 % | 80.9 % / 83.1 % |
+| Cavaliers @ Warriors: team with the ball, timeline / engine alone | **75.8 %** / 61.0 % | 38.8 % / 54.3 % | **75.8 %** / 59.7 % |
+| the same: real shot or not / made or missed | 52.4 % / **75.4 %** | 56.6 % / 62.6 % | 52.8 % / 66.7 % |
+
+On Cavaliers @ Warriors the learned check marks the Cavaliers' players as referees (§10.10), so one team's players
+leave the team clusters and the timeline no longer finds which basket each team attacks: 75.8 % to 38.8 %, the coin
+toss of the game's first team fit (`made_shots_at_the_rim.md` §4). The guard falls back after 371 frames there and
+keeps the timeline at 75.8 %, but made or missed still falls: on the same 114 shots the rule is right on 13 the guarded
+run misses and the guarded run on 3 the rule misses (p 0.021): the frames before the guard falls back change the
+events the shot models are fitted on. On Lakers @ Warriors the learned check averages about 3.5 calls a frame as well
+(the referees and fans at the baseline), so the guard fell back there too, late in the game (after 29,631 frames): the
+count of referee calls does not tell the two games apart. **So the pipeline's default is the shirt rule again** (the
+owner's decision; `is_referee`, `are_referees`, `RefereeCheck` and `PerceiveConfig.referees` default to `shirt`);
+the learned check and its guard stay as options. What the learned check needs before it can be the default is to stop
+taking dark team jerseys for referees' shirts: training boxes from more uniforms, or the game's two team colours (which
+the pipeline fits) as an input.
+
 ## 11. Referees and the crowd (cloud): plan, fixed before training
 
 The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The
