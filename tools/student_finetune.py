@@ -242,6 +242,73 @@ def prep_coco(ann: Path, images: Path, out: Path, games: list[str], exclude: lis
     return n
 
 
+# --------------------------------------------------------------------------- court-people
+
+
+COURT_LENGTH_FT, COURT_WIDTH_FT = 94.0, 50.0
+
+
+def court_zone(foot_ft: tuple[float, float], keep_ft: float = 3.0, ignore_ft: float = 10.0) -> str:
+    """Where a person's foot point (court ft: origin at a baseline-sideline corner) stands: "court" within ``keep_ft``
+    of the lines (players, referees, a player inbounding), "near" up to ``ignore_ft`` (courtside seats, the bench's
+    edge: unsure), else "off" (the benches and the crowd)."""
+    x, y = foot_ft
+    out = max(-x, x - COURT_LENGTH_FT, -y, y - COURT_WIDTH_FT, 0.0)
+    return "court" if out <= keep_ft else "near" if out <= ignore_ft else "off"
+
+
+def court_people(src: Path, game: Path, out: Path, keep_ft: float = 3.0, ignore_ft: float = 10.0,
+                 min_score: float = 0.4) -> dict[str, int]:
+    """A teacher folder of a game the camera track covers (``tools/nba_teacher_labels.py``: the teacher boxes everyone,
+    the crowd and benches included) -> the same folder (``out``: frames linked, not copied) whose people are the ones
+    on the court: each teacher box at ``min_score`` or more is placed through the frame's camera (its foot point,
+    ``court_zone``) and kept ("court"), left out of the person loss as an ``ignore`` box ("near"), or dropped, so that
+    it is background ("off"). On a frame without a camera fit (replays, close-ups) every box is an ``ignore`` box.
+    Boxes under ``min_score`` (``ClipDataset``'s ``person_min_score``: never a target) are dropped. The ball labels
+    are copied unchanged. Returns the counts per kind."""
+    import shutil
+
+    from courtvision.nba.analyze import CameraTrack
+
+    cam = CameraTrack.load(sorted((game / "camera_parts").glob("*.jsonl")))
+    counts = {"court": 0, "near": 0, "off": 0, "no_fit": 0, "weak": 0}
+    rows = []
+    for r in map(json.loads, (src / "detections.jsonl").open()):
+        H = cam.homography(int(r["frame"]))
+        keep, ignore = [], list(r.get("ignore") or [])
+        for q in r.get("persons", []):
+            if q[4] < min_score:
+                counts["weak"] += 1
+                continue
+            if H is None:
+                counts["no_fit"] += 1
+                ignore.append([round(float(v), 1) for v in q[:4]])
+                continue
+            fx, fy = H.image_to_court(np.array([[0.5 * (q[0] + q[2]), q[3]]], float))[0]
+            zone = court_zone((float(fx), float(fy)), keep_ft, ignore_ft)
+            counts[zone] += 1
+            if zone == "court":
+                keep.append(q)
+            elif zone == "near":
+                ignore.append([round(float(v), 1) for v in q[:4]])
+        r["persons"] = keep
+        if ignore:
+            r["ignore"] = ignore
+        rows.append(r)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    shutil.copyfile(src / "ball_labels.jsonl", out / "ball_labels.jsonl")
+    if not (out / "frames").exists():
+        (out / "frames").symlink_to((src / "frames").resolve(), target_is_directory=True)
+    meta = json.loads((src / "meta.json").read_text()) if (src / "meta.json").is_file() else {"kind": "teacher"}
+    meta.setdefault("video", f"teacher:{src.resolve()}")
+    meta["court_people"] = {"game": str(game), "keep_ft": keep_ft, "ignore_ft": ignore_ft, "min_score": min_score,
+                            "counts": counts, "what": "people on the court kept; near it ignored; the crowd background"}
+    (out / "meta.json").write_text(json.dumps(meta, indent=1))
+    print(f"{out}: {counts}", file=sys.stderr)
+    return counts
+
+
 # --------------------------------------------------------------------------- mark-ignore
 
 
@@ -740,6 +807,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--games", default="", help="comma list of file-name prefixes to keep (default: all)")
     p.add_argument("--exclude", default="", help="comma list of file-name prefixes to drop")
     p.add_argument("--referees", action="store_true", help="referees are people too (default: players only)")
+    p = sub.add_parser("court-people", help="a teacher folder -> the same with only the people on the court as people "
+                                          "(near it ignored, the crowd background)")
+    p.add_argument("src", type=Path)
+    p.add_argument("game", type=Path, help="the game folder whose camera_parts place the boxes on the court")
+    p.add_argument("out", type=Path)
+    p.add_argument("--keep-ft", type=float, default=3.0, help="people within this of the lines are kept")
+    p.add_argument("--ignore-ft", type=float, default=10.0, help="people up to this off the lines are ignored")
+    p.add_argument("--min-score", type=float, default=0.4, help="teacher boxes under this are dropped (never targets)")
     p = sub.add_parser("mark-ignore", help="player-only folder -> the same with the unlabelled people among the "
                                          "players (mostly referees) left out of the person loss")
     p.add_argument("src", type=Path)
@@ -809,6 +884,9 @@ def main(argv: list[str] | None = None) -> int:
         games = [g.strip() for g in a.games.split(",") if g.strip()]
         excl = [g.strip() for g in a.exclude.split(",") if g.strip()]
         return 0 if prep_coco(a.ann, a.images, a.out, games, excl, a.referees) else 2
+    if a.cmd == "court-people":
+        court_people(a.src, a.game, a.out, a.keep_ft, a.ignore_ft, a.min_score)
+        return 0
     if a.cmd == "mark-ignore":
         return 0 if mark_ignore(a.src, a.out, a.model, a.iou, a.score, a.margin, a.threads) >= 0 else 2
     if a.cmd == "prep-teacher":

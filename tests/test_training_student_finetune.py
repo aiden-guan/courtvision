@@ -281,3 +281,42 @@ def test_mark_ignore_writes_ignore_boxes_and_links_the_frames(tmp_path: Path) ->
     assert (out / "frames").is_symlink() and (out / "frames" / "0000" / "000003.jpg").is_file()
     meta = json.loads((out / "meta.json").read_text())
     assert meta["video"] == "mot:x" and meta["ignore"]["boxes"] == 1
+
+
+def test_court_zone_keeps_the_court_and_drops_the_stands() -> None:
+    assert sf.court_zone((47.0, 25.0)) == "court"
+    assert sf.court_zone((-2.0, 10.0)) == "court"  # a player inbounding behind the baseline
+    assert sf.court_zone((40.0, 56.0)) == "near"  # courtside, 6 ft off the sideline
+    assert sf.court_zone((40.0, 70.0)) == "off"  # the stands
+    assert sf.court_zone((110.0, 25.0)) == "off"
+
+
+def test_court_people_keeps_court_boxes_ignores_unplaced_ones(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import courtvision.nba.analyze as an
+
+    class _H:  # image px / 10 = court ft
+        def image_to_court(self, pts):  # noqa: ANN001, ANN202
+            return np.asarray(pts, float) / 10.0
+
+    class _Cam:
+        def homography(self, frame: int):  # noqa: ANN202
+            return _H() if frame == 1 else None
+
+    monkeypatch.setattr(an.CameraTrack, "load", classmethod(lambda cls, paths: _Cam()))
+    src, game, out = tmp_path / "teacher", tmp_path / "game", tmp_path / "out"
+    (src / "frames" / "0000").mkdir(parents=True)
+    (game / "camera_parts").mkdir(parents=True)
+    boxes = [[460, 100, 480, 250, 0.9],  # foot (470, 250) -> (47, 25) ft: on the court
+             [390, 400, 410, 560, 0.8],  # foot (40, 56): near
+             [390, 500, 410, 700, 0.7],  # foot (40, 70): the stands
+             [100, 100, 120, 200, 0.3]]  # under the loader's 0.4
+    rows = [{"clip": 0, "frame": 1, "size": [1920, 1080], "persons": boxes, "balls": []},
+            {"clip": 0, "frame": 2, "size": [1920, 1080], "persons": boxes[:1], "balls": []}]
+    (src / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (src / "ball_labels.jsonl").write_text("")
+    counts = sf.court_people(src, game, out)
+    assert counts == {"court": 1, "near": 1, "off": 1, "no_fit": 1, "weak": 1}
+    got = [json.loads(line) for line in (out / "detections.jsonl").open()]
+    assert [q[:4] for q in got[0]["persons"]] == [boxes[0][:4]] and got[0]["ignore"] == [boxes[1][:4]]
+    assert got[1]["persons"] == [] and got[1]["ignore"] == [boxes[0][:4]]  # no camera fit: unsure
+    assert (out / "frames").is_symlink() and json.loads((out / "meta.json").read_text())["kind"] == "teacher"
