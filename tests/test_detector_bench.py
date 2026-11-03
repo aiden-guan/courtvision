@@ -120,10 +120,12 @@ def test_coco_bench_scores_players_people_and_ball(tmp_path: Path) -> None:
     assert out["referees"] == {"n_truth": 1, "found": 1, "recall": pytest.approx(1.0)}
     assert out["other"]["detections"] == 2 and out["other"]["share"] == pytest.approx(0.5)
     assert out["other"]["per_frame"] == pytest.approx(1.0)
-    rule = out["referee_rule"]  # the striped grey shirt is called a referee, the red jersey is not
+    rule = out["referee_rule_shirt"]  # the striped grey shirt is called a referee, the red jersey is not
     assert (rule["referees_called"], rule["referees"], rule["players_called_referee"], rule["players"]) == (1, 1, 0, 1)
     assert rule["precision"] == pytest.approx(1.0) and rule["recall"] == pytest.approx(1.0)
-    assert out["referee_rule_on_truth"]["referees_called"] == 1
+    assert out["referee_rule_shirt_on_truth"]["referees_called"] == 1
+    learned = out["referee_rule"]  # the learned classifier is scored on the same boxes
+    assert (learned["referees"], learned["players"]) == (1, 1) and out["referee_rule_on_truth"]["referees"] == 1
 
 
 def test_ball_bench_scores_top_candidates_and_linked_paths(tmp_path: Path) -> None:
@@ -173,3 +175,10 @@ def test_ball_bench_held_out_clips_and_teacher_people(tmp_path: Path) -> None:
     assert every["n"] == 4 and held["n"] == 2  # frames 3 and 4 of each clip (two earlier frames needed)
     assert held["hit_rate"] == 1.0
     assert held["person_recall_vs_teacher"] == pytest.approx(0.5)  # one of the two teacher people >= 0.5
+
+
+def test_mcnemar_handles_thousands_of_discordant_frames() -> None:
+    a = [1] * 3000 + [0] * 1400
+    b = [0] * 3000 + [1] * 1400
+    out = db.mcnemar(a, b)
+    assert (out["only_first"], out["only_second"]) == (3000, 1400) and 0.0 < out["p_value"] < 1e-100

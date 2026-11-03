@@ -28,7 +28,7 @@ def test_detect_and_events_clip_bounds_use_the_decoder_timestamps(tmp_path, monk
     spec.loader.exec_module(tool)
     monkeypatch.setattr(tool, "load_game", lambda root: ({"video": "unused"}, camera()))
     args = argparse.Namespace(start=2., end=5., workers=1, chunks=1, det_dir="detections", weights="unused",
-                              backend="torch", use_3d=True, engine=None, tag="clip")
+                              backend="torch", use_3d=True, engine=None, tag="clip", ball_track="ball_track.json")
     detected = []
     monkeypatch.setattr(tool, "_detect_part", lambda *args: detected.append(args[3:5]))
     tool.cmd_detect(tmp_path, args)

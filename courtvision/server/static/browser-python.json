@@ -1,5 +1,5 @@
 {
-  "sha256": "dfa1f099ab9855420f36143a69152532c318c7995cc0ea573620491370ba53f1",
+  "sha256": "b4f304dd97a46af1afc9b8f3f85edb72837e1494484d925ae931966c7e21e733",
   "sources": {
     "__init__.py": "fed34b7929cfd154f4825e3c0e9fb707badad457d66ad7e6c07426394db45e5f",
     "types.py": "c43ab4ebd56d645b91dd135828f7f6f86de1cb463c68f73d3ae003e9d02471fe",
@@ -49,7 +49,7 @@
     "sim/render.py": "3e7368972962bf4ff0b62d612f081f65e92dc5ebd937eb5cd51bf73158914a85",
     "sim/simulator.py": "d1441b10ec3853f8c7b0dc9a0bace257df682de8d31b9e04902ef56310b88466",
     "nba/__init__.py": "e9edc24e08935d79c6931b8ee6f588c85b5387ad42119662f61c37c9d22d0043",
-    "nba/analyze.py": "9d2be3ff745996de19f2f95d91eed51b3ee65601a15b85363f8818317163ccff",
+    "nba/analyze.py": "c2ca85d229c03b95f295f78efbb3d1e6e69020a96e419cf04026fdbcb7e8c598",
     "nba/auto_analysis.py": "06b1af8bf520f1aaee3470379d6722ce04f77a8e4b8ccae60d5342adcd84aebf",
     "nba/espn.py": "eae871a2f76103a8452245cd4922048d604a705b00fa972f2f8404a92c51f130",
     "nba/evaluate.py": "bfc9fa3c3bca88e93f80b260c16510b9ed8f1d6c8770cc02e3ec3fffec7f62bd",
@@ -59,6 +59,8 @@
     "nba/loop.py": "9e0aec17e4b5b74fbdf373858bf21ea1bbdd654e3f73dc53ecf780ccd0d30206",
     "nba/makes.py": "1960b76519c5d0cc2ec5359da08faefaccb9834429ba6836d6eaa5f2bff1e9a2",
     "nba/nba_stats.py": "d96f43fe5d310a1931db46d444d920203ac2f79dd2719fbe56677b37b3a0d983",
+    "nba/referee.py": "a9c01e88186a584315e6505d7b0755c57cb96d3e6ea428d23eb735f4abb94c21",
+    "nba/referee_model.py": "90e2e6fec258f2f415a872cfd7c9c8de85895659138a8fddb448c65efcf87b4b",
     "nba/results.py": "7494d4b3dfdfd1addba9adc0214b90f9462b8306db0155ec53b01e43bb410e4d",
     "nba/rim_clips.py": "98676a6ced1d615ccd00b4ffd365989b46cb7b2301a9a006919f443a54de8482",
     "nba/rim_jev.py": "dac493f1539f206ff139f63acb9006985ee68c44e23998fbd2913cf150d1dee6",
