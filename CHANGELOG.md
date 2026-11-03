@@ -36,6 +36,8 @@ tables in [BENCHMARKS.md](docs/BENCHMARKS.md).
   Universe, CC BY 4.0). Each game left out in turn: referees found 73.9% to **94.3%**, players called referee 2,464 to
   1,730 of 22,440, F1 0.690 to **0.847** (McNemar p 1.3e-188); worse than the rule in the 2 games with Denver.
   1.6 ms a frame of 12 people. `tools/referee_classifier.py` fits and checks it.
+- **Referees are no longer shown as players in the browser app**: it applies the same check, keeps referees out of
+  both teams and draws them as grey "Referee" boxes; the Studio's student detector does too (`StudentConfig(referees=True)`).
 - `detector_bench.py --coco` reports referees found, detections that match nobody labelled (the crowd, benches) and
   both referee checks. The README's linked ball protocol on 30 unseen NBA games: 81.9% (published) to 91.6% (T5).
 - `student_finetune.py prep-coco --referees` and `mark-ignore` (SportsMOT people among the players left out of the

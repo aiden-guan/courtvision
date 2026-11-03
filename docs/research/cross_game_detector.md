@@ -579,3 +579,8 @@ for a frame of 12 people on one core (the rule 0.4 ms), about two extra minutes 
 
 The pipeline's numbers on the README's two games (§10.3, §10.4) were measured with the shirt rule; with the learned
 check they have to be measured again before the README changes.
+
+Where it runs: the NBA pipeline (`analyze.CachedDetector`, through `are_referees`), the browser app
+(`browser/runtime.py`: a person read as a referee is tracked and still counts as a person near the ball, but is never
+a player of either team, and is published as a grey "Referee" box), and the Studio's student detector
+(`StudentConfig(referees=True)`; off by default elsewhere).

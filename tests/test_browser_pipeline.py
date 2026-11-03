@@ -44,8 +44,11 @@ def outputs():
 def test_shared_trackers_keep_ids_and_publish_only_one_ball():
     pipeline = BrowserPipeline()
     ids = []
+    frame = np.full((540, 960, 4), 100, np.uint8)
+    frame[..., :3] = (60, 150, 70)  # a green floor (RGB) ...
+    frame[260:300, 395:415, :3] = (200, 40, 40)  # ... and a red jersey where the person is
     for index in range(4):
-        pipeline.prepare(np.full((540, 960, 4), 100, np.uint8), 960, 540, index, index/29.97)
+        pipeline.prepare(frame, 960, 540, index, index/29.97)
         result = json.loads(pipeline.finish(outputs()))
         people = [b for b in result['detections'] if b['class'] == 'person']
         balls = [b for b in result['detections'] if b['class'] == 'sports ball']
@@ -91,3 +94,19 @@ def test_court_setup_reports_each_checked_view_and_completion(monkeypatch):
         else:
             assert actual[0] is None
         assert actual[1] == expected[1]
+
+
+def test_referees_are_published_as_referees_not_players():
+    frame = np.full((540, 960, 4), 255, np.uint8)
+    frame[..., :3] = (60, 150, 70)  # a green floor (RGB)
+    frame[226:280, 375:425, :3] = 135  # the detected person's shirt: grey ...
+    frame[226:280, 375:425:6, :3] = 25  # ... with dark stripes
+    frame[226:280, 376:425:6, :3] = 25
+    frame[289:343, 380:420, :3] = 25  # dark trousers
+    pipeline = BrowserPipeline()
+    pipeline.prepare(frame, 960, 540, 0, 0.)
+    result = json.loads(pipeline.finish(outputs()))
+    classes = [b['class'] for b in result['detections']]
+    assert classes.count('referee') == 1 and 'person' not in classes
+    referee = next(b for b in result['detections'] if b['class'] == 'referee')
+    assert referee['id'] == 'Referee' and referee['team'] is None

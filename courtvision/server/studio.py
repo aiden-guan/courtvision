@@ -371,7 +371,7 @@ class Workspace:
             try:
                 from courtvision.perception.student import StudentConfig, StudentDetector
 
-                det = StudentDetector(StudentConfig(weights=str(student)))
+                det = StudentDetector(StudentConfig(weights=str(student), referees=True))
                 det.detect(np.zeros((540, 960, 3), np.uint8), 0, 0.)
                 det.reset()
                 return det

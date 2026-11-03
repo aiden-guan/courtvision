@@ -370,7 +370,7 @@
       if (w <= 0 || h <= 0) continue;
       const ball = box.class === "sports ball", muted = highlight && highlight !== box.id && !ball;
       ctx.lineWidth = (highlight === box.id ? 3 : 2) * scale;
-      ctx.strokeStyle = muted ? "#6a706e" : ball ? "#f8e069" : box.team === "home" ? "#78bbed" : box.team === "away" ? "#f6bf75" : "#d1eb97";
+      ctx.strokeStyle = muted ? "#6a706e" : ball ? "#f8e069" : box.class === "referee" ? "#c9cfcc" : box.team === "home" ? "#78bbed" : box.team === "away" ? "#f6bf75" : "#d1eb97";
       if (ball) {
         const cx = x+w/2, cy = y+h/2;
         ctx.beginPath(); ctx.arc(cx,cy,Math.max(9*scale,w/2+4*scale),0,Math.PI*2); ctx.stroke();
