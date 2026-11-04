@@ -679,6 +679,57 @@ black still looks more like them than like most players. The fix to try next is 
 weights: within one game the referees are a small group dressed alike, apart from the two teams the pipeline already
 clusters.
 
+### 10.13 Candidates A, B and C on the held-out tests
+
+A and C trained 4,000 steps on MPS (22 minutes each; 24,120 samples of 5 folders, sampled equally). B (the soup) is
+broken: on the 5 held-out Roboflow games its players AP50 is 0.261 and it boxes 4.2 people a frame whom nobody
+labelled; on the two games it finds 43 % and 27 % of the players on the court. The four fine-tunes have moved too far
+apart for their weights to be averaged (as the cloud's soups of §12 found). B is out.
+
+Ball, within 15 px of 1080p (paired with the app model: frames only the candidate hits / only the app model):
+
+| Test set (frames) | App model | A | C | C against the app model, p |
+|---|---:|---:|---:|---|
+| Lakers @ Warriors held out (243), top / linked | 95.5 / 95.5 % | 95.9 / 95.9 % | 95.1 / 95.1 % | 0 / 1, p 1 (both) |
+| Cavaliers @ Warriors (606), top | 75.7 % | 78.9 % | **79.2 %** | 27 / 6, p 0.00032 |
+| Cavaliers @ Warriors, linked | 72.4 % | **80.4 %** | 78.4 % | 43 / 7, p 2.1e-7 (A: 51 / 3, p 2.9e-12) |
+| BARD check games (1,097), top | 84.8 % | 90.3 % | **91.4 %** | 84 / 11, p 4.5e-15 |
+| 5 held-out Roboflow games (194 single frames) | 22.7 % | 65.5 % | **68.0 %** | 90 / 2, p 1.7e-24 |
+
+On the BARD games C against T5: 31 frames to 12 (p 0.0054); against round 2 31 to 22 (p 0.27); against M1-ctrl 22 to 29
+(p 0.40). A against C on the BARD games: 11 to 24 (p 0.041); on the Cavaliers @ Warriors linked path 13 to 1 (p 0.0018).
+
+People. The 5 held-out Roboflow games (single frames; `--coco`, at 0.3, IoU 0.5):
+
+| | App model | T5 | M1 | A | C |
+|---|---:|---:|---:|---:|---:|
+| Players and referees AP50 / recall | 0.505 / 0.391 | 0.768 / 0.663 | 0.712 / 0.623 | 0.873 / 0.811 | **0.892 / 0.843** |
+| Players alone AP50 | 0.396 | **0.870** | 0.649 | 0.730 | 0.734 |
+| Referees found (of 506) | 187 | 26 | 204 | 395 | **426** |
+| Detections matching nobody labelled, a frame | 0.76 | **0.60** | 1.15 | 0.91 | 0.84 |
+
+(Players-alone AP50 counts a boxed referee against the candidate, as SportsMOT's labels do.) On the two games, the
+teacher's people placed on the court (§10.2):
+
+| | App model | A | C |
+|---|---:|---:|---:|
+| Lakers @ Warriors: players on the court (1,311) | **99.0 %** | 97.7 % | 97.9 % |
+| the same: referees on the court (230) | **99.1 %** | 97.0 % | 98.7 % |
+| Cavaliers @ Warriors: players on the court (3,535) | 80.2 % | **84.8 %** | **84.8 %** |
+| the same: referees on the court (116) | **83.6 %** | 35.3 % | 23.3 % |
+| the same: off the court, benches and the crowd (226; lower is better) | 76.1 % | **28.8 %** | 29.6 % |
+
+Paired players on the court, against the app model: Cavaliers @ Warriors C +4.6 points (95 % interval over the 34
+clips +1.2 to +8.7; per box 411 against 247, p 1.7e-10), A +4.6 (+1.5 to +8.6); Lakers @ Warriors C -1.1 points (over
+the 9 clips -3.9 to +0.4, 2 clips up, 4 down; per box 9 against 24, p 0.014), A -1.3 (per box 5 against 22,
+p 0.0015). The boxes of one clip are not independent, so the per-box test overstates; both are reported.
+
+What C does is what the owner asked for on the footage it learnt from: referees boxed (84 % on the held-out Roboflow
+games, 99 % on Lakers @ Warriors) and the benches and crowd left alone (Cavaliers @ Warriors 30 % against 76 %), with
+the best ball of any model on footage none of them saw. It misses most of the 2017 game's referees, whose light grey
+shirts differ from the dark shirts of every referee it was taught (2024-25 footage), and on the app model's own game it
+finds about 1 point fewer players. The pipeline on both games decides the rest (§10.14).
+
 ## 11. Referees and the crowd (cloud): plan, fixed before training
 
 The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The
