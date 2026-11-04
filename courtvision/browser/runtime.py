@@ -12,6 +12,7 @@ import numpy as np
 
 from courtvision.geometry.court import court_for
 from courtvision.geometry.homography import Calibration
+from courtvision.nba.referee import referee_calls
 from courtvision.perception.ball import BallTracker
 from courtvision.perception.broadcast import BroadcastPerception, BroadcastPerceptionConfig, ShotBoundaryDetector
 from courtvision.perception.broadcast_court import BroadcastCourtTracker, estimate_center
@@ -111,7 +112,11 @@ class BrowserPipeline:
         height, width = self.image.shape[:2]
         balls, people = decode(out, input_scale(width, height), ball_thresh=.08, person_thresh=.3)
         radius = 12 * height / 1080
-        detections = [Detection(BBox(*box[:4]), ObjClass.PLAYER, box[4]) for box in people]
+        # referees told apart as the desktop NBA pipeline does (nba.referee.referee_calls, its default method): tracked,
+        # given to the ball tracker as people, but never a player of either team
+        refs = referee_calls(self.image, [tuple(float(v) for v in box[:4]) for box in people]) if people else []
+        detections = [Detection(BBox(*box[:4]), ObjClass.REFEREE if ref else ObjClass.PLAYER, box[4])
+                      for box, ref in zip(people, refs)]
         detections += [Detection(BBox(x-radius, y-radius, x+radius, y+radius), ObjClass.BALL, score) for x,y,score in balls]
         self.detector.current = FrameDetections(self.frame_idx, self.t, (width, height), detections)
         boxes = []
@@ -132,6 +137,10 @@ class BrowserPipeline:
                                   "confidence": track.score, "team": None})
             ball = self.ball.update([d for d in detections if d.cls is ObjClass.BALL], self.frame_idx, self.t,
                                     people=[d.bbox for d in observed])
+        for d in detections:
+            if d.cls is ObjClass.REFEREE and d.bbox.h >= height * .045:
+                boxes.append({"id": "Referee", "class": "referee", "bbox": list(d.bbox.as_tuple()),
+                              "confidence": d.score, "team": None})
         if ball is not None and ball.visible and ball.image_xy is not None:
             x,y = ball.image_xy
             boxes.append({"id": "Ball", "class": "sports ball", "bbox": [x-9,y-9,x+9,y+9],

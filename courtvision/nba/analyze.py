@@ -50,6 +50,7 @@ import numpy as np
 
 from courtvision.geometry.court import CourtSpec, court_for
 from courtvision.geometry.homography import Calibration, Homography
+from courtvision.nba.referee import is_referee_shirt  # noqa: F401 - the shirt rule, also ``analyze``'s name
 from courtvision.perception.ball3d import Flight3D, FlightSearchConfig, find_flights
 from courtvision.perception.court_search import CameraParams
 from courtvision.types import (
@@ -794,31 +795,17 @@ def is_referee(frame_bgr: np.ndarray, box: tuple[float, float, float, float], me
     box too small to read is not a referee). It is not the default: on Cavaliers @ Warriors (2017) it calls the
     Cavaliers' black jerseys referees, and the possession timeline falls from 75.8 % to 38.8 % (research note
     ``cross_game_detector.md`` §10.10-10.11); ``RefereeCheck`` guards it for a whole game."""
-    if method == "shirt":
-        return is_referee_shirt(frame_bgr, box)
-    if method != "learned":
-        raise ValueError(f"unknown referee method {method!r}")
-    from courtvision.nba import referee_model
-    from courtvision.nba.referee import referee_prob
-
-    p = referee_prob(frame_bgr, box, referee_model)
-    return p is not None and p >= referee_model.THRESHOLD
+    return are_referees(frame_bgr, [box], method)[0]
 
 
 def are_referees(frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]], method: str = "shirt",
                  model: Any = None) -> list[bool]:
-    """``is_referee`` for every person box of one frame (the learned check reads them all at once; ``model``: another
-    fit of its weights, ``load_referee_model``, instead of the packaged ``nba.referee_model``)."""
-    if method == "shirt":
-        return [is_referee_shirt(frame_bgr, b) for b in boxes]
-    if method != "learned":
-        raise ValueError(f"unknown referee method {method!r}")
-    from courtvision.nba import referee_model
-    from courtvision.nba.referee import referee_probs
+    """``is_referee`` for every person box of one frame (``nba.referee.referee_calls``: the learned check reads them
+    all at once; ``model``: another fit of its weights, ``load_referee_model``, instead of the packaged
+    ``nba.referee_model``)."""
+    from courtvision.nba.referee import referee_calls
 
-    weights = model or referee_model
-    probs = referee_probs(frame_bgr, boxes, weights) if boxes else np.zeros(0)
-    return [bool(p >= weights.THRESHOLD) for p in probs]  # NaN (unreadable) compares False
+    return referee_calls(frame_bgr, boxes, method, model)
 
 
 def load_referee_model(path: str | Path) -> Any:
@@ -832,43 +819,6 @@ def load_referee_model(path: str | Path) -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def is_referee_shirt(frame_bgr: np.ndarray, box: tuple[float, float, float, float]) -> bool:
-    """NBA referees wear grey shirts with black stripes: an achromatic, mid-bright torso with dark stripes (white
-    and coloured jerseys fail it). Thresholds from torso statistics of on-court people on ESPN frames."""
-    x1, y1, x2, y2 = box
-    bw, bh = x2 - x1, y2 - y1
-    crop = frame_bgr[int(y1 + 0.2 * bh):int(y1 + 0.5 * bh), int(x1 + 0.25 * bw):int(x2 - 0.25 * bw)]
-    if crop.size < 30:
-        return False
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV).reshape(-1, 3)
-    s, v = _OrderStats(hsv[:, 1]), _OrderStats(hsv[:, 2])
-    return bool(s.median() < 70 and v.median() < 175 and v.percentile(20) < 75)
-
-
-class _OrderStats:
-    """``np.median`` / ``np.percentile`` (linear) of 8-bit values from their counts: the same float64 results without
-    sorting (``is_referee`` asks for three of them per person box)."""
-
-    def __init__(self, values: np.ndarray) -> None:
-        self.n = len(values)
-        self.cum = np.cumsum(np.bincount(values, minlength=256))
-
-    def kth(self, k: int) -> float:
-        """The k-th smallest value (from 0)."""
-        return float(np.searchsorted(self.cum, k, side="right"))
-
-    def median(self) -> float:
-        return (self.kth((self.n - 1) // 2) + self.kth(self.n // 2)) / 2.0  # numpy: the mean of the middle one or two
-
-    def percentile(self, q: float) -> float:
-        virtual = (self.n - 1) * (q / 100)  # numpy's "linear" method, step by step
-        if virtual >= self.n - 1:
-            return self.kth(self.n - 1)
-        prev = math.floor(virtual)
-        a, b, t = self.kth(prev), self.kth(prev + 1), virtual - prev
-        return b - (b - a) * (1 - t) if t >= 0.5 else a + (b - a) * t
 
 
 def rectify_box(box: tuple[float, float, float, float], cam: CameraParams, size: tuple[int, int],

@@ -102,3 +102,22 @@ def test_three_frame_prefetch_rolls_back_from_last_consumed_frame(monkeypatch, s
     if change == "none":
         np.testing.assert_array_equal(ahead_inputs, normal_inputs)
     assert len(ahead._frame_pool) <= ahead._buf.maxlen + ahead.max_prefetch
+
+
+def test_referees_come_out_as_referees_when_asked(monkeypatch):
+    from courtvision.types import ObjClass
+
+    frame = np.zeros((540, 960, 3), np.uint8)
+    frame[:] = (70, 150, 60)  # a green floor (BGR)
+    frame[226:280, 375:425] = 135  # a grey shirt with dark stripes ...
+    frame[226:280, 375:425:6] = 25
+    frame[226:280, 376:425:6] = 25
+    frame[289:343, 380:420] = 25  # ... and dark trousers: a referee
+    frame[226:280, 575:625] = (40, 40, 200)  # a red jersey and shorts: a player
+    frame[289:343, 580:620] = (40, 40, 200)
+    people = [(360.0, 190.0, 440.0, 370.0, 0.9), (560.0, 190.0, 640.0, 370.0, 0.9)]
+    for referees, expect in ((True, [ObjClass.REFEREE, ObjClass.PLAYER]), (False, [ObjClass.PLAYER, ObjClass.PLAYER])):
+        det = student.StudentDetector(student.StudentConfig(referees=referees))
+        det.infer_arrays = lambda x, sizes: [([], people)]
+        got = [d.cls for d in det.detect(frame, 0, 0.0).detections]
+        assert got == expect

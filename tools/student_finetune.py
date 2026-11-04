@@ -313,14 +313,25 @@ def court_people(src: Path, game: Path, out: Path, keep_ft: float = 3.0, ignore_
 
 
 def foot_hull_ignore(players: np.ndarray, found: np.ndarray, scores: np.ndarray, size: tuple[int, int],
-                     iou: float = 0.3, score: float = 0.3, margin: float = 0.05) -> list[list[float]]:
+                     iou: float = 0.3, score: float = 0.3, margin: float = 0.05,
+                     referee: np.ndarray | None = None) -> list[list[float]]:
     """The boxes of ``found`` (people another model detected, label px, with ``scores``) that a player-only label set
-    leaves out although they stand among its players: at ``score`` or more, overlapping no labelled player at ``iou``
-    or more, their foot point (bottom centre) inside the convex hull of the labelled players' foot points grown by
-    ``margin`` of the frame height. On a broadcast these are mostly referees (and a coach or bench player at the
-    sideline); people in the stands stand outside the hull and stay background. Fewer than 3 players: none."""
-    if len(players) < 3 or len(found) == 0:
+    leaves out although they are on the court: at ``score`` or more, overlapping no labelled player at ``iou`` or
+    more, and either standing among the players (foot point, the bottom centre, inside the convex hull of the
+    labelled players' foot points grown by ``margin`` of the frame height) or read as a referee (``referee``: one
+    flag per box, ``nba.referee``; referees stand at the sidelines, mostly outside that hull). People in the stands
+    stay background. Fewer than 3 players: only the referees."""
+    if len(found) == 0:
         return []
+    if len(players) < 3:
+        if referee is None or len(players) == 0:
+            return []
+        sys.path.insert(0, str(ROOT / "tools"))
+        from detector_bench import iou_matrix  # noqa: E402
+
+        over = iou_matrix(found, players).max(axis=1)
+        return [[round(float(v), 1) for v in box[:4]] for box, sc, o, r in zip(found, scores, over, referee)
+                if sc >= score and o < iou and r]
     sys.path.insert(0, str(ROOT / "tools"))
     from detector_bench import iou_matrix  # noqa: E402
 
@@ -328,21 +339,22 @@ def foot_hull_ignore(players: np.ndarray, found: np.ndarray, scores: np.ndarray,
     hull = cv2.convexHull(feet)
     over = iou_matrix(found, players).max(axis=1) if len(players) else np.zeros(len(found))
     out = []
-    for box, sc, o in zip(found, scores, over):
+    for k, (box, sc, o) in enumerate(zip(found, scores, over)):
         if sc < score or o >= iou:
             continue
         foot = (float((box[0] + box[2]) / 2.0), float(box[3]))
-        if cv2.pointPolygonTest(hull, foot, True) >= -margin * size[1]:
+        if cv2.pointPolygonTest(hull, foot, True) >= -margin * size[1] or (referee is not None and referee[k]):
             out.append([round(float(v), 1) for v in box[:4]])
     return out
 
 
 def mark_ignore(src: Path, out: Path, model_path: Path, iou: float = 0.3, score: float = 0.3, margin: float = 0.05,
-                threads: int = 4, model: Any = None) -> int:
+                threads: int = 4, model: Any = None, referees: bool = True) -> int:
     """A player-only folder (SportsMOT, ``prep-mot``) -> the same folder (``out``: its frames linked, not copied)
     whose rows carry ``ignore`` boxes (``foot_hull_ignore``) found by ``model_path`` (default: the app's export,
     which boxes everyone) on the network's own input of every sample: ``train_student.ClipDataset`` then leaves
     those people out of the person heatmap loss, so the referees the labels skip are not taught as background.
+    ``referees``: also the people the referee check (``nba.referee``) reads as referees, wherever they stand.
     ``model``: an already loaded ``detector_bench`` model (tests). Returns the number of ignore boxes."""
     import shutil
 
@@ -357,16 +369,25 @@ def mark_ignore(src: Path, out: Path, model_path: Path, iou: float = 0.3, score:
     ds = ClipDataset(plan.folders, plan.train | plan.val, train=False, weights=plan.weights)
     marks: dict[tuple[int, int], list[list[float]]] = {}
     n_rows = 0
-    for i, (_, clip, frames, det, _) in enumerate(ds.items):
+    for i, (fi, clip, frames, det, _) in enumerate(ds.items):
         players = np.array([q[:4] for q in det["persons"]], float).reshape(-1, 4)
-        if len(players) < 3:
+        if len(players) == 0:
             continue
         x, _ = ds[i]
         size = tuple(det.get("size") or (1280, 720))
         _, persons = run_model(model, x[None], size, 0.99, score)
         found = np.array([q[:4] for q in persons], float).reshape(-1, 4)
         scores = np.array([q[4] for q in persons], float)
-        boxes = foot_hull_ignore(players, found, scores, size, iou, score, margin)
+        ref = None
+        if referees and len(found):
+            from courtvision.nba import referee_model
+            from courtvision.nba.referee import referee_probs
+
+            img = ds._img(fi, clip, frames[-1])
+            k = img.shape[1] / float(size[0])  # stored px per label px
+            ref = referee_probs(img, [tuple(float(v) * k for v in b) for b in found], referee_model) \
+                >= referee_model.THRESHOLD
+        boxes = foot_hull_ignore(players, found, scores, size, iou, score, margin, ref)
         n_rows += 1
         if boxes:
             marks[(clip, frames[-1])] = boxes
@@ -383,9 +404,9 @@ def mark_ignore(src: Path, out: Path, model_path: Path, iou: float = 0.3, score:
         (out / "frames").symlink_to((src / "frames").resolve(), target_is_directory=True)
     meta = json.loads((src / "meta.json").read_text())
     n = sum(len(v) for v in marks.values())
-    meta["ignore"] = {"model": str(model_path), "iou": iou, "score": score, "margin": margin, "boxes": n,
-                      "rows": len(marks), "samples": n_rows,
-                      "what": "unlabelled people among the labelled players (mostly referees): no person loss"}
+    meta["ignore"] = {"model": str(model_path), "iou": iou, "score": score, "margin": margin, "referees": referees,
+                      "boxes": n, "rows": len(marks), "samples": n_rows,
+                      "what": "unlabelled people among the labelled players or read as referees: no person loss"}
     (out / "meta.json").write_text(json.dumps(meta, indent=1))
     print(f"{out}: {n} ignore boxes on {len(marks)} of {n_rows} samples", file=sys.stderr)
     return n
@@ -823,6 +844,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--iou", type=float, default=0.3, help="overlap with a labelled player that makes a box that player")
     p.add_argument("--score", type=float, default=0.3)
     p.add_argument("--margin", type=float, default=0.05, help="growth of the players' foot hull, share of frame height")
+    p.add_argument("--referees", action=argparse.BooleanOptionalAction, default=True,
+                   help="also ignore the people the referee check reads as referees, wherever they stand")
     p.add_argument("--threads", type=int, default=4)
     p = sub.add_parser("prep-teacher", help="videos -> an RF-DETR teacher folder (held-out ball checks)")
     p.add_argument("src", type=Path)
@@ -888,7 +911,8 @@ def main(argv: list[str] | None = None) -> int:
         court_people(a.src, a.game, a.out, a.keep_ft, a.ignore_ft, a.min_score)
         return 0
     if a.cmd == "mark-ignore":
-        return 0 if mark_ignore(a.src, a.out, a.model, a.iou, a.score, a.margin, a.threads) >= 0 else 2
+        return 0 if mark_ignore(a.src, a.out, a.model, a.iou, a.score, a.margin, a.threads,
+                                referees=a.referees) >= 0 else 2
     if a.cmd == "prep-teacher":
         return 0 if prep_teacher(a.src, a.out, a.frames, a.weights, a.shape, a.device) else 2
     if a.cmd == "train":

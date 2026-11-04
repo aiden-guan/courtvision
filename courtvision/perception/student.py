@@ -202,6 +202,9 @@ class StudentConfig:
     # Apple silicon where it loads, else torch
     backend: str = "auto"
     coreml_cache: str | None = None  # folder of the exported models; None: $COURTVISION_CACHE or ~/Library/Caches/courtvision
+    # people read as an NBA referee (``nba.referee.referee_calls``) come out as REFEREE, not PLAYER: True or "shirt"
+    # (the pipeline's default, the shirt rule), "learned" (the colour classifier); False: everyone a PLAYER
+    referees: bool | str = False
 
 
 def _cache_dir(folder: str | None) -> Path:
@@ -414,6 +417,13 @@ class StudentDetector:
         balls, persons = self.infer_arrays(x[None], [(w, h)])[0]
         self.last_raw = (balls, persons)
         r = self.config.ball_radius_px * h / 1080.0
-        dets = [Detection(BBox(x1, y1, x2, y2), ObjClass.PLAYER, sc) for x1, y1, x2, y2, sc in persons]
+        refs = [False] * len(persons)
+        if self.config.referees and len(persons):
+            from courtvision.nba.referee import referee_calls
+
+            method = "shirt" if self.config.referees is True else str(self.config.referees)
+            refs = referee_calls(frame_bgr, [tuple(float(v) for v in p[:4]) for p in persons], method)
+        dets = [Detection(BBox(x1, y1, x2, y2), ObjClass.REFEREE if ref else ObjClass.PLAYER, sc)
+                for (x1, y1, x2, y2, sc), ref in zip(persons, refs)]
         dets += [Detection(BBox(x - r, y - r, x + r, y + r), ObjClass.BALL, sc) for x, y, sc in balls]
         return FrameDetections(frame_idx=frame_idx, t=t, image_size=(w, h), detections=dets)

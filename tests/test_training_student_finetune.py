@@ -223,6 +223,11 @@ def test_foot_hull_keeps_people_among_the_players_and_drops_the_stands() -> None
     assert boxes == [[300.0, 330.0, 340.0, 430.0]]
     assert sf.foot_hull_ignore(players, found, np.array([0.2, 0.9, 0.9, 0.9]), (1280, 720)) == []  # below 0.3
     assert sf.foot_hull_ignore(players[:2], found, np.ones(4), (1280, 720)) == []  # too few players for a hull
+    # people read as referees are ignored wherever they stand; the fan in the stands is not one
+    flags = np.array([False, False, False, True])
+    assert sf.foot_hull_ignore(players, found, np.ones(4), (1280, 720), referee=flags) == [
+        [300.0, 330.0, 340.0, 430.0], [700.0, 330.0, 740.0, 430.0]]
+    assert sf.foot_hull_ignore(players[:2], found, np.ones(4), (1280, 720), referee=flags) == [[700.0, 330.0, 740.0, 430.0]]
 
 
 def test_ignore_boxes_leave_person_cells_out_of_the_loss(tmp_path: Path) -> None:
@@ -275,7 +280,7 @@ def test_mark_ignore_writes_ignore_boxes_and_links_the_frames(tmp_path: Path) ->
             return [], [tuple(p[:4]) + (0.9,) for p in players] + [(300, 330, 340, 430, 0.8), (300, 50, 330, 120, 0.8)]
 
     out = tmp_path / "mot_ign"
-    assert sf.mark_ignore(src, out, Path("app.onnx"), model=Everyone()) == 1
+    assert sf.mark_ignore(src, out, Path("app.onnx"), model=Everyone(), referees=False) == 1
     got = [json.loads(line) for line in (out / "detections.jsonl").open()]
     assert got[2]["ignore"] == [[300.0, 330.0, 340.0, 430.0]] and "ignore" not in got[0]  # samples only
     assert (out / "frames").is_symlink() and (out / "frames" / "0000" / "000003.jpg").is_file()

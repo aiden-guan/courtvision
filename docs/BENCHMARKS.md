@@ -116,6 +116,23 @@ and precision at 0.3, ball within 15 px of 1080 lines; each frame fed as its own
 T5 trained on 3 other games of the same set (the same labelling) and, alone, on repeated frames (a quarter of its
 samples), which favours it on these single frames, the ball most of all; in video its ball is T2's and T4's (above).
 
+**Referees and the crowd, the same 5 games** (506 referees labelled; "on nobody": detections overlapping no labelled
+person at IoU 0.1, i.e. the crowd, benches and staff; research note §11):
+
+| Model | Referees found | Players and referees AP50 / recall | Detections on nobody, per frame | Ball (single frames) | Ball in video (1,153 BARD frames) |
+|---|---:|---:|---:|---:|---:|
+| Published student | 187 (37.0 %) | 0.505 / 0.391 | 0.09 | 22.7 % | 81.7 % |
+| Round 2, T2 | 84 (16.6 %) | 0.687 / 0.617 | 0.02 | 34.5 % | 89.1 % |
+| Round 3, T5 | 26 (5.1 %) | 0.768 / 0.663 | 0.06 | 68.0 % | 89.5 % |
+| Round 4, R4a (+ Roboflow referees as people) | **424 (83.8 %)** | **0.881** / **0.831** | 0.19 | 63.9 % | 89.3 % |
+| Round 4, R4b (+ SportsMOT ignore regions; [weights](../models/research/README.md)) | **424 (83.8 %)** | **0.881** / 0.828 | 0.17 | 66.5 % | 89.25 % |
+| Round 4, R4b, int8 | 425 (84.0 %) | 0.882 / 0.830 | 0.15 | 67.5 % | 89.25 % |
+
+**The pipeline's referee check** (`nba/referee.py`, the default of `analyze.is_referee`), each of the 8 Roboflow NBA
+games left out in turn (28,875 labelled boxes; threshold 0.5, fixed): referees named 73.9 % (the shirt rule) to
+**94.3 %**, players called referee 2,464 to 1,730 of 22,440, F1 0.690 to **0.847**, exact McNemar p 1.3e-188; worse
+than the rule in the 2 games with Denver. 1.6 ms a frame of 12 people.
+
 **CPU paths** (`tools/student_speed.py`; one detection, network and decoding, median of 40 on 12 BARD inputs, 4
 threads, idle machine; `runs/bench/speed_4t.json`):
 

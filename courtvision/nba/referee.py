@@ -153,3 +153,57 @@ def fit_logistic(X: np.ndarray, y: np.ndarray, l2: float = 1e-2, iters: int = 30
         if np.abs(step).max() < 1e-7:
             break
     return mu, sd, w[:-1], float(w[-1])
+
+
+def referee_calls(frame_bgr: np.ndarray, boxes: Any, method: str = "shirt", model: Any = None) -> list[bool]:
+    """Which person boxes of one frame show a referee: ``shirt`` (the default: ``is_referee_shirt``) or ``learned``
+    (``referee_probs`` at the weights' threshold; ``model``: another fit, else the packaged ``nba.referee_model``; a
+    box too small to read is not a referee). One entry point for the desktop pipeline (``analyze.are_referees``),
+    the Studio and the browser app (``StudentConfig.referees``, ``browser.runtime``). The shirt rule is the default:
+    the learned check reads the Cavaliers' black jerseys on the README's 2017 game as referees' shirts
+    (``docs/research/cross_game_detector.md`` §10.10-10.12)."""
+    if method == "shirt":
+        return [is_referee_shirt(frame_bgr, b) for b in boxes]
+    if method != "learned":
+        raise ValueError(f"unknown referee method {method!r}")
+    if model is None:
+        from courtvision.nba import referee_model as model
+    probs = referee_probs(frame_bgr, boxes, model) if len(boxes) else np.zeros(0)
+    return [bool(p >= model.THRESHOLD) for p in probs]  # NaN (unreadable) compares False
+
+
+def is_referee_shirt(frame_bgr: np.ndarray, box: tuple[float, float, float, float]) -> bool:
+    """NBA referees wear grey shirts with black stripes: an achromatic, mid-bright torso with dark stripes (white
+    and coloured jerseys fail it). Thresholds from torso statistics of on-court people on ESPN frames."""
+    x1, y1, x2, y2 = box
+    bw, bh = x2 - x1, y2 - y1
+    crop = frame_bgr[int(y1 + 0.2 * bh):int(y1 + 0.5 * bh), int(x1 + 0.25 * bw):int(x2 - 0.25 * bw)]
+    if crop.size < 30:
+        return False
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+    s, v = _OrderStats(hsv[:, 1]), _OrderStats(hsv[:, 2])
+    return bool(s.median() < 70 and v.median() < 175 and v.percentile(20) < 75)
+
+
+class _OrderStats:
+    """``np.median`` / ``np.percentile`` (linear) of 8-bit values from their counts: the same float64 results without
+    sorting (``is_referee`` asks for three of them per person box)."""
+
+    def __init__(self, values: np.ndarray) -> None:
+        self.n = len(values)
+        self.cum = np.cumsum(np.bincount(values, minlength=256))
+
+    def kth(self, k: int) -> float:
+        """The k-th smallest value (from 0)."""
+        return float(np.searchsorted(self.cum, k, side="right"))
+
+    def median(self) -> float:
+        return (self.kth((self.n - 1) // 2) + self.kth(self.n // 2)) / 2.0  # numpy: the mean of the middle one or two
+
+    def percentile(self, q: float) -> float:
+        virtual = (self.n - 1) * (q / 100)  # numpy's "linear" method, step by step
+        if virtual >= self.n - 1:
+            return self.kth(self.n - 1)
+        prev = math.floor(virtual)
+        a, b, t = self.kth(prev), self.kth(prev + 1), virtual - prev
+        return b - (b - a) * (1 - t) if t >= 0.5 else a + (b - a) * t

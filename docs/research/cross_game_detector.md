@@ -699,6 +699,13 @@ Two changes, each tried on T5's recipe (§9) with nothing else changed:
   (`ClipDataset`'s `ignore` boxes, `focal_loss(pixel_weight=...)`). These are mostly referees; people in the stands
   fall outside the hull and stay background.
 
+  *Changed before any training*: the hull alone marked only 521 boxes on 494 of SportsMOT's 4,125 `train` samples. On
+  40 random samples the app model found 79 people no player label covers; 69 of them stood more than 5 % of the frame
+  height outside the hull, and the drawn frames showed them to be referees at the sidelines and baselines (the learned
+  check of §11.1 read 61 of the 69 as referees). So a person is also ignored when that check reads them as a referee,
+  wherever they stand (`mark-ignore --referees`, the default); everyone else stays background. No result of R4a or R4b
+  existed when this was changed.
+
 Measures, on the 5 held-out Roboflow games (§9; `detector_bench.py --coco`, detections at 0.3, IoU 0.5): the share of
 the 506 labelled referees a box matches; the share of detections that match no labelled player or referee (the crowd,
 benches and coaches; also per frame); players AP50, recall and precision; and the referee rule's calls on the matched
@@ -742,3 +749,68 @@ for a frame of 12 people on one core (the rule 0.4 ms), about two extra minutes 
 
 The pipeline's numbers on the README's two games (§10.3, §10.4) were measured with the shirt rule; with the learned
 check they have to be measured again before the README changes.
+
+Where it runs: the NBA pipeline (`analyze.CachedDetector`, through `are_referees`), the browser app
+(`browser/runtime.py`: a person read as a referee is tracked and still counts as a person near the ball, but is never
+a player of either team, and is published as a grey "Referee" box), and the Studio's student detector
+(`StudentConfig(referees=True)`; off by default elsewhere).
+
+## 12. Round 5: weight averaging (no gain)
+
+Three weight-space ensembles, named before T4 and T5 existed (`student_finetune.py soup`): the uniform average of T4
+and T5, of T2, T4 and T5 (a "uniform soup", Wortsman et al. 2022, arXiv:2203.05482), and T5 pulled halfway back to
+the shared start (WiSE-FT, alpha 0.5, arXiv:2109.01903). Each fine-tune lies 0.14 to 0.16 of the start's norm away
+from it, but the averages only 0.08 to 0.10: the fine-tunes moved in nearly unrelated directions, so an average is
+mostly a step back towards the start. Scored as T5 (`runs/bench/ball_check12_r5.json`, `..._linked_r5.json`,
+`coco_heldout_r5.json`):
+
+| Model | Ball per frame (1,153) | Ball, linked path | Players AP50, 5 Roboflow games (single frames) | Ball, those frames |
+|---|---:|---:|---:|---:|
+| T5 | 89.5 % | 91.6 % | **0.870** | **68.0 %** |
+| T4 | 89.4 % | 91.6 % | 0.770 | 34.5 % |
+| Average of T4 and T5 | 89.6 % (14 / 13, p 1) | 91.8 % (14 / 11, p 0.69) | 0.410 | 53.6 % |
+| Average of T2, T4 and T5 | 90.1 % (22 / 15, p 0.32) | 91.9 % (16 / 12, p 0.57) | 0.271 | 48.5 % |
+| T5 halfway back to the start | 88.2 % (14 / 29, p 0.032) | 89.4 % (4 / 29, p 1.1e-5) | 0.777 | 49.0 % |
+
+(Paired against T5: frames only the candidate hits / only T5.) In video the averages match T5 on the ball (their
+linked paths miss less and are wrong more often: 6.3 % against 3.0 %); on single frames they collapse, because only
+T5 learnt to work without motion and averaging it with models that did not undoes that. No average is kept; T5
+(`student-ft-r3`) stays the best model.
+
+The new measures of §11 on these frames also show what the fine-tunes did to the referees: of the 506 labelled
+referees, T5 boxes 26 and T4 33 (T5 halfway back: 103). The detections that match nobody labelled (the crowd, benches,
+coaches) are 7.2 % of T5's (0.60 a frame) and 13.1 % of T4's.
+
+### 11.2 Results: the referees back in the person head
+
+`mark-ignore` (with the referee check) marked 6,920 ignore boxes on 3,506 of SportsMOT's 4,125 `train` samples and
+4,277 on 2,935 of its 4,180 `val` samples, about two people a frame. Both runs are T5's recipe (§9) with the changes
+of §11; each was scored once (`runs/bench/coco_heldout_r7.json`, `ball_check12_r7.json`).
+
+**The 5 held-out Roboflow games** (211 single frames; 1,961 players and 506 referees labelled; detections at 0.3,
+IoU 0.5). "On nobody" counts the detections that overlap no labelled person at IoU 0.1: the crowd, benches and staff
+(most unmatched detections are loose boxes on a labelled person instead):
+
+| Model | Referees found | Players and referees: AP50 / recall / precision | Detections on nobody (per frame) | Ball |
+|---|---:|---:|---:|---:|
+| Published student | 187 (37.0 %) | 0.505 / 0.391 / 0.857 | 18 (0.09) | 22.7 % |
+| T2 | 84 (16.6 %) | 0.687 / 0.617 / 0.868 | 5 (0.02) | 34.5 % |
+| T5 | 26 (5.1 %) | 0.768 / 0.663 / 0.928 | 12 (0.06) | 68.0 % |
+| R4a: + Roboflow referees as people | **424 (83.8 %)** | **0.881** / **0.831** / 0.912 | 41 (0.19) | 63.9 % |
+| R4b: + SportsMOT ignore regions | **424 (83.8 %)** | **0.881** / **0.828** / 0.909 | 35 (0.17) | 66.5 % |
+
+On R4b's 424 matched referees the learned check of §11.1 calls 407 referees (the shirt rule 332) and calls 41 of its
+1,618 matched players referees (2.5 %): with the pipeline's check, 80 % of the labelled referees are boxed and named.
+Players-only AP50 falls (T5 0.870, R4a 0.752, R4b 0.732) because that measure counts every referee box as a false
+player. The published student's low numbers here are those of single frames (it leans on motion: §9); on video it
+boxes 99 % of the referees on the court and 76 % of the people off it (§10.2).
+
+The price is a few more boxes on nobody: 0.17 a frame for R4b against T5's 0.06 (35 against 12 over 211 frames).
+Single-frame ball: T5 against R4a 10 frames to 2 (p 0.039), against R4b 9 to 6 (p 0.61). **In video** (the 1,153
+BARD frames) the ball does not move: T5 89.5 %, R4a 89.3 % (11 / 13, p 0.84), R4b 89.25 % (7 / 10, p 0.63).
+
+R4a and R4b are alike on these NBA games, where the Roboflow referee labels already teach the referees; the ignore
+regions keep SportsMOT's NCAA and FIBA referees from being taught as background, which no held-out set here can show
+(both runs train on every SportsMOT broadcast). R4b is kept: the same referees, a few fewer boxes on nobody, and its
+single-frame ball within chance of T5's. Not yet measured: what it boxes off the court on video, the owner's complaint,
+which the README's two games can answer (§10.2's table).

@@ -761,12 +761,14 @@ def test_student_history_steps_and_the_live_detectors_input_frames(monkeypatch: 
 
 
 def test_order_statistics_from_counts_equal_numpys() -> None:
+    from courtvision.nba import referee  # the shirt rule's order statistics live beside the learned check
+
     rng = np.random.default_rng(0)
     for n in [*range(1, 40), 255, 256, 1001, 5000]:
         for _ in range(5):
             lo, hi = sorted(rng.integers(0, 256, 2))
             x = rng.integers(lo, hi + 1, n).astype(np.uint8)
-            o = analyze._OrderStats(x)
+            o = referee._OrderStats(x)
             assert o.median() == np.median(x.astype(float))
             for q in (0, 20, 37.5, 50, 99.9, 100):
                 assert o.percentile(q) == np.percentile(x.astype(float), q)
