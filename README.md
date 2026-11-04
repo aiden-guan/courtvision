@@ -114,7 +114,8 @@ flowchart LR
 
 1. **Detect.** For NBA broadcasts a ResNet-18 CenterNet student ([`perception/student.py`](courtvision/perception/student.py))
    sees the current frame plus the two before it, so a motion-blurred ball stands out. It was distilled from an
-   RF-DETR teacher on broadcast footage and runs on Apple's Neural Engine through Core ML.
+   RF-DETR teacher on broadcast footage, then fine-tuned on more broadcasts and human labels (main model v2), and runs
+   on Apple's Neural Engine through Core ML.
 2. **Register the court.** [`perception/broadcast_court.py`](courtvision/perception/broadcast_court.py) estimates the
    main camera's position once per game, then fits only pan, tilt, roll and zoom per frame. A worker process does this
    ahead of the frame being analysed ([`perception/court_worker.py`](courtvision/perception/court_worker.py)).
@@ -184,10 +185,9 @@ fine-tuned weights. These research rounds' candidates were folded into main mode
 | Ball, linked path, Cavaliers @ Warriors (606 frames of 60 clips) | 72.4% | **77.9%** (round 2; p 3.6e-8) | teacher labels, a game neither trained on |
 | Ball, linked path, Lakers @ Warriors (243 frames of the app model's 15 held-out clips) | 95.5% | 95.5% (round 2; the same frames) | teacher labels, the game the published detector learnt from |
 
-On the README's two games neither fine-tune moves the pipeline beyond chance yet, so the app keeps its detector: with
-round 3, team with the ball 96.4% to 96.8% (Lakers @ Warriors) and 75.8% to 74.8% (Cavaliers @ Warriors), made or
-missed 83.1% to 87.1% and 75.4% to 78.8% (paired over the shots both found: p 0.33 and 0.85), box-score error 0.209 to
-0.208 and 0.570 to 0.574 (round 2 alike). Both leave referees and the crowd unboxed, as their human labels do
+On the README's two games neither research fine-tune moved the pipeline beyond chance, and both left referees and
+the crowd unboxed, as their human labels do. Main model v2 (above) took in what they learnt, boxes the referees and
+leaves the crowd alone; it too is within chance of the first model on the pipeline, with a lower box-score error
 ([details](docs/research/cross_game_detector.md#10-on-the-owners-mac-m3-pro-the-readmes-two-games)).
 
 **Simulator, held-out seeds 101–104** (macro-F1 over 9 event kinds, [report](docs/bench/round5-heldout.md)):
@@ -301,8 +301,10 @@ To analyse a full NBA broadcast and score it against ESPN, follow [docs/NBA.md](
 .venv/bin/python tools/nba_loop.py run --game <YYYY-MM-DD-AWY-HOM>
 ```
 
-The NBA student detector, rim model and shot models are trained locally from your own footage and are not
-distributed with the repository (footage and weights are git-ignored; see [docs/TRAINING.md](docs/TRAINING.md)).
+The NBA detector ships as the browser app's model (`courtvision/server/static/nba-student.onnx`, main model v2;
+research use, see [models/research](models/research/README.md) for its sources and terms). The Studio's PyTorch copy,
+the rim model and the shot models are trained locally from your own footage and are not distributed with the
+repository (footage and weights under `runs/` are git-ignored; see [docs/TRAINING.md](docs/TRAINING.md)).
 
 ### Configuration
 

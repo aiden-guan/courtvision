@@ -134,7 +134,8 @@ On a Mac, `tools/nba_mac_jobs.sh` runs the heavy steps one at a time (`q1`, `ret
 `full`); it refuses to start while another CourtVision job runs or when little memory is free. Several heavy jobs
 at once ran an 18 GB Mac out of memory.
 
-To train the student detector on a game:
+To train the student detector on a game (how the first model was made; the app's main model v2 was then
+fine-tuned on more broadcasts with `tools/student_finetune.py`, [TRAINING.md](TRAINING.md) §7B):
 
 ```bash
 .venv/bin/python tools/nba_teacher_labels.py $VIDEO --scorebug $G/scorebug.jsonl --out $G/teacher

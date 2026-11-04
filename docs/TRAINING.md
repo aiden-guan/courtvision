@@ -506,10 +506,10 @@ A real broadcast still needs four things that are not in this repository:
 
 ## 7B. The NBA student on more broadcasts (`tools/student_finetune.py`)
 
-The student detector (`perception/student.py`) was distilled on two NBA games. On human-labelled clips of seven
-other broadcasts it finds 61% of the players (`tools/detector_bench.py`; research note
+The student detector (`perception/student.py`) was first distilled on two NBA games; on human-labelled clips of
+seven other broadcasts that model found 61% of the players (`tools/detector_bench.py`; research note
 `docs/research/cross_game_detector.md`). These tools fine-tune it with more varied footage, starting from any of its
-exports:
+exports; main model v2, in the app since 2026-11-03, was made with them (research note §10.8-10.15):
 
 | Step | Command |
 |---|---|
