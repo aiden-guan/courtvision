@@ -42,6 +42,8 @@ def main() -> None:
     parser.add_argument("--weights", type=Path, default=Path("runs/studio/models/nba-student.pt"))
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("courtvision/server/static/nba-student.onnx"))
+    parser.add_argument("--training", default="existing NBA student checkpoint; no new training",
+                        help="how the weights were made, for the manifest (a fine-tune: its recipe and research note)")
     args = parser.parse_args()
     torch.set_num_threads(2)
     checkpoint = torch.load(args.weights, map_location="cpu", weights_only=True)
@@ -91,7 +93,7 @@ def main() -> None:
                 raise RuntimeError("Decoded detections differ from the checkpoint")
         checks.append({"t": at, "max_absolute_error": errors, "balls": len(decoded[0][0]), "people": len(decoded[0][1])})
     cap.release()
-    manifest = {"architecture": "BallPersonNet", "training": "existing NBA student checkpoint; no new training",
+    manifest = {"architecture": "BallPersonNet", "training": args.training,
                 "checkpoint_sha256": hashlib.sha256(args.weights.read_bytes()).hexdigest(),
                 "onnx_sha256": hashlib.sha256(args.output.read_bytes()).hexdigest(),
                 "epoch": checkpoint.get("epoch"), "input": [1, 9, *INPUT_HW], "outputs": list(OUTPUTS),
