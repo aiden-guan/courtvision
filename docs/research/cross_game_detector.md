@@ -750,6 +750,36 @@ against 7). Against the app model, players on the court: Cavaliers @ Warriors +7
 p 5.6e-6). The two trade off: round 4 finds more players and more of the 2017 game's referees there, C leaves more of
 its crowd alone and finds more balls on the NBA.com clips; on the app model's own game C keeps closer to it.
 
+### 10.14 The pipeline with the candidates
+
+Each candidate re-detected on Core ML over both games, then `ball`, `events` (the shirt rule for referees, the
+default again) and `timeline`, against the app model's runs on the same code (Lakers @ Warriors `app-coreml`,
+Cavaliers @ Warriors `app-rerun`); made or missed paired over the shots both found:
+
+| | App model | C | Round 4 (cloud) | A |
+|---|---:|---:|---:|---:|
+| Lakers @ Warriors: team with the ball, timeline (first / second half) | 96.4 % (96.5 / 96.2) | **97.4 %** (98.2 / 96.6) | **97.4 %** (98.2 / 96.6) | 93.3 % (91.2 / 95.6) |
+| the same: changes of possession, precision / recall (195 true) | 0.72 / 0.57 | **0.76 / 0.61** | **0.76 / 0.61** | 0.68 / 0.52 |
+| the same: real shot or not / made or missed | 78.5 / 83.1 % | 78.0 / **84.6 %** | 80.4 / 83.7 % | 81.4 / 83.2 % |
+| the same: made or missed paired with the app model (only it / only the app, p) | | 18 / 15, p 0.73 | 14 / 13, p 1 | |
+| the same: box-score error | 0.209 | **0.197** | 0.215 | |
+| Cavaliers @ Warriors: team with the ball, timeline (first / second half) | **75.8 %** (70.1 / 81.4) | 74.9 % (71.3 / 78.3) | 75.5 % (70.9 / 80.1) | |
+| the same: real shot or not / made or missed | 52.4 / **75.4 %** | 51.9 / 75.0 % | **60.1** / 72.3 % | |
+| the same: made or missed paired with the app model | | 14 / 15, p 1 | 12 / 15, p 0.70 | |
+| the same: box-score error | 0.570 | **0.511** | 0.549 | |
+
+A places the half-time swap of baskets at 2,302 s where the others place it at 2,163-2,176 s, and its first half falls
+to 91.2 %: A does not pass. C and round 4 are within chance of the app model on every pipeline number of both games, and
+both lower the box-score error on both.
+
+**Against the rule of §10.8.** C (and round 4) is better than the app model, beyond chance, on the ball of every set it
+never trained on and on the players on the court of Cavaliers @ Warriors, and within chance on the pipeline. One
+reading of the rule fails it: on the Lakers @ Warriors held-out clips, the app model's own game, C finds 1.1 points
+fewer players on the court, which is significant counting boxes (p 0.014) but not counting clips (2 up, 4 down); the
+rule did not say which. On referees it is not part of the rule but is what the owner asked about: C finds 84 % of the
+held-out Roboflow games' referees (the app model 37 %) and 99 % of Lakers @ Warriors', but 23 % of the 2017 game's
+light-grey-shirted referees (the app model 84 %). The owner decides (§10.15).
+
 ## 11. Referees and the crowd (cloud): plan, fixed before training
 
 The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The
