@@ -1,9 +1,9 @@
 {
   "architecture": "BallPersonNet",
-  "training": "existing NBA student checkpoint; no new training",
-  "checkpoint_sha256": "8bdf229ae53c773e4a5993dc7379b832b7f5ce9e102ca6079c6f4ed1c8c425c4",
-  "onnx_sha256": "43f3a9a3c4fbd0d4e2233fceddd11ab98d5f83ce33e47d5daea6a0ca5a556979",
-  "epoch": 8,
+  "training": "main model v2 (2026-11-03): the previous main model (checkpoint 8bdf229a) fine-tuned, through the round-3 research fine-tune (student-ft-r3), on SportsMOT basketball players (CC BY-NC 4.0; unlabelled people among the players ignored), 3 Roboflow NBA games' players and referees (CC BY 4.0), ball pseudo-labels on 390 BARD clips (NBA footage) and the Lakers @ Warriors teacher's people on the court; research use; docs/research/cross_game_detector.md section 10",
+  "checkpoint_sha256": "1eee0dd1b9f62bf633f6f079cc3f554cfafdd72fd2769e085b72dee4a0323880",
+  "onnx_sha256": "22d33acd8149c1f5f369bb9cc8c2be9b24b20d9fc8553baae4bb8509dbe0e8db",
+  "epoch": null,
   "input": [
     1,
     9,
@@ -25,23 +25,23 @@
     {
       "t": 0.0,
       "max_absolute_error": {
-        "ball_hm": 3.0517578125e-05,
-        "ball_off": 8.642673492431641e-07,
-        "person_hm": 5.7220458984375e-06,
-        "person_wh": 2.86102294921875e-06,
-        "person_off": 7.152557373046875e-07
+        "ball_hm": 1.621246337890625e-05,
+        "ball_off": 8.344650268554688e-07,
+        "person_hm": 4.76837158203125e-06,
+        "person_wh": 2.384185791015625e-06,
+        "person_off": 5.364418029785156e-07
       },
       "balls": 3,
-      "people": 14
+      "people": 12
     },
     {
       "t": 3.0,
       "max_absolute_error": {
-        "ball_hm": 3.4332275390625e-05,
-        "ball_off": 9.238719940185547e-07,
-        "person_hm": 4.76837158203125e-06,
-        "person_wh": 2.6226043701171875e-06,
-        "person_off": 6.556510925292969e-07
+        "ball_hm": 1.71661376953125e-05,
+        "ball_off": 7.748603820800781e-07,
+        "person_hm": 5.7220458984375e-06,
+        "person_wh": 2.1457672119140625e-06,
+        "person_off": 8.046627044677734e-07
       },
       "balls": 3,
       "people": 12
@@ -49,14 +49,14 @@
     {
       "t": 6.0,
       "max_absolute_error": {
-        "ball_hm": 3.0517578125e-05,
+        "ball_hm": 1.9073486328125e-05,
         "ball_off": 8.940696716308594e-07,
-        "person_hm": 4.0531158447265625e-06,
-        "person_wh": 3.0994415283203125e-06,
-        "person_off": 7.152557373046875e-07
+        "person_hm": 6.67572021484375e-06,
+        "person_wh": 2.384185791015625e-06,
+        "person_off": 1.2516975402832031e-06
       },
-      "balls": 5,
-      "people": 11
+      "balls": 4,
+      "people": 8
     }
   ]
 }

@@ -780,6 +780,37 @@ rule did not say which. On referees it is not part of the rule but is what the o
 held-out Roboflow games' referees (the app model 37 %) and 99 % of Lakers @ Warriors', but 23 % of the 2017 game's
 light-grey-shirted referees (the app model 84 %). The owner decides (§10.15).
 
+### 10.15 Main model v2: C in the app
+
+On 2026-11-03 the owner, shown §10.13-10.14 (C beside the app model and round 4, with the two costs: about 1 point
+fewer players on the Lakers @ Warriors held-out clips, and most of the 2017 game's light-grey-shirted referees
+missed), chose C as the new main model. Installed:
+
+* the browser app's `courtvision/server/static/nba-student.onnx` (`tools/export_student_browser.py --training ...`:
+  parity with the checkpoint on 3 inputs of the validation clip within 2e-5; `nba-student.json` and the browser's
+  reference outputs `nba-validation.json` written again; checkpoint sha256 `1eee0dd1…`, ONNX `22d33acd…`);
+* the Studio's `models/nba-student.pt` on the Mac (the previous model, its rim model, shot judge and shot models kept
+  in `models/previous-8bdf229a/`);
+* the Studio's shot models, rim model and shot judge refitted on C's output, as `runs/models/rim/finalize.sh` made them
+  for the previous model: C's timelines with the ball-zone features (`shot_models-zones`), rim clips cut at C's shot
+  candidates, the rim model trained with each game held out (its held-out reads feed the judge) and once on both, the
+  judge fitted on C's events and detections.
+
+After the swap: on the README's ball protocol (`tools/nba_ball_bench.py`, 256 frames of the Lakers @ Warriors
+held-out clips) v2 finds 95.7 % (3.5 % wrong, 0.8 % missed), the first model's figure exactly. The refitted shot judge,
+each game judged by a judge fitted on the other, is right on 84.8 % and 72.0 % of the shots v2's events give (the first
+model's judge 84.0 % and 77.8 % of its own events' shots); over the shots both models' events give (`nba_live_judge.py
+--dump`, matched within 1.5 s) the two judges are level: Lakers @ Warriors 130 against 129 of 154 (p 1), Cavaliers @
+Warriors 56 against 57 of 75 (p 1); within each game 140 against 136 (p 0.48) and 61 against 61. The second game's
+lower figure comes from the 25 shots v2's events add, not from worse calls on the same shots. Its rim model (each
+game held out) calls 67.1 % of real shots right (AUC 0.77), the first one's about 69 %.
+
+Its lineage: the previous main model (checkpoint `8bdf229a…`) → T5 (the cloud's round 3, `student-ft-r3`, ball labels
+by round 2) → C (§10.9's data: SportsMOT players with ignore regions, 3 Roboflow games' players and referees, the ball
+labels of §10.7 by round 2's int8 file, the Lakers @ Warriors teacher's people on the court; 4,000 steps on MPS). It is
+research-use only like the model it replaces, and it carries SportsMOT's non-commercial licence (the owner accepted
+this; `docs/TRAINING.md` §7B).
+
 ## 11. Referees and the crowd (cloud): plan, fixed before training
 
 The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The

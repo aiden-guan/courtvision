@@ -531,8 +531,8 @@ one, `plan_data` treats two folders as one video and leaves out every clip near 
 `courtvision/server/static/nba-student.onnx` (and the Mac's copy of it in the Studio's models folder). Each round fine-tunes
 from the current main model with everything the earlier rounds used; a candidate replaces the main model only when it
 beats it on the fixed held-out tests (`docs/research/cross_game_detector.md` §10), after the owner has seen the numbers.
-Candidates live under `runs/` (git-ignored); `models/research/` keeps the earlier rounds' candidates until what they
-taught is in the main model.
+Candidates live under `runs/` (git-ignored). Main model v2 (2026-11-03, research note §10.15) took in what the
+research rounds taught; their files were retired from `models/research/` to git history.
 
 **Rights.** SportsMOT is CC BY-NC 4.0, so a model fine-tuned on it is for non-commercial use (§1, rule 3), like
 everything trained on NBA footage, the app's own model included. The owner accepted that the app's model carries these

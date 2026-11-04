@@ -4,6 +4,32 @@ Every accuracy and speed measurement the README summarises, in full. Simulator f
 simulator in `courtvision/sim` scored by `courtvision/eval`; NBA figures from two broadcasts scored against the ESPN
 box score and play-by-play (research use, [NBA.md](NBA.md)). Newest first.
 
+## Main model v2 in the app (2026-11-03)
+
+The app's detector (`courtvision/server/static/nba-student.onnx`, the Studio's `models/nba-student.pt`) is now main
+model v2, candidate C of [research note §10.8-10.15](research/cross_game_detector.md): the first model fine-tuned,
+through round 3, on SportsMOT's players (unlabelled people among them ignored), 3 Roboflow NBA games' players and
+referees, ball pseudo-labels on 390 BARD clips and the Lakers @ Warriors teacher's people on the court. Every figure is
+on footage the model never trained on except where marked; paired tests against the first model.
+
+| | First model | Main model v2 | Paired |
+|---|---:|---:|---|
+| Ball, 30 BARD NBA games (1,097 frames, Mac teacher labels) | 84.8 % | **91.4 %** | 84 / 11 frames, p 4.5e-15 |
+| Ball, Cavaliers @ Warriors (606 frames), top / linked | 75.7 / 72.4 % | **79.2 / 78.4 %** | 27 / 6, p 0.00032; 43 / 7, p 2.1e-7 |
+| Ball, Lakers @ Warriors held-out clips, linked (README protocol, 256 frames; the first model's own game) | 95.7 % | 95.7 % | the same rate |
+| 5 held-out Roboflow NBA games: players and referees AP50 / referees found | 0.505 / 37 % | **0.892 / 84 %** | |
+| Cavaliers @ Warriors: players on the court / benches and crowd boxed | 80.2 / 76 % | **84.8 / 30 %** | +4.6 points (clips +1.2 to +8.7) |
+| Cavaliers @ Warriors: referees on the court (light grey shirts, 2017) | **83.6 %** | 23.3 % | |
+| Lakers @ Warriors held-out clips: players / referees on the court (the first model's own game) | **99.0 / 99.1 %** | 97.9 / 98.7 % | -1.1 points (per box p 0.014; over clips -3.9 to +0.4) |
+| Team with the ball, settled live play: Lakers @ Warriors / Cavaliers @ Warriors | 96.4 / 75.8 % | **97.4** / 74.9 % | per half: 98.2 / 96.6 against 96.5 / 96.2; 71.3 / 78.3 against 70.1 / 81.4 |
+| Made or missed, real shots (timeline) | 83.1 / 75.4 % | 84.6 / 75.0 % | 18 / 15 shots, p 0.73; 14 / 15, p 1 |
+| Made or missed with the ball's zones at the rim, Lakers @ Warriors | 88.1 % (earlier code) | **90.3 %** | |
+| Studio shot judge across games (each game by a judge fitted on the other) | 84.0 / 77.8 % | 84.8 / 72.0 % | over the shots both see: 130 / 129 of 154 and 56 / 57 of 75, p 1 and 1 |
+| Box-score error from the timeline | 0.209 / 0.570 | **0.197 / 0.511** | |
+
+The Studio's rim model, shot judge and shot models were refitted on v2's output (the first model's are kept in
+`models/previous-8bdf229a/` of its data folder). Court registration reads no detections and is unchanged.
+
 ## The detector fine-tunes on the README's two games (2026-11-03, M3 Pro)
 
 The published student (the app model) against the round-2 research fine-tune (T2, `models/research/`) where the app

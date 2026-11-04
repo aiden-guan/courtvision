@@ -139,28 +139,40 @@ stage: [docs/NBA.md](docs/NBA.md).
 
 Two games so far: Lakers @ Warriors (2024-12-25, ESPN, 1080p) and Cavaliers @ Warriors (2017 Finals Game 5, ABC,
 720p). Every number below is from the video alone (no scorebug evidence) and **held out**: fitted on one half and
-scored on the other, or fitted on one game and scored on the other.
+scored on the other, or fitted on one game and scored on the other. Since 2026-11-03 the app runs **main model v2** of
+the detector (below); the figures are v2's, with the first model's on the same code in brackets.
 
 | What | Result | Held out how |
 |---|---|---|
-| Team with the ball, settled live play | **96.2%** (event engine alone 73.6%); second game **75.8%** | half vs half, per game |
-| Made or missed, real shots | **84.8%** from the video, **87.6%** adding TypeSafe Jev on rim crops | half vs half, Lakers @ Warriors |
-| Made or missed, Studio shot judge across games | **84.0% / 77.8%** vs the engine's own 83.3% / 68.9% | each game judged by models fitted on the other |
-| Studio made-shot F1 | **0.32 → 0.81** after moving the call from the scorebug to the rim | a 10-minute stretch the judge was not fitted on |
-| Ball found within 15 px (linked ball path) | **95.7%** (RF-DETR Nano starter: 25.8%) | 256 labelled held-out frames |
+| Team with the ball, settled live play | **97.4%** (96.4%); second game **74.9%** (75.8%) | half vs half, per game |
+| Made or missed, real shots | **84.6%** (83.1%) from the video; **90.3%** with the ball's zones at the rim (first model 88.1%, earlier code); 87.6% adding TypeSafe Jev (first model) | half vs half, Lakers @ Warriors |
+| Made or missed, Studio shot judge across games | **84.8% / 72.0%** (84.0% / 77.8%); on the shots both models' events give, the same as the first model's | each game judged by models fitted on the other |
+| Studio made-shot F1 | **0.32 → 0.81** after moving the call from the scorebug to the rim (first model) | a 10-minute stretch the judge was not fitted on |
+| Ball found within 15 px (linked ball path) | **95.7%** (95.7%; RF-DETR Nano starter: 25.8%) | 256 labelled held-out frames |
+| Box-score error from the timeline | **0.197 / 0.511** (0.209 / 0.570) | the two games |
 | Court registered, no clicks | 22,160 of 26,103 first-quarter frames tracking; 3,726 without the court (out of view or not found) | Lakers @ Warriors Q1 |
 
 Gains shrink across games, and the second game exposes failures the first did not (see [Limitations](#limitations)).
 More, varied games are the main lever. All tables, including the simulator rounds:
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
+**Main model v2** (2026-11-03, [details](docs/research/cross_game_detector.md#10-on-the-owners-mac-m3-pro-the-readmes-two-games)).
+The app's detector is now the first model fine-tuned on everything the research rounds below used: SportsMOT's players
+in seven broadcasts, three human-labelled NBA games with their referees, ball labels on 390 NBA clips and the Lakers @
+Warriors game's people on the court. It replaced the first model only after beating it on footage neither trained on
+(the ball on 30 NBA games 84.8% to 91.4%; the 2017 game's linked ball 72.4% to 78.4%; its players on the court 80.2% to
+84.8%; referees on 2024-25 footage 37% to 84%; the 2017 game's benches and crowd boxed 76% to 30%) with the pipeline
+within chance on both games. It misses most of the 2017 game's light-grey-shirted referees (84% to 23%) and finds about
+1 point fewer players on the Lakers game. Like the first model it is for research use; it also carries SportsMOT's
+non-commercial licence.
+
 **The detector beyond its two games** (2026-11-03, [details](docs/research/cross_game_detector.md)). Footage it never
 trained on, scored against human player boxes (SportsMOT basketball) and teacher-labelled NBA ball positions (BARD,
 2024-25 season) and human-labelled NBA frames (Roboflow Universe); the datasets are research-only, and so are the
-fine-tuned weights: published for research in [models/research](models/research/README.md) (sources and terms there),
-not shipped in the app:
+fine-tuned weights. These research rounds' candidates were folded into main model v2 above and retired to git history
+([models/research](models/research/README.md): sources, terms and how to recover them); the first model's figures:
 
-| What | Published detector | Research fine-tune | Held out how |
+| What | First model | Research fine-tune | Held out how |
 |---|---|---|---|
 | Referees found, 5 NBA games (single frames; 506 labelled) | 37% | **84%** (round 4; round 3: 5%) | human labels, games never trained on |
 | Players, 5 NBA games (single frames), AP50 | 0.396 | **0.870** (round 3) | human labels, games never trained on |

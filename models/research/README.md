@@ -11,15 +11,20 @@ browser/CPU ONNX interface of the app's `courtvision/server/static/nba-student.o
 `courtvision/server/static/nba-student.onnx`. Every round starts from the current main model and is checked on the
 same held-out tests (research note §10.1: the README's two games, the 30 BARD check games, the 5 held-out Roboflow
 games, and the full pipeline); a candidate replaces the main model only when it is better somewhere and worse nowhere
-that matters, after the owner has seen the numbers. The files below are candidates of earlier rounds, kept until what
-they taught is folded into the main model; then they retire to git history, their results stay in the research note.
-New candidates are not added here.
+that matters, after the owner has seen the numbers.
+
+**Main model v2 is in the app** (2026-11-03, research note §10.13-10.15): the first model fine-tuned, through round 3,
+on everything the rounds below used, with round 4's referee and crowd changes and the Lakers @ Warriors game's people on
+the court. What the three rounds below taught is in it: round 2's model made its ball labels, it started from round 3,
+and round 4's two changes are in its data. So their files were **retired from the repo**; the table below keeps their
+hashes and results, and the files are in git history (the last commit holding them: `b24f936`; e.g. `git show
+b24f936:models/research/student-ft-r3.onnx > student-ft-r3.onnx`). New candidates live under `runs/`, not here.
 
 **Research and evaluation only** (see [Sources and terms](#sources-and-terms)).
 
-| File | What | Bytes | sha256 |
+| Retired file (in `b24f936`) | What | Bytes | sha256 |
 |---|---|---:|---|
-| `student-ft-r4.onnx` | Round 4 (R4b): players **and referees**, the crowd left out; the one to use | 47,342,538 | `331947a27495999a9cf60cf5bbdd9433503654da13c28daead9a4f442ecb455b` |
+| `student-ft-r4.onnx` | Round 4 (R4b): players **and referees**, the crowd left out | 47,342,538 | `331947a27495999a9cf60cf5bbdd9433503654da13c28daead9a4f442ecb455b` |
 | `student-ft-r4-int8.onnx` | the same, int8 (QDQ) | 12,651,412 | `f381ad2d8374392c7b7e9c92375c90f9015dd561a91de481a83671baf539f9e4` |
 | `student-ft-r3.onnx` | Round 3 (T5): players only (referees left out like the crowd) | 47,342,538 | `2c647616b14486f8e4771bf350e42abd2f6a29d1cf2da47eb78f48f1f1a38832` |
 | `student-ft-r3-int8.onnx` | the same, int8 (QDQ) | 12,651,414 | `1883651e2c6362e28787718570a3d135699f66ab9b680b0f88a96eb0fbefb2a7` |

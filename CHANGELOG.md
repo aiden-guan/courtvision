@@ -5,6 +5,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Main model v2: one detector, improved in place
+
+- **The app's detector is main model v2** (the owner's decision after seeing the numbers; research note §10.8-10.15,
+  [BENCHMARKS.md](docs/BENCHMARKS.md)): the first model fine-tuned on everything the research rounds used (SportsMOT's
+  players in 7 broadcasts, 3 human-labelled NBA games with their referees, ball labels on 390 NBA clips, the Lakers @
+  Warriors game's people on the court). On footage it never trained on: the ball on 30 NBA games 84.8% to 91.4%, the
+  2017 game's linked ball 72.4% to 78.4% and its players on the court 80.2% to 84.8%, referees on 2024-25 footage 37%
+  to 84%, the 2017 game's benches and crowd boxed 76% to 30%; the pipeline within chance on both games (team with the
+  ball 97.4% and 74.9%, made or missed 84.6% and 75.0%) and the box-score error lower on both (0.197, 0.511). Costs:
+  most of the 2017 game's light-grey-shirted referees missed (84% to 23%), and about 1 point fewer players on the Lakers
+  game. The browser model, its manifest and reference check, the Studio's weights and its refitted rim model, shot judge
+  and shot models are installed; the first model's files are kept beside them. Research use; the model carries
+  SportsMOT's non-commercial licence.
+- **One main model**: each round starts from the current main model and replaces it only after beating it on fixed
+  held-out tests. The research rounds' files (`models/research/student-ft-r2`, `-r3`, `-r4`) were folded into v2 and
+  retired to git history.
+- **Referees**: the pipeline, the Studio and the browser app share one check (`nba.referee.referee_calls`), the shirt
+  rule by default: the learned colour check calls the Cavaliers' black jerseys referees and takes the 2017 game's
+  possession timeline from 75.8% to 38.8% (labelled by eye: research note §10.10-10.12). It stays an option
+  (`nba_analyze.py events --referees learned|guarded`, `--referee-model`); a refit with SportsMOT's players as
+  non-referees improves it on 8 NBA games (F1 0.847 to 0.866) but does not pass the 2017 game.
+- **Tools**: `student_finetune.py court-people` (a teacher folder's people on the court kept, the crowd as background),
+  `fetch_data.py roboflow` (the exact held-out sets of the cloud round) and `--whole`, `referee_classifier.py --players`,
+  `nba_live_judge.py --ball-track --clips --dump`, `nba_rim_clips.py --ball-track`, `export_student_browser.py
+  --training`.
+
+---
+
 ## [Unreleased] — The detector fine-tunes on the README's two games; fine-tuning on a Mac
 
 Measured on 2026-11-03 on the owner's M3 Pro with the local footage; [research note §10](docs/research/cross_game_detector.md),
