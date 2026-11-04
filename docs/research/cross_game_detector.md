@@ -730,6 +730,26 @@ the best ball of any model on footage none of them saw. It misses most of the 20
 shirts differ from the dark shirts of every referee it was taught (2024-25 footage), and on the app model's own game it
 finds about 1 point fewer players. The pipeline on both games decides the rest (§10.14).
 
+**Round 4 (the cloud's `student-ft-r4`, §11.2) on the same tests**, as the cloud asked, against the app model and C:
+
+| | App model | Round 4 | C |
+|---|---:|---:|---:|
+| Ball, Lakers @ Warriors held out, top / linked | 95.5 / 95.5 % | 95.1 / 95.1 % | 95.1 / 95.1 % |
+| Ball, Cavaliers @ Warriors, top / linked | 75.7 / 72.4 % | 78.2 / **79.9 %** | **79.2** / 78.4 % |
+| Ball, BARD check games | 84.8 % | 90.2 % | **91.4 %** |
+| Roboflow 5 games: players and referees AP50 / referees found | 0.505 / 187 | 0.881 / 424 | **0.892 / 426** |
+| the same: boxes on nobody labelled, a frame (`--coco`, after 9bc61c4) | 0.09 | 0.17 | 0.19 |
+| Lakers @ Warriors: players / referees on the court | **99.0 / 99.1 %** | 96.6 / 94.8 % | 97.9 / 98.7 % |
+| Cavaliers @ Warriors: players / referees on the court | 80.2 / **83.6 %** | **87.3** / 49.1 % | 84.8 / 23.3 % |
+| Cavaliers @ Warriors: off the court (lower is better) | 76.1 % | 50.0 % | **29.6 %** |
+
+Round 4 against C, paired: the Cavaliers @ Warriors linked ball 12 frames to 3 (p 0.035), the BARD ball 15 to 29 (p
+0.049), the Cavaliers @ Warriors players on the court +2.5 points for round 4 (over the clips +0.8 to +4.0; 18 clips up
+against 7). Against the app model, players on the court: Cavaliers @ Warriors +7.1 points for round 4 (+4.3 to +10.6;
+24 clips against 4, p 0.00018), Lakers @ Warriors -2.4 (over the 9 clips -5.4 to 0.0; per box 9 against 41,
+p 5.6e-6). The two trade off: round 4 finds more players and more of the 2017 game's referees there, C leaves more of
+its crowd alone and finds more balls on the NBA.com clips; on the app model's own game C keeps closer to it.
+
 ## 11. Referees and the crowd (cloud): plan, fixed before training
 
 The owner, watching the app: people in the crowd are often boxed as players, and referees could be found better. The
