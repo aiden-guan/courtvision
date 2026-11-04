@@ -4,21 +4,19 @@
   "duration_s": 29.996633333333335,
   "frames": 899,
   "fps": 29.97002997002997,
-  "analysis_tag": "full",
+  "analysis_tag": "main-c",
   "detector": {
-    "adopted": true,
-    "note": "declared by nba_loop.py adopt: made by these weights, over the whole game",
-    "student": "s001",
-    "time": "2026-10-29T10:13:00+00:00",
-    "weights": "runs/models/student/s001/best.pt",
-    "weights_sha256": "8bdf229ae53c773e4a5993dc7379b832b7f5ce9e102ca6079c6f4ed1c8c425c4"
+    "det_dir": "detections-main-c",
+    "weights": "runs/models/main-c/last.pt",
+    "weights_sha256": "1eee0dd1b9f62bf633f6f079cc3f554cfafdd72fd2769e085b72dee4a0323880",
+    "model": "main model v2 (docs/research/cross_game_detector.md section 10.15)"
   },
-  "video": "showcase/media/nba-analysis-d3cba22fd375.mp4",
-  "video_sha256": "d3cba22fd3754f2a9a355942fc286a2f7b643d6902d4f3b664c7bbd961b38b39",
-  "poster": "showcase/media/nba-analysis-d3cba22fd375.webp",
+  "video": "showcase/media/nba-analysis-082b2ae643a4.mp4",
+  "video_sha256": "082b2ae643a4e14bf8c6a40adfd1bbf674d4186665134a14d05cce35cb2a02e2",
+  "poster": "showcase/media/nba-analysis-082b2ae643a4.webp",
   "audio": false,
   "detection_caches": {
-    "runs/nba/2024-12-25-LAL-GSW/detections-full/0017795-0035581.npz": "e0345dfd61e631fa92c118d2035b8d6424cb6dc67657f3225126c3741e86d608"
+    "runs/nba/2024-12-25-LAL-GSW/detections-main-c/0017795-0035581.npz": "4bf4dcac825b6b0e322aa2fca9f866e1f761a072498a0d58e1de632301f6ddfd"
   },
-  "timeline_sha256": "2f65b12574248980a696941e179191bff88921d68e15f423a786f7e96a9ebd34"
+  "timeline_sha256": "94a3194882b42acea2d37baee65797f614591f7c4a579650e0fc762638868233"
 }

@@ -56,6 +56,10 @@ def main() -> None:
     parser.add_argument("--start", type=float, default=981)
     parser.add_argument("--seconds", type=float, default=30)
     parser.add_argument("--out", type=Path, default=Path("showcase/media"))
+    parser.add_argument("--det-dir", default="detections-full", help="the detection cache folder of the run's detector")
+    parser.add_argument("--ball-track", default="ball_track.json", help="the ball track of that detector")
+    parser.add_argument("--weights", type=Path, default=None,
+                        help="the detector's weights, recorded with their sha256 when the cache has no loop.json")
     args = parser.parse_args()
     if not 0 < args.seconds <= 30 or args.start < 0:
         parser.error("choose a positive recording up to 30 seconds and a non-negative start")
@@ -67,7 +71,7 @@ def main() -> None:
     first, stop = camera.frame_at(args.start), camera.frame_at(args.start + args.seconds)
     cache = DetectionCache()
     cache_paths = []
-    for path in sorted((args.game / "detections-full").glob("*.npz")):
+    for path in sorted((args.game / args.det_dir).glob("*.npz")):
         lower, upper = [int(v) for v in path.stem.split("-")]
         if lower < stop and upper > first - round(camera.fps):
             cache.merge(DetectionCache.load(path))
@@ -78,7 +82,7 @@ def main() -> None:
     tracker = ByteTracker(TrackerConfig(high_thresh=.3, low_thresh=.1, new_track_thresh=.35))
     # BallTrack owns its storage format; never infer a path from raw candidates.
     from courtvision.nba.analyze import BallTrack
-    ball_path = BallTrack.load(args.game / "ball_track.json").path
+    ball_path = BallTrack.load(args.game / args.ball_track).path
     width, height = 1280, 720
     scale = width / camera.image_size[0]
     if round(camera.image_size[1] * scale) != height:
@@ -156,12 +160,23 @@ def main() -> None:
         raise SystemExit("could not write the recording poster")
     provenance = {"game": game.get("title"), "source_start_s": first / camera.fps,
                   "duration_s": count / camera.fps, "frames": count, "fps": camera.fps,
-                  "analysis_tag": args.tag, "detector": json.loads((args.game / "detections-full/loop.json").read_text()),
+                  "analysis_tag": args.tag, "detector": detector_provenance(args),
                   "video": str(video), "video_sha256": digest, "poster": str(poster_path),
                   "audio": False, "detection_caches": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in cache_paths},
                   "timeline_sha256": hashlib.sha256((args.game / "runs" / args.tag / "timeline.jsonl").read_bytes()).hexdigest()}
     Path("docs/showcase-recording.json").write_text(json.dumps(provenance, indent=2) + "\n")
     print(json.dumps(provenance, indent=2))
+
+
+def detector_provenance(args: argparse.Namespace) -> dict:
+    """Which weights made the cache: its ``loop.json`` (``nba_loop.py adopt``), else ``--weights`` and their sha256."""
+    loop = args.game / args.det_dir / "loop.json"
+    if loop.is_file():
+        return json.loads(loop.read_text())
+    if args.weights is None:
+        raise SystemExit(f"{args.game / args.det_dir} has no loop.json: name the detector with --weights")
+    return {"det_dir": args.det_dir, "weights": str(args.weights),
+            "weights_sha256": hashlib.sha256(args.weights.read_bytes()).hexdigest()}
 
 
 if __name__ == "__main__":
