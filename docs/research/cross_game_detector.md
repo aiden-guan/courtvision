@@ -617,3 +617,37 @@ T5 learnt to work without motion and averaging it with models that did not undoe
 The new measures of §11 on these frames also show what the fine-tunes did to the referees: of the 506 labelled
 referees, T5 boxes 26 and T4 33 (T5 halfway back: 103). The detections that match nobody labelled (the crowd, benches,
 coaches) are 7.2 % of T5's (0.60 a frame) and 13.1 % of T4's.
+
+### 11.2 Results: the referees back in the person head
+
+`mark-ignore` (with the referee check) marked 6,920 ignore boxes on 3,506 of SportsMOT's 4,125 `train` samples and
+4,277 on 2,935 of its 4,180 `val` samples, about two people a frame. Both runs are T5's recipe (§9) with the changes
+of §11; each was scored once (`runs/bench/coco_heldout_r7.json`, `ball_check12_r7.json`).
+
+**The 5 held-out Roboflow games** (211 single frames; 1,961 players and 506 referees labelled; detections at 0.3,
+IoU 0.5). "On nobody" counts the detections that overlap no labelled person at IoU 0.1: the crowd, benches and staff
+(most unmatched detections are loose boxes on a labelled person instead):
+
+| Model | Referees found | Players and referees: AP50 / recall / precision | Detections on nobody (per frame) | Ball |
+|---|---:|---:|---:|---:|
+| Published student | 187 (37.0 %) | 0.505 / 0.391 / 0.857 | 18 (0.09) | 22.7 % |
+| T2 | 84 (16.6 %) | 0.687 / 0.617 / 0.868 | 5 (0.02) | 34.5 % |
+| T5 | 26 (5.1 %) | 0.768 / 0.663 / 0.928 | 12 (0.06) | 68.0 % |
+| R4a: + Roboflow referees as people | **424 (83.8 %)** | **0.881** / **0.831** / 0.912 | 41 (0.19) | 63.9 % |
+| R4b: + SportsMOT ignore regions | **424 (83.8 %)** | **0.881** / **0.828** / 0.909 | 35 (0.17) | 66.5 % |
+
+On R4b's 424 matched referees the learned check of §11.1 calls 407 referees (the shirt rule 332) and calls 41 of its
+1,618 matched players referees (2.5 %): with the pipeline's check, 80 % of the labelled referees are boxed and named.
+Players-only AP50 falls (T5 0.870, R4a 0.752, R4b 0.732) because that measure counts every referee box as a false
+player. The published student's low numbers here are those of single frames (it leans on motion: §9); on video it
+boxes 99 % of the referees on the court and 76 % of the people off it (§10.2).
+
+The price is a few more boxes on nobody: 0.17 a frame for R4b against T5's 0.06 (35 against 12 over 211 frames).
+Single-frame ball: T5 against R4a 10 frames to 2 (p 0.039), against R4b 9 to 6 (p 0.61). **In video** (the 1,153
+BARD frames) the ball does not move: T5 89.5 %, R4a 89.3 % (11 / 13, p 0.84), R4b 89.25 % (7 / 10, p 0.63).
+
+R4a and R4b are alike on these NBA games, where the Roboflow referee labels already teach the referees; the ignore
+regions keep SportsMOT's NCAA and FIBA referees from being taught as background, which no held-out set here can show
+(both runs train on every SportsMOT broadcast). R4b is kept: the same referees, a few fewer boxes on nobody, and its
+single-frame ball within chance of T5's. Not yet measured: what it boxes off the court on video, the owner's complaint,
+which the README's two games can answer (§10.2's table).
