@@ -48,19 +48,21 @@ NBA = Path("runs/nba")
 
 
 def game_rows(root: Path, tag: str, det_dir: str, min_score: float,
-              rim: str | None = None) -> list[tuple[dict, bool, float]]:
+              rim: str | None = None, ball_track: str = "ball_track.json",
+              clips: str = "rim_clips") -> list[tuple[dict, bool, float]]:
     """(features, made, time) of each engine result the play-by-play matches to a real shot; ``rim``: the name of the
-    rim model's held-out predictions to read ``CNN_FEATURES`` from."""
+    rim model's held-out predictions to read ``CNN_FEATURES`` from (in the game's ``clips`` folder); ``ball_track``:
+    the ball track in the game folder (``nba_analyze.py --ball-track``: another detector's)."""
     oof = {}
     if rim:
-        for line in (root / "rim_clips" / f"oof_{rim}.jsonl").open():
+        for line in (root / clips / f"oof_{rim}.jsonl").open():
             r = json.loads(line)
             oof[r["key"]] = r
     _, camera = load_game(root)
     court = court_for("nba")
     folder = next((d for d in (det_dir, "detections-full", "detections") if (root / d).is_dir()), det_dir)
     cache = load_cache(root, folder)
-    ball = BallTrack.load(root / "ball_track.json")
+    ball = BallTrack.load(root / ball_track)
     path = {f: (p[0], p[1]) for f, p in ball.path.items()}
     events = [Event.from_dict(json.loads(line)) for line in (root / "runs" / tag / "events.jsonl").open()]
     events = [e for e in latest_revisions(events) if e.status is not EventStatus.RETRACTED]
@@ -94,16 +96,21 @@ def main() -> int:
     ap.add_argument("--games", required=True)
     ap.add_argument("--tag", required=True)
     ap.add_argument("--det-dir", default="detections")
+    ap.add_argument("--ball-track", default="ball_track.json", help="the ball track in each game folder")
+    ap.add_argument("--clips", default="rim_clips", help="each game's rim clips folder (with --rim)")
     ap.add_argument("--min-score", type=float, default=0.08)
     ap.add_argument("--l2", type=float, default=1.0)
     ap.add_argument("--out", default="runs/models/rim/live_judge.json")
     ap.add_argument("--rim", default=None, help="the rim model's held-out predictions to read (oof_<name>.jsonl)")
     ap.add_argument("--rim-model", default=None, help="the rim model's weights the judge runs (with --rim)")
+    ap.add_argument("--dump", default=None, help="write every shot's held-out calls here (JSON lines)")
     args = ap.parse_args()
     games = [g.strip() for g in args.games.split(",") if g.strip()]
-    data = {g: game_rows(NBA / g, args.tag, args.det_dir, args.min_score, args.rim) for g in games}
+    data = {g: game_rows(NBA / g, args.tag, args.det_dir, args.min_score, args.rim, args.ball_track, args.clips)
+            for g in games}
     names = JUDGE_FEATURES + (CNN_FEATURES if args.rim else ())
     report: dict = {}
+    calls: list[dict] = []  # every shot's held-out calls (--dump), to pair two judges over the shots both see
     for g, rows in data.items():
         mid = float(np.median([t for _, _, t in rows]))
         right, crossed = [], []
@@ -113,12 +120,16 @@ def main() -> int:
             m = mk.Logistic.fit([f for f, _, _ in train], [y for _, y, _ in train], names, args.l2)
             right += [(m.p(f) >= 0.5) == y for f, y, _ in test]
             crossed += [bool(f["crossed_inside"]) == y for f, y, _ in test]
+            calls += [{"game": g, "t": round(t, 3), "made": bool(y), "halves": bool(m.p(f) >= 0.5)} for f, y, t in test]
         report[g] = {"shots": len(rows), "made": int(sum(y for _, y, _ in rows)),
                      "halves": round(float(np.mean(right)), 4), "engine_crossed_inside": round(float(np.mean(crossed)), 4)}
         if len(games) > 1:
             others = [r for h, rs in data.items() if h != g for r in rs]
             m = mk.Logistic.fit([f for f, _, _ in others], [y for _, y, _ in others], names, args.l2)
             report[g]["other_games"] = round(score(rows, m), 4)
+            by_t = {(c["game"], c["t"]): c for c in calls}
+            for f, y, t in rows:
+                by_t[(g, round(t, 3))]["other_games"] = bool(m.p(f) >= 0.5)
     allrows = [r for rs in data.values() for r in rs]
     model = mk.Logistic.fit([f for f, _, _ in allrows], [y for _, y, _ in allrows], names, args.l2)
     doc = {"made": model.to_dict(), "min_score": args.min_score, "fitted_on": games, "tag": args.tag,
@@ -128,6 +139,8 @@ def main() -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, indent=1))
+    if args.dump:
+        Path(args.dump).write_text("".join(json.dumps(c) + "\n" for c in sorted(calls, key=lambda c: (c["game"], c["t"]))))
     print(json.dumps(report, indent=1))
     print(f"fitted on {len(allrows)} shots of {len(games)} game(s) -> {out}")
     return 0

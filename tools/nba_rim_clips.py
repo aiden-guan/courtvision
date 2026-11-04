@@ -63,6 +63,7 @@ def main() -> int:
     ap.add_argument("--clear-s", type=float, default=4.0, help="a random clip has no play-by-play shot this near")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="rim_clips")
+    ap.add_argument("--ball-track", default="ball_track.json", help="the ball track in the game folder")
     args = ap.parse_args()
     root = Path(args.root)
     t0 = time.time()
@@ -70,7 +71,7 @@ def main() -> int:
     court = court_for("nba")
     events = [Event.from_dict(json.loads(line)) for line in (root / "runs" / args.tag / "events.jsonl").open()]
     events = [e for e in latest_revisions(events) if e.status is not EventStatus.RETRACTED]
-    ball = BallTrack.load(root / "ball_track.json")
+    ball = BallTrack.load(root / args.ball_track)
     path = {f: (p[0], p[1]) for f, p in ball.path.items()}
     shots = truth_shots(truth(root)[1])
     attack = tlm.attack_map(events, PlayDirection.from_camera(camera))
