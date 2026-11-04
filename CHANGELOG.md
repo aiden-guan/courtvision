@@ -38,6 +38,11 @@ tables in [BENCHMARKS.md](docs/BENCHMARKS.md).
   1.6 ms a frame of 12 people. `tools/referee_classifier.py` fits and checks it.
 - **Referees are no longer shown as players in the browser app**: it applies the same check, keeps referees out of
   both teams and draws them as grey "Referee" boxes; the Studio's student detector does too (`StudentConfig(referees=True)`).
+- **A research fine-tune that boxes the referees and leaves the crowd alone** (`models/research/student-ft-r4`, fp32
+  and int8): the Roboflow referees count as people, and SportsMOT's unlabelled referees are left out of the person loss
+  (`mark-ignore`). On 5 held-out NBA games it finds **84%** of 506 referees (round 3: 5%; the app model on single
+  frames 37%), players-and-referees AP50 0.768 to **0.881**, at 0.17 boxes on nobody a frame (round 3: 0.06); the ball in
+  video stays at 89.25% (p 0.63). What it boxes off the court on video is not yet measured.
 - `detector_bench.py --coco` reports referees found, detections that match nobody labelled (the crowd, benches) and
   both referee checks. The README's linked ball protocol on 30 unseen NBA games: 81.9% (published) to 91.6% (T5).
 - `student_finetune.py prep-coco --referees` and `mark-ignore` (SportsMOT people among the players left out of the

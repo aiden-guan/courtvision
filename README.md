@@ -162,6 +162,7 @@ not shipped in the app:
 
 | What | Published detector | Research fine-tune | Held out how |
 |---|---|---|---|
+| Referees found, 5 NBA games (single frames; 506 labelled) | 37% | **84%** (round 4; round 3: 5%) | human labels, games never trained on |
 | Players, 5 NBA games (single frames), AP50 | 0.396 | **0.870** (round 3) | human labels, games never trained on |
 | Ball in those frames, within 15 px | 22.7% | **68.0%** (round 3) | human labels; only round 3 trained on still frames |
 | Ball's top candidate within 15 px, 30 NBA games in video (1,153 frames) | 81.7% | **89.5%** (round 3; round 2 89.1%) | teacher labels, games never trained on |
