@@ -54,6 +54,15 @@ class _PreparedBroadcast(BroadcastPerception):
 
 
 class BrowserPipeline:
+    # Until the court tracker has started, its start (a camera search near the earliest view's camera: about 3 s of
+    # CPU at 960 px when it fails) is tried on every one of the clip's first START_ALL_FRAMES frames, then on each shot
+    # boundary (the game camera comes back on a cut) and every START_EVERY frames. On dim or textured floors a start
+    # passes on a lucky frame (a BARD clip whose only start in 196 frames came at frame 21 never started when tried
+    # every fifth frame), and every start of the 38 calibrated BARD clips measured came by frame 86; after that, a
+    # clip whose tracker never starts no longer pays a search a frame.
+    START_ALL_FRAMES = 90
+    START_EVERY = 5
+
     def __init__(self):
         self.court = court_for("nba")
         self.center = None
@@ -68,17 +77,27 @@ class BrowserPipeline:
         self.frame_idx = -1
         self.t = 0.
         self.gate = None
+        self._next_start = 0  # the frame of the next try to start the court tracker (``START_EVERY``)
 
     def calibrate(self, frames, width, height, progress=None):
+        """``frames`` as nba-clip.js samples them: six views ``step`` apart from the clip's start, then (optional)
+        the views between them, searched only when the six do not find the camera (``estimate_center(more=)``)."""
         images = [image_rgba(f, width, height) for f in frames]
-        self.center, cameras = estimate_center(images, self.court, progress=progress)
-        self.initial = next((cam for cam in cameras if cam is not None), None)
+        views, between = images[:6], images[6:]
+        self.center, cameras = estimate_center(views, self.court, progress=progress, more=between)
+        # the tracker starts on the clip's first frame: the camera of the earliest view (view i at i * step, the one
+        # after it at (i + 1/2) * step)
+        order = sorted(range(len(cameras)), key=lambda k: k if k < len(views) else k - len(views) + .5)
+        self.initial = next((cameras[k] for k in order if cameras[k] is not None), None)
         return json.dumps({"calibrated": self.center is not None and self.initial is not None})
 
     def prepare(self, rgba, width, height, frame_idx, t):
         self.image = image_rgba(rgba, width, height)
         self.frame_idx, self.t = int(frame_idx), float(t)
-        if self.pipeline is None and self.center is not None and self.initial is not None:
+        cut = self.pipeline is None and self.cuts.update(self.image)
+        if (self.pipeline is None and self.center is not None and self.initial is not None
+                and (cut or self.frame_idx < self.START_ALL_FRAMES or self.frame_idx >= self._next_start)):
+            self._next_start = self.frame_idx + self.START_EVERY
             auto = BroadcastCourtTracker(self.court, (width, height), self.center)
             auto.reset(self.initial)
             fix = auto.update(self.image, cut=True)
@@ -95,7 +114,7 @@ class BrowserPipeline:
             self.pipeline.prepared = self.gate
             if self.gate.cut or not self.gate.live:
                 self.history.clear()
-        elif self.cuts.update(self.image):
+        elif cut:
             self.history.clear(); self.preview.reset(); self.ball.reset()
         if self.gate is not None and not self.gate.live:
             current = preprocess_frames([self.image])

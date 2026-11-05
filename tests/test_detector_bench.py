@@ -117,7 +117,12 @@ def test_coco_bench_scores_players_people_and_ball(tmp_path: Path) -> None:
     assert b["frames"] == 1 and b["hit_rate"] == pytest.approx(1.0)
     assert b["no_ball_frames"] == 1 and b["false_alarm_rate"] == pytest.approx(1.0)
     # the referee found on frame 1; frame 2 labels nobody, so both of its detections are "other" (crowd, benches)
-    assert out["referees"] == {"n_truth": 1, "found": 1, "recall": pytest.approx(1.0)}
+    assert out["referees"] == {"n_truth": 1, "found": 1, "recall": pytest.approx(1.0),
+                               "vs_first": {"only_first": 0, "only_second": 0, "p_value": 1.0}}
+    # per labelled person (the player, then the referee of frame 1), found or not: for paired tests between models
+    assert out["found"]["hits"] == [1, 1] and out["found"]["is_referee"] == [0, 1]
+    assert (out["found"]["players"], out["found"]["players_truth"]) == (1, 1)
+    assert out["other"]["on_nobody_frames"] == [0, 2]
     assert out["other"]["detections"] == 2 and out["other"]["share"] == pytest.approx(0.5)
     assert out["other"]["per_frame"] == pytest.approx(1.0)
     assert out["other"]["on_nobody"] == 2  # frame 2 labels nobody, so both of its boxes are on nobody

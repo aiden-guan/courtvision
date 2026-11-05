@@ -5,6 +5,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — The browser finds the court on more NBA.com clips
+
+- **Court setup on dim or textured floors** (`perception/broadcast_court.estimate_center`, the court fit of the
+  browser app): a camera fit of 0.10-0.15 (coverage x explained lines; the tracker's own re-acquisition bar) now
+  counts when at least two such fits agree on one camera centre inside the prior's camera box
+  (`court_search.center_in_box`), each still fitting there; and when the six views show a game view but too few of
+  them fit, the six views between them are searched too, only until the centre is found (`more=`; `nba-clip.js`
+  sends twelve views, `runtime.BrowserPipeline.calibrate` starts the tracker from the earliest one found). On 720p
+  NBA.com clips the search on zoomed views of such floors hits or misses from one view to the next, and right fits
+  score below the old bar of 0.15. The browser's procedure on one BARD clip per game (the first file name): the
+  camera found on 18 of 30 training clips (was 14), live frames 51.5% (41.5%); on 29 held-out games, measured once,
+  20 of 29 (was 16), live frames 57.6% (51.9%). The drawn courts of the newly fitted clips lie on the painted lines;
+  no false fit was seen. Clips that two full-quality fits already fix, the tracker and the desktop Studio
+  (`weak_quality=None`: its centre is saved for the whole game) are unchanged.
+- **The browser's tracker start** (`runtime.BrowserPipeline.prepare`): until the court tracker has started, its start
+  (a camera search, about 2.8 s of CPU at 960 px when it fails) is tried on every frame of the clip's first 90, as
+  before, then only on shot boundaries and every fifth frame, so a clip whose tracker never starts no longer pays a
+  search a frame. Trying every fifth frame from the start was tried first and dropped: on dim floors a start passes on
+  a lucky frame, and a held-out clip whose only start came at frame 21 (live share 0.20) never started. Every start of
+  the 38 calibrated clips measured came by frame 86, so they run as before. Next: start from the calibration views'
+  own cameras at their frames, which needs no search.
+- **`detector_bench.py --coco`** keeps each labelled person's found-or-not and each frame's boxes on nobody, with
+  paired tests against the first model (exact McNemar for the referees and players found, a sign test per frame for
+  boxes on nobody), and writes its JSON before printing.
+- **TRAINING §7B**: on Linux with autogroups, `nice` does not protect a training run from other sessions' jobs; set
+  `/proc/<pid>/autogroup`.
+
+---
+
 ## [Unreleased] — Main model v2: one detector, improved in place
 
 - **The app's detector is main model v2** (the owner's decision after seeing the numbers; research note §10.8-10.15,

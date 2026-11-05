@@ -1709,7 +1709,9 @@ class LiveGame:
             return None
         self._auto_tries += 1
         log.info("estimating the broadcast camera from %d frames", len(self._auto_frames))
-        center, cams = estimate_center([f for _, f in self._auto_frames], self.court)
+        # two fits of the full quality: the centre is saved and reused for the game, and frames keep coming (weak
+        # fits pooled when they agree are for a single clip, the browser's)
+        center, cams = estimate_center([f for _, f in self._auto_frames], self.court, weak_quality=None)
         last = next((c for c in reversed(cams) if c is not None), None)
         self._auto_frames = self._auto_frames[-max(1, pc.auto_court_frames // 2):]
         if center is None or last is None:

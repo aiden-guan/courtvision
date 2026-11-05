@@ -18,8 +18,8 @@ function harness() {
   const window={};
   vm.runInNewContext(source,{window,setTimeout,clearTimeout,ImageData:class {constructor(data,width,height){Object.assign(this,{data,width,height});}},
     document:{createElement:tag=>tag==='video'?decoder:canvas}});
-  const frames=[], calls=[];let resolveFirst,complete=false,fail;
-  const model={reset:async()=>{},calibrate:async()=>{},process:async(raw,index,t)=>{
+  const frames=[], calls=[], calibrations=[];let resolveFirst,complete=false,fail;
+  const model={reset:async()=>{},calibrate:async views=>{calibrations.push(views.map(v=>v.data[0]));},process:async(raw,index,t)=>{
     calls.push({index,t,pixel:raw.data[0]});
     if(index===0)await new Promise(resolve=>{resolveFirst=resolve;});
     return {frame_idx:index,t,detections:[]};
@@ -28,7 +28,7 @@ function harness() {
     phase(){},state(){},frame:(result,pixels)=>frames.push({result,pixel:pixels.data[0]}),
     complete(){complete=true;},error(error){fail=error;},
   });
-  return {clip,calls,frames,get complete(){return complete;},get fail(){return fail;},finishFirst:()=>resolveFirst()};
+  return {clip,calls,frames,calibrations,get complete(){return complete;},get fail(){return fail;},finishFirst:()=>resolveFirst()};
 }
 
 test('analysis preserves frame order and displays the exact pixels sent to inference across a pause',async()=>{
@@ -48,4 +48,17 @@ test('closing during inference cannot publish its result or start another frame'
   h.clip.close();h.finishFirst();await running;
   assert.equal(h.calls.length,1);assert.equal(h.frames.length,0);assert.equal(h.complete,false);
   assert.equal(h.fail,undefined);
+});
+
+test('court setup sends six views a step apart, then the six between them',async()=>{
+  const h=harness(),running=h.clip.run();await settle();h.finishFirst();await running;
+  assert.equal(h.calibrations.length,1);
+  const seen=h.calibrations[0];  // each view's pixel is its seek time in ms (the clip lasts 0.11 s)
+  assert.equal(seen.length,12);
+  assert.equal(seen[0],0);assert.equal(seen[5],109);  // the last view just before the end
+  for(let i=0;i<5;i++){
+    assert.ok(seen[i]<seen[i+1]);
+    assert.ok(seen[i]<seen[6+i]&&seen[6+i]<seen[i+1]);  // between two views, in the same order
+  }
+  assert.equal(seen[11],109);  // past the end: the last frame again
 });

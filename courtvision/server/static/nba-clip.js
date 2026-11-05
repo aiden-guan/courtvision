@@ -52,9 +52,13 @@
         this.callbacks.phase("Finding the court camera using the local pipeline…");
         this.callbacks.setup?.({ stage: "court", label: "Reading court views from your clip…", completed: 0, total: 7 });
         const calibration = [];
-        for (let i = 0; i < 6; i++) {
+        // six views a step apart, then the six between them (the court search uses those only when the six do not
+        // find the game camera; runtime.BrowserPipeline.calibrate relies on this order)
+        const last = Math.max(0, this.video.duration - .001), step = Math.min(1, last / 5);
+        const times = [0, 1, 2, 3, 4, 5].map(i => i * step).concat([0, 1, 2, 3, 4, 5].map(i => Math.min(last, (i + .5) * step)));
+        for (let i = 0; i < times.length; i++) {
           await this.ready();
-          const pixels = await this.seek(i * Math.min(1, Math.max(0, this.video.duration - .001) / 5));
+          const pixels = await this.seek(times[i]);
           calibration.push(pixels);
           if (i === 0) this.callbacks.preview?.(pixels);
         }
