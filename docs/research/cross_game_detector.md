@@ -973,3 +973,39 @@ Measures, each against v2 with paired tests: the ball on the 30 BARD check games
 teacher labels, §5) and, on the 5 held-out Roboflow games, the referees found, the boxes on nobody, the players and
 referees, and the ball (§11.2). The Mac trains the candidates for the app on all of C's data plus these sources and
 scores them on the README's two games by §10.8's rule.
+
+### 13.1 The Mac's candidates for the app: plan, fixed before training
+
+The Mac has every source C was trained on (§10.15's lineage; `runs/models/main-c/summary.json`: SportsMOT `train`
+and `val` with ignore regions, the 3 Roboflow games' players and referees, the 390 calibration clips' ball labels by
+round 2's int8 file, the Lakers @ Warriors teacher's people on the court with its held-out clips left out). Three
+candidates, each from v2's exact copy (`student_from_onnx` of the app's export; within 4e-6 of ONNX Runtime) with C's
+recipe unchanged (4,000 steps on MPS, batch 4, AdamW 2e-4 cosine, stem and first stage frozen, temporal dropout 0.25,
+hue ±30°, scale 0.7-1.4, ball weight 2, folders sampled equally, seed 0, the last step kept), each adding one thing to
+the one before:
+
+* **R8-ctrl**: C's five folders only (the Mac's K0: what a second pass over the same data does);
+* **R8a**: R8-ctrl plus the 600 new clips' ball labels (`prep-video --max-frames 60 --jpeg-quality 80`, by v2 itself,
+  the app's fp32 export; the cloud's K1 uses v2's int8 file, so the two machines' labels differ by quantisation);
+* **R8b**: R8a plus the court-geometry person labels on the same clips (`court-persons`, with the settings the cloud
+  fixes in §13 before its K2 trains).
+
+Confounds named now: with folders sampled equally, adding a folder lowers every other folder's share (from 1/5 to
+1/6 in R8a), so R8a against R8-ctrl measures the new clips and the smaller share of the old ones together. R8b's
+person labels come from another model (the first app model) than its ball labels (v2).
+
+Scored once each, after training, against v2 on §10.8's held-out sets with the scripts of §10.13 (`detector_bench.py
+--sparse`; the people split and the paired players of §10.2): the Lakers @ Warriors held-out clips (ball top and
+linked; players, referees, off-court people), the 60 Cavaliers @ Warriors clips (the same), the 30 BARD check games
+(the Mac's teacher labels; ball top), the 5 held-out Roboflow games (players and referees AP50, recall, referees found,
+boxes on nobody, ball). Paired: exact McNemar on frames (ball); players on the court per box (McNemar) and per clip
+(sign test and a bootstrap over clips).
+
+**Rule** (§10.8, made exact where §10.14 found it ambiguous): a candidate fails if any ball McNemar test against v2 is
+worse at p < 0.05, or if on either game the players on the court are worse with the 95 % bootstrap interval over clips
+wholly below zero (clips, not boxes, are the independent units; the per-box test is reported beside it). It must also
+be better than v2 beyond chance somewhere. A candidate that passes runs the pipeline on both games (§10.14: Core ML,
+`ball`, `events`, `timeline`), where possession and made-or-missed must not be worse beyond chance. Among those that
+pass, the one with more significant gains; on a tie, the one with fewer changes. Reported beside the rule, as the two
+known costs of v2: the 2017 game's referees on the court (v2 23.3 %, the first app model 83.6 %) and the Lakers @
+Warriors players on the court (v2 97.9 %, the first app model 99.0 %).
