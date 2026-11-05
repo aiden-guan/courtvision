@@ -1295,3 +1295,10 @@ BARD linked path, and worse on E-BARD's boxes on nobody, the crowd and sideline 
 the ball, but with the sideline held off (for example the court-geometry negatives of K2, or ignore boxes for E-BARD's
 unlabelled people near the lines), and the 600 extra clips labelled by v2 itself are not (nothing per frame, a worse
 linked path).
+
+### 13.10 Added after the cloud's K1 result, before any Mac candidate's BARD linked ball was measured
+
+The cloud found the 600 clips' ball labels worsen the linked ball path on the BARD check games (§13.9: K1 against v2
+13 / 30 frames, p 0.014), a test §13.1 did not list for the Mac (its BARD test is the top candidate). Every Mac
+candidate includes those clips, so the linked path on the BARD check games (the Mac's teacher labels), paired with v2,
+joins the rule for all of them: worse at p < 0.05 fails. Adding a test can only fail more candidates.

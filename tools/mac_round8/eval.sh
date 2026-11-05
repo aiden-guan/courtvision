@@ -16,6 +16,7 @@ echo "$(date) ball"
 "${D[@]}" --models $M --ball-folder $C/teacher-check --json $O/${TAG}_cle_top.json > /dev/null
 "${D[@]}" --models $M --ball-folder $C/teacher-check --link --json $O/${TAG}_cle_link.json > /dev/null
 "${D[@]}" --models $M --ball-folder data/ft/bard_check_teacher_mac --json $O/${TAG}_bard_top.json > /dev/null
+"${D[@]}" --models $M --ball-folder data/ft/bard_check_teacher_mac --link --json $O/${TAG}_bard_link.json > /dev/null
 echo "$(date) coco"
 "${D[@]}" --models $M --coco data/roboflow/heldout_ann.json --json $O/${TAG}_roboflow.json > $O/${TAG}_roboflow.txt
 EB=$V2$( [ "$TAG" = r8 ] && echo ,runs/models/app-v1.pt )$(printf ",%s" "$@")
@@ -30,7 +31,7 @@ echo "== paired players, Lakers @ Warriors"
 echo "== paired players, Cavaliers @ Warriors"
 .venv/bin/python $P/people_paired.py $C/teacher-check $C $M all 2>&1 | grep -v Warning | tail -20
 echo "== ball"
-.venv/bin/python $P/summ.py $O/${TAG}_lal_top.json $O/${TAG}_lal_link.json $O/${TAG}_cle_top.json $O/${TAG}_cle_link.json $O/${TAG}_bard_top.json
+.venv/bin/python $P/summ.py $O/${TAG}_lal_top.json $O/${TAG}_lal_link.json $O/${TAG}_cle_top.json $O/${TAG}_cle_link.json $O/${TAG}_bard_top.json $O/${TAG}_bard_link.json
 echo "== roboflow"; tail -30 $O/${TAG}_roboflow.txt
 echo "== ebard check"; tail -30 $O/${TAG}_ebard.txt
 echo "$(date) EVAL-DONE $TAG"
