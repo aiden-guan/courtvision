@@ -745,6 +745,22 @@ class FineTuneDataset(_clip_dataset()):  # type: ignore[misc]
         return img
 
 
+def ema_update(ema: dict[str, Any], state: dict[str, Any], decay: float, step: int) -> float:
+    """One step of the exponential moving average of the weights (Polyak averaging): every floating tensor of ``ema``
+    moves towards ``state``'s by ``1 - d``, with ``d = min(decay, (1 + step) / (10 + step))`` so the first steps do not
+    pin the average to the start; other tensors are copied. Returns ``d``."""
+    import torch
+
+    d = min(decay, (1.0 + step) / (10.0 + step))
+    with torch.no_grad():
+        for k, v in state.items():
+            if v.is_floating_point():
+                ema[k].mul_(d).add_(v.detach().to(ema[k].dtype), alpha=1.0 - d)
+            else:
+                ema[k].copy_(v)
+    return d
+
+
 def train(args: argparse.Namespace) -> int:
     import torch
 
@@ -798,6 +814,7 @@ def train(args: argparse.Namespace) -> int:
                                          persistent_workers=args.workers > 0, collate_fn=_collate)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    ema = {k: v.detach().clone() for k, v in net.state_dict().items()} if args.ema > 0 else None
     mot_seqs = []
     if args.eval_mot:
         sys.path.insert(0, str(ROOT / "tools"))
@@ -838,6 +855,8 @@ def train(args: argparse.Namespace) -> int:
             torch.nn.utils.clip_grad_norm_(params, 10.0)
             opt.step()
             sched.step()
+            if ema is not None:
+                ema_update(ema, net.state_dict(), args.ema, step)
             step += 1
             for k, v in (("loss", loss), ("ball", l_ball), ("person", l_phm), ("wh", l_pwh)):
                 run[k] += float(v.detach())
@@ -855,6 +874,9 @@ def train(args: argparse.Namespace) -> int:
                 log.flush()
                 state = {"model": {k: v.cpu() for k, v in net.state_dict().items()}, "step": step, "eval": ev, "init": str(args.init),
                          "data": args.data}
+                if ema is not None:  # the averaged weights beside the last ones (export --ema)
+                    state["ema"] = {k: v.cpu() for k, v in ema.items()}
+                    state["ema_decay"] = args.ema
                 torch.save(state, out / "last.pt")
                 if ev and ev["ap50"] > best:
                     best = ev["ap50"]
@@ -925,7 +947,7 @@ def soup(weights: list[Path], out: Path, base: Path | None = None, alpha: float 
 # --------------------------------------------------------------------------- export
 
 
-def export(weights: Path, out: Path) -> int:
+def export(weights: Path, out: Path, ema: bool = False) -> int:
     """``.pt`` -> the browser/CPU ONNX export (input ``frames``, outputs ``OUTPUTS``; as
     ``tools/export_student_browser.py`` writes it), checked against torch on a random input."""
     import onnx
@@ -936,7 +958,9 @@ def export(weights: Path, out: Path) -> int:
 
     net = build_net(3, pretrained=False).eval()
     state = torch.load(weights, map_location="cpu", weights_only=True)
-    net.load_state_dict(state.get("model", state))
+    if ema and "ema" not in state:
+        raise SystemExit(f"{weights}: no averaged weights (train with --ema)")
+    net.load_state_dict(state["ema"] if ema else state.get("model", state))
 
     class Export(torch.nn.Module):
         def forward(self, x: Any) -> tuple[Any, ...]:
@@ -1048,6 +1072,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fp16", action="store_true", help="fp16 autocast for the forward pass (--device mps)")
     p.add_argument("--device", default="cpu", choices=("cpu", "mps"), help="where to train (mps: Apple GPU)")
     p.add_argument("--balance", action="store_true", help="sample every --data folder equally often")
+    p.add_argument("--ema", type=float, default=0.0,
+                   help="keep an exponential moving average of the weights with this decay (e.g. 0.999; 0: off)")
     p.add_argument("--static-p", type=float, default=0.0,
                    help="temporal dropout: share of samples whose earlier input frames are the frame itself")
     p.add_argument("--channels-last", action="store_true", help="channels-last memory format (faster CPU convolutions)")
@@ -1064,6 +1090,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("export", help=".pt -> ONNX")
     p.add_argument("weights", type=Path)
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--ema", action="store_true", help="export the averaged weights (a checkpoint trained with --ema)")
     a = ap.parse_args(argv)
     if a.cmd == "soup":
         return soup(a.weights, a.out, a.base, a.alpha)
@@ -1091,7 +1118,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if prep_teacher(a.src, a.out, a.frames, a.weights, a.shape, a.device) else 2
     if a.cmd == "train":
         return train(a)
-    return export(a.weights, a.out)
+    return export(a.weights, a.out, a.ema)
 
 
 if __name__ == "__main__":

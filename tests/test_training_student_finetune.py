@@ -411,3 +411,14 @@ def test_row_person_weight_stands_in_for_the_folders(tmp_path: Path) -> None:
     # the fine-tune dataset leaves out the sample that then trains nothing (no person loss, no ball label)
     ft = sf.finetune_dataset(ClipDataset, 0.0)([pseudo], None, train=False)
     assert [it[2][-1] for it in ft.items] == [3] and ft.dropped == 1
+
+
+def test_ema_update_moves_towards_the_weights_and_copies_counters() -> None:
+    import torch
+
+    ema = {"w": torch.zeros(3), "n": torch.tensor(0)}
+    state = {"w": torch.ones(3), "n": torch.tensor(5)}
+    d = sf.ema_update(ema, state, 0.99, 0)  # the first step: d = 1/10, so the average moves 90 % of the way
+    assert d == pytest.approx(0.1) and torch.allclose(ema["w"], torch.full((3,), 0.9)) and int(ema["n"]) == 5
+    d = sf.ema_update(ema, state, 0.5, 1000)  # late: the decay itself
+    assert d == 0.5 and torch.allclose(ema["w"], torch.full((3,), 0.95))
