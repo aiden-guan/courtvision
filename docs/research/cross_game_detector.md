@@ -1302,3 +1302,27 @@ The cloud found the 600 clips' ball labels worsen the linked ball path on the BA
 13 / 30 frames, p 0.014), a test §13.1 did not list for the Mac (its BARD test is the top candidate). Every Mac
 candidate includes those clips, so the linked path on the BARD check games (the Mac's teacher labels), paired with v2,
 joins the rule for all of them: worse at p < 0.05 fails. Adding a test can only fail more candidates.
+
+### 13.11 The in-game referee check in the pipeline (v2's detections)
+
+v2's detections of both games (`detections-main-c`), then `events` (`--referees game` against the default shirt
+rule, both runs with the current code; the shirt-rule run reproduces §10.14's v2 numbers exactly) and `timeline`:
+
+| | Shirt rule (default) | In-game check |
+|---|---:|---:|
+| Lakers @ Warriors: team with the ball, timeline (first / second half) | **97.4 %** (98.2 / 96.6) | 96.9 % (98.3 / 95.5) |
+| the same: engine alone; changes of possession, precision / recall | 72.6 %; 0.76 / 0.61 | 71.0 %; 0.74 / 0.59 |
+| the same: real shot or not / free throw or not / made or missed | 78.0 / 95.4 / 84.6 % | 78.7 / 95.5 / 85.2 % |
+| the same: made or missed paired (only the in-game run right / only the shirt rule's, of 175 shots) | | 3 / 2, p 1 |
+| the same: box-score error | 0.197 | **0.178** |
+| Cavaliers @ Warriors: team with the ball, timeline (first / second half) | 74.9 % (71.3 / 78.3) | 74.9 % (71.3 / 78.6) |
+| the same: real shot or not / free throw or not / made or missed | **51.9** / 93.3 / 75.0 % | 48.3 / 92.4 / 73.1 % |
+| the same: made or missed paired (of 119 shots) | | 7 / 9, p 0.80 |
+| the same: box-score error | 0.511 | **0.448** |
+
+Unlike the learned check (§10.11: the Cavaliers @ Warriors timeline 75.8 % to 38.8 %), the in-game check does not
+break the 2017 game: its fit keeps the Cavaliers' black jerseys a team (§13.5). Possession and made-or-missed are
+within chance of the shirt rule on both games (the Lakers @ Warriors second half 1.1 points lower, not tested: the
+quarter-second steps are not independent), and the box-score error is lower on both (0.197 to 0.178, 0.511 to 0.448;
+one number a game, no test). Whether it becomes the default is the owner's decision (§13.3); the shirt rule stays the
+default.

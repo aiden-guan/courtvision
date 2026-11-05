@@ -16,5 +16,6 @@ for G in runs/nba/2024-12-25-LAL-GSW runs/nba/2017-06-12-CLE-GSW; do
   echo "$(date) $TAG events $G ($REF)"
   "${A[@]}" $G events ${R[@]+"${R[@]}"} --referees $REF --tag $TAG --det-dir detections-$DT --ball-track ball_track-$DT.json 2>&1 | tail -2
   "${A[@]}" $G timeline --tag $TAG --det-dir detections-$DT --ball-track ball_track-$DT.json 2>&1 | tail -2
+  "${A[@]}" $G eval --tag $TAG --file timeline.jsonl > /dev/null  # report_timeline.md: the box-score error
 done
 echo "$(date) PIPELINE-DONE $TAG"
