@@ -27,6 +27,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   (`nba_analyze.py events --referees learned|guarded`, `--referee-model`); a refit with SportsMOT's players as
   non-referees improves it on 8 NBA games (F1 0.847 to 0.866) but does not pass the 2017 game.
 - **Tools**: `student_finetune.py court-people` (a teacher folder's people on the court kept, the crowd as background),
+  `student_finetune.py court-persons` (a pseudo NBA folder's people labelled through each clip's own court fit, found
+  as the browser app finds it: on the court person labels, near it ignored, the benches and crowd background; a sample
+  without a court fit trains no person loss, through a row-level `person_weight` that `train_student` now reads),
   `fetch_data.py roboflow` (the exact held-out sets of the cloud round) and `--whole`, `referee_classifier.py --players`,
   `nba_live_judge.py --ball-track --clips --dump`, `nba_rim_clips.py --ball-track`, `export_student_browser.py
   --training`.
