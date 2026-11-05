@@ -20,7 +20,8 @@ NBA's): 1,800 frames of BARD's 60 games (30 a game) with human boxes of players,
 train/val/test folders mix games, so the one 662 MB zip is fetched, its ``coco/`` part read into ``<out>/images/`` and
 written again as two COCO files split by BARD's games: ``<out>/calib_ann.json`` (the 30 calibration games: training)
 and ``<out>/check_ann.json`` (the 30 check games: held out), with the ``basketball`` class named ``ball`` (the name
-``prep-coco`` and ``detector_bench.py --coco`` read). The zip is deleted afterwards unless ``--keep-zip``.
+``prep-coco`` and ``detector_bench.py --coco`` read); ``<out>/calib`` and ``<out>/check`` link to the images, where
+``detector_bench.py --coco <out>/check_ann.json`` looks for them. The zip is deleted afterwards unless ``--keep-zip``.
 
 ``roboflow``: Roboflow Universe's "basketball-player-detection-2" (CC BY 4.0; human labels of NBA broadcast frames) from
 Hugging Face: the images of the splits file's ``roboflow_coco`` clips (exact clip names), the training clips' from all
@@ -265,6 +266,10 @@ def fetch_ebard(out: Path, keep_zip: bool = False) -> int:
 
         _retry("E-BARD all.zip", one)
     counts = ebard_split(zpath, out)
+    for part in ("calib", "check"):  # detector_bench --coco <out>/<part>_ann.json reads the images from <out>/<part>/
+        link = out / part
+        if not link.exists():
+            link.symlink_to("images", target_is_directory=True)
     if not keep_zip:
         zpath.unlink()
     print(f"E-BARD: {counts}", flush=True)

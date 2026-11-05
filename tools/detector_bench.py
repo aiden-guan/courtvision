@@ -670,9 +670,10 @@ def main(argv: list[str] | None = None) -> int:
                 v = b["vs_first"]
                 cmp = "—" if i == 0 else f"{v['only_second']} / {v['only_first']}, p {v['p_value']:.3g}"
                 fa = b["false_alarm_rate"]
+                rate = lambda v: "—" if v is None else f"{v:.4f}"  # noqa: E731 (no frame with a labelled ball)
                 print(f"| {Path(ann).name} | {Path(m).name} | {pl['ap50']:.4f} | {pl['recall']:.4f} | {pe['ap50']:.4f} | "
-                      f"{pe['recall']:.4f} | {b['hit_rate']:.4f} | {b['wrong_rate']:.4f} | {b['miss_rate']:.4f} | "
-                      f"{'—' if fa is None else f'{fa:.4f}'} | {cmp} |")
+                      f"{pe['recall']:.4f} | {rate(b['hit_rate'])} | {rate(b['wrong_rate'])} | {rate(b['miss_rate'])} | "
+                      f"{rate(fa)} | {cmp} |")
         print(f"\nReferees found and detections that match nobody labelled (the crowd, benches, coaches), at {a.thresh}; "
               "the referee rule (nba.analyze.is_referee) on the matched detections\n")
         print("| set | model | referees found | unmatched detections (share, per frame) | of them on nobody (per frame) "
