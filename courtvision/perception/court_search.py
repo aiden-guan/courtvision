@@ -53,6 +53,7 @@ __all__ = [
     "CameraParams",
     "Evidence",
     "EvidenceConfig",
+    "center_in_box",
     "court_evidence",
     "court_region",
     "coverage",
@@ -362,6 +363,17 @@ class BroadcastPrior:
     step_ft: float = 2.5  # model sample spacing
     inverse_points: int = 300  # line pixels cast onto the floor for the inverse (image -> model) term
     inverse_weight: float = 1.0
+    # where a fitted centre may lie, (lo, hi) per axis: half court, 50-125 ft behind the near sideline, 18-52 ft up
+    # (``center_in_box``; the grid's centres and a margin for the depth a zoomed view leaves loose)
+    center_box: tuple[tuple[float, float], ...] = ((37.0, 57.0), (-125.0, -50.0), (18.0, 52.0))
+
+
+def center_in_box(center: np.ndarray, prior: BroadcastPrior | None = None) -> bool:
+    """Whether a camera centre (court ft) lies in the prior's ``center_box`` (a broadcast game camera's position)."""
+    box = (prior or BroadcastPrior()).center_box
+    c = np.asarray(center, float)
+    return bool(c.shape == (3,) and np.all(np.isfinite(c))
+                and all(lo <= v <= hi for v, (lo, hi) in zip(c, box, strict=True)))
 
 
 def _rotations(pans: np.ndarray, tilts: np.ndarray) -> np.ndarray:

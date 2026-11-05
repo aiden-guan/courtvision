@@ -21,8 +21,9 @@
 
 ``params_from_homography`` fits the camera at the known centre to an operator's calibration (the tracker restarts
 from it). ``estimate_center`` finds the game camera's centre from sample frames (``court_search.calibrate_frame`` with
-the centre free, then ``fit_center`` on the good ones). Thresholds are design choices checked on ESPN frames of
-Lakers @ Warriors (2024-12-25).
+the centre free, then ``fit_center`` on the good ones; weaker fits only when they agree on one centre, and further
+frames when a game view is in sight but too few frames fit). Thresholds are design choices checked on ESPN frames of
+Lakers @ Warriors (2024-12-25); the weak-fit pooling on 720p NBA.com clips of the BARD training games.
 """
 
 from __future__ import annotations
@@ -44,9 +45,11 @@ from .court_search import (
     Evidence,
     EvidenceConfig,
     RefineConfig,
+    RefineResult,
     _angles_to,
     _project,
     calibrate_frame,
+    center_in_box,
     court_evidence,
     explained,
     fit_center,
@@ -348,37 +351,92 @@ def params_from_homography(hom: Homography, center: np.ndarray, size: tuple[int,
 def estimate_center(frames: list[np.ndarray], court: CourtSpec, work_width: int = 960,
                     evidence: EvidenceConfig | None = None, prior: BroadcastPrior | None = None,
                     min_quality: float = 0.15,
-                    progress: Callable[[int, int], None] | None = None) -> tuple[np.ndarray | None, list[CameraParams | None]]:
+                    progress: Callable[[int, int], None] | None = None,
+                    weak_quality: float | None = 0.10,
+                    more: list[np.ndarray] | None = None) -> tuple[np.ndarray | None, list[CameraParams | None]]:
     """The game camera's centre (court ft) from sample frames, and each frame's camera (full resolution; None
-    where the court was not found). Frames without the game camera (close-ups, replays) are skipped."""
-    evs: list[Evidence] = []
-    starts: list[CameraParams] = []
-    idx: list[int] = []
-    scale = 1.0
+    where the court was not found), for ``frames`` and then ``more``. Frames without the game camera (close-ups,
+    replays) are skipped.
+
+    Each frame's camera is searched with the centre free (``calibrate_frame``); a fit counts when it is ``plausible``.
+    Two fits of ``min_quality`` fix the centre (``fit_center``), and each keeps its camera when it still scores half
+    that at the shared centre. With fewer, the fits of ``weak_quality`` are pooled instead (``None``: never), and
+    accepted only when they agree (``_agreeing``): one centre for all of them in the prior's camera box
+    (``court_search.center_in_box``) at which at least two frames, each its own camera, still score ``weak_quality``
+    and stay plausible. ``more`` (further sample frames of the clip) are searched, in order and only until the centre
+    is fixed, when ``frames`` do not fix it but one of them shows a fit of ``weak_quality``: a game view whose
+    zoomed, dim or textured floor makes the search hit or miss from one frame to the next (720p NBA.com clips).
+    ``weak_quality`` is the tracker's own bar for a camera found without a previous frame
+    (``BroadcastTrackerConfig.reacquire_quality``); on the BARD training clips the plausible fits of other cameras
+    (close-ups, a low camera behind the baseline) and the misses on game views stayed below it (at most 0.09), while
+    right fits on dim or textured floors scored from 0.03 to 0.15."""
+    sample = list(frames) + list(more or [])
+    found: list[tuple[int, float, Evidence, RefineResult]] = []  # (frame, scale, evidence, fit) of fits worth pooling
+    floor_q = min_quality if weak_quality is None else min(min_quality, weak_quality)
     total = len(frames) + 1  # each view, then the joint camera refinement
-    if progress is not None:
-        progress(0, total)
-    for i, img in enumerate(frames):
+
+    def search(i: int) -> bool:
+        img = sample[i]
         scale = min(1.0, work_width / img.shape[1])
         small = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else img
         ev = court_evidence(small, evidence)
         r = calibrate_frame(ev, court, prior, free_center=True)
         if progress is not None:
             progress(i + 1, total)
-        if r is None or r.quality < min_quality or not plausible(r.params, ev.size, prior):
-            continue
-        evs.append(ev)
-        starts.append(r.params)
-        idx.append(i)
-    if len(evs) < 2:
-        if progress is not None:
-            progress(total, total)
-        return None, [None] * len(frames)
-    center, results = fit_center(evs, court, starts)
-    out: list[CameraParams | None] = [None] * len(frames)
-    for i, ev, r in zip(idx, evs, results, strict=True):
-        if r is not None and r.coverage * explained(ev, court, r.params) >= 0.5 * min_quality:
-            out[i] = _scaled(r.params, 1.0 / scale)
+        if r is None or r.quality < floor_q or not plausible(r.params, ev.size, prior):
+            return False
+        found.append((i, scale, ev, r))
+        return True
+
+    if progress is not None:
+        progress(0, total)
+    for i in range(len(frames)):
+        search(i)
+    center, kept = _decide(found, court, min_quality, weak_quality, prior)
+    if not kept and found and len(sample) > len(frames):
+        total = len(sample) + 1
+        for i in range(len(frames), len(sample)):
+            if search(i):
+                center, kept = _decide(found, court, min_quality, weak_quality, prior)
+                if kept:
+                    break
+    out: list[CameraParams | None] = [None] * len(sample)
+    for i, scale, r in kept:
+        out[i] = _scaled(r.params, 1.0 / scale)
     if progress is not None:
         progress(total, total)
     return center, out
+
+
+def _decide(found: list[tuple[int, float, Evidence, RefineResult]], court: CourtSpec, min_quality: float,
+            weak_quality: float | None,
+            prior: BroadcastPrior | None) -> tuple[np.ndarray | None, list[tuple[int, float, RefineResult]]]:
+    """The centre and the frames that keep a camera at it, from the fits found so far (``estimate_center``)."""
+    strong = [f for f in found if f[3].quality >= min_quality]
+    if len(strong) >= 2:
+        return _pooled(strong, court, 0.5 * min_quality)
+    if weak_quality is not None and len(found) >= 2:
+        return _agreeing(found, court, weak_quality, prior)
+    return None, []
+
+
+def _pooled(found: list[tuple[int, float, Evidence, RefineResult]], court: CourtSpec,
+            keep_quality: float) -> tuple[np.ndarray, list[tuple[int, float, RefineResult]]]:
+    """``fit_center`` over the frames' fits: the shared centre and the frames whose camera at it (refined from the
+    frame's own fit) still scores ``keep_quality`` (coverage x explained)."""
+    center, results = fit_center([f[2] for f in found], court, [f[3].params for f in found])
+    kept = [(i, scale, r) for (i, scale, ev, _), r in zip(found, results, strict=True)
+            if r is not None and r.coverage * explained(ev, court, r.params) >= keep_quality]
+    return center, kept
+
+
+def _agreeing(found: list[tuple[int, float, Evidence, RefineResult]], court: CourtSpec, weak_quality: float,
+              prior: BroadcastPrior | None) -> tuple[np.ndarray | None, list[tuple[int, float, RefineResult]]]:
+    """Weak fits pooled only when they agree: a shared centre in the prior's camera box at which at least two of
+    the frames still score ``weak_quality`` and stay ``plausible`` (else no centre)."""
+    center, kept = _pooled(found, court, weak_quality)
+    by_frame = {f[0]: f[2] for f in found}
+    kept = [k for k in kept if plausible(k[2].params, by_frame[k[0]].size, prior)]
+    if len(kept) < 2 or not center_in_box(center, prior):
+        return None, []
+    return center, kept
