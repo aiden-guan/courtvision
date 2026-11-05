@@ -1007,3 +1007,86 @@ takes in players. On the 5 Roboflow games, where a "game" is one or two clips of
 learned check (F1 0.817 against 0.907, which is in-sample there) and falls back on 2: the method needs a game's worth
 of varied frames. Not measured: other eras (the 2017 game's referees and the Cavaliers' black jerseys are on the Mac)
 and the whole pipeline with it, so the shirt rule stays the default.
+
+### 13.2 Results (cloud): E-BARD's human labels teach referees, and box more of the sideline; v2 stays
+
+Trained as planned from v2's PyTorch copy, 4,000 steps each on 4 threads (bf16, channels-last), folders sampled
+equally, exported with `max |onnx - torch|` at most 5.7e-6:
+
+* **K0** (the control): 19,404 samples in 4 folders;
+* **K1**: 30,440 in 5 (the 600 new clips' ball labels: 11,036 samples). Sampling folders equally also raises the ball
+  pseudo-labels' share of training from one quarter to two fifths, so K1 against K0 measures the new clips and more
+  ball weight together;
+* **K3**: 31,250 in 6 (E-BARD's 30 calibration games: 810 frames for training, 90 held apart by `plan_data`).
+* **K2** (the court-geometry person labels) was not trained here: `court-persons` takes about 38 s a clip on one
+  thread of this machine, and in its check the court was found on 39 % of the frames (2 of 5 clips); it was left to
+  the Mac and to after the court-fit change (`estimate_center`'s pooled weak fits, CHANGELOG).
+
+Scored once on the fixed held-out sets, every model against v2 with paired tests (`detector_bench.py`, which now keeps
+each labelled person's found-or-not: exact McNemar for the referees and players found and for the ball, "only the model
+/ only v2"; for the boxes on nobody a sign test per frame, "frames with more / fewer than v2"). People at a score of
+0.3, IoU 0.5; the ball within 15 px of 1080 lines.
+
+**E-BARD, the 30 held-out check games** (900 frames, each its own history; human labels: 7,728 players, 1,918
+referees; 746 frames with the ball):
+
+| | Referees found | Players found | Boxes on nobody a frame | Ball | Players AP50 | People AP50 / recall |
+|---|---:|---:|---:|---:|---:|---:|
+| v2 | 1,194 | 6,576 | **0.156** | 86.3 % | 0.843 | 0.892 / 0.806 |
+| K0 | 1,148 (100 / 146, p 0.004) | 6,756 (303 / 123, p 1.3e-18) | 0.189 (69 / 43, p 0.018) | 87.5 % (24 / 15, p 0.20) | 0.863 | 0.887 / 0.819 |
+| K1 | 1,168 (104 / 130, p 0.10) | 6,726 (270 / 120, p 2.2e-14) | 0.186 (73 / 47, p 0.022) | 87.8 % (25 / 14, p 0.11) | 0.863 | 0.885 / 0.818 |
+| K3 | **1,602** (433 / 25, p 3.1e-97) | **6,803** (337 / 110, p 7.5e-28) | 0.217 (81 / 32, p 4.5e-6) | **88.1 %** (25 / 12, p 0.047) | 0.813 | **0.920 / 0.871** |
+
+**The 5 held-out Roboflow games** (194 frames; 1,961 players, 506 referees; 194 frames with the ball):
+
+| | Referees found | Players found | Boxes on nobody a frame | Ball | Players AP50 | People AP50 / recall |
+|---|---:|---:|---:|---:|---:|---:|
+| v2 | 426 | 1,654 | 0.194 | 68.0 % | 0.734 | 0.892 / 0.843 |
+| K0 | 438 (22 / 10, p 0.050) | 1,688 (77 / 43, p 0.0024) | 0.171 (19 / 19, p 1) | 72.2 % (15 / 7, p 0.13) | 0.726 | 0.905 / 0.862 |
+| K1 | 433 (16 / 9, p 0.23) | 1,682 (71 / 43, p 0.011) | 0.223 (23 / 19, p 0.64) | 71.6 % (12 / 5, p 0.14) | 0.737 | 0.904 / 0.857 |
+| K3 | 430 (19 / 15, p 0.61) | 1,662 (67 / 59, p 0.53) | 0.194 (16 / 16, p 1) | 68.0 % (11 / 11, p 1) | 0.716 | 0.895 / 0.848 |
+
+**The ball on the 30 BARD check games** (the cloud's teacher labels, §5; 1,153 frames):
+
+| | Per frame | Linked path |
+|---|---:|---:|
+| v2 | 90.0 % | 92.5 % |
+| K0 | 90.7 % (25 / 17, p 0.28) | 92.6 % (13 / 11, p 0.84) |
+| K1 | 90.2 % (25 / 23, p 0.89) | 91.0 % (13 / 30, p 0.014) |
+| K3 | **91.4 %** (28 / 12, p 0.017) | 92.6 % (17 / 15, p 0.86) |
+
+(Players AP50 counts a boxed referee against the model, so a model that boxes more referees loses there: K3's lower
+players AP50 goes with its 408 more referees found.)
+
+What each step of data did, paired on the same frames:
+
+* **More training on the same data (K0 against v2)** finds more players on both sets, and on E-BARD fewer referees and
+  more boxes on nobody: the 4,000 extra steps alone move the model, which is why every comparison below is against
+  the run before it rather than against v2.
+* **The 600 new clips' ball labels (K1 against K0)**: no significant change on any per-frame measure (ball: E-BARD
+  22 / 20, p 0.88; Roboflow 11 / 12, p 1; BARD 19 / 25, p 0.45; referees, players and boxes on nobody all p 0.13 or
+  more), and the BARD ball's linked path worse: 7 frames against 26 (p 0.0013; against v2 13 / 30, p 0.014). Ball
+  labels made by v2 itself on more clips of the same 30 games add nothing to v2's top candidate and hurt the path
+  linking chooses through its candidates.
+* **E-BARD's human labels (K3 against K1)**: on E-BARD's other 30 games 458 referees found that K1 missed against 24
+  (p 3.8e-105), players 237 against 160 (p 0.00013), the BARD ball 29 frames against 15 (p 0.049) and its linked path
+  27 against 8 (p 0.0019, back to v2's level); but more frames with boxes on nobody (84 against 55, p 0.017). On the 5 Roboflow games nothing changes significantly (players 59
+  against 79, p 0.11; ball 7 against 14, p 0.19).
+
+**What K3's extra boxes on nobody are.** On the 81 E-BARD frames where K3 puts more boxes on nobody than v2, it puts 98
+(v2 11 on the same frames). Looked at by eye (crops and frames, not counted): most are people standing on the
+sideline, coaches in suits, staff in black and bench players, then some courtside fans and a few floor graphics.
+E-BARD leaves exactly those people unlabelled, so they are background in its training frames too; a likely reading
+(not tested) is that its many positive referees, standing adults in dark shirts on the lines, pull the person head
+towards standing adults in dark clothes near the court (E-BARD's 900 calibration frames hold 1,935 referee boxes; K3
+trained on 810 of the frames).
+
+**Decision.** v2 stays the main model, and no round-8 file is a candidate for the app. The cloud's runs lack v2's
+Lakers @ Warriors teacher folder (§13), so none could replace v2 without the Mac's two-game tests in any case, and the
+bar set before scoring for sending one there (better than v2 on every cloud set, worse on none) is not met: K3 is
+better on E-BARD's season (referees, players, ball) and on the BARD ball per frame, equal on the Roboflow games and the
+BARD linked path, and worse on E-BARD's boxes on nobody, the crowd and sideline the owner asked to be left alone
+(§11). What round 8 says for the next main version: E-BARD's labels are worth training on for referees, players and
+the ball, but with the sideline held off (for example the court-geometry negatives of K2, or ignore boxes for E-BARD's
+unlabelled people near the lines), and the 600 extra clips labelled by v2 itself are not (nothing per frame, a worse
+linked path).
