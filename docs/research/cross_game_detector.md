@@ -968,6 +968,15 @@ Roboflow games' players and referees, the 390 calibration clips' ball labels):
 * **K0**: that data only (more training on the same data: the control);
 * **K1**: K0 plus the new clips' ball labels;
 * **K2**: K1 plus the court-geometry person labels.
+* **K3** (added before any round-8 run was trained, when the data search found it): K1 plus **E-BARD-detection**'s
+  human labels on the 30 calibration games (Giudici et al.; HF `GabrieleGiudici/E-BARD-detection`, CC BY 4.0; 1,800
+  frames of BARD's 60 games, 30 a game, players, referees and the ball boxed, the crowd and benches not), re-split by
+  BARD's games: 900 frames of the calibration games for training (7,568 players, 1,935 referees, 734 balls;
+  `prep-coco --referees`), 900 of the check games held out (7,728 players, **1,918 referees**, 762 balls).
+
+E-BARD's 900 check-game frames become a held-out test beside the 5 Roboflow games (each frame its own history, as
+§9): referees found, boxes on nobody, players and referees, the ball; every round-8 run, v2 and the original app
+model are scored on it.
 
 Measures, each against v2 with paired tests: the ball on the 30 BARD check games (per frame and linked, the cloud's
 teacher labels, §5) and, on the 5 held-out Roboflow games, the referees found, the boxes on nobody, the players and

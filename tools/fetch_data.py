@@ -15,6 +15,13 @@ read; the list itself goes to ``<out>/basketball.txt``. A failed stream starts t
 ``cross_game_detector_splits.json``'s ``bard`` part (``check_clips``, ``calib_clips_round1``,
 ``calib_clips_round2``), one file at a time, to ``<out>/<game>/<clip>.mp4``; files already there are skipped.
 
+``ebard``: E-BARD-detection (Giudici et al.; HF ``GabrieleGiudici/E-BARD-detection``; CC BY 4.0, the footage is the
+NBA's): 1,800 frames of BARD's 60 games (30 a game) with human boxes of players, referees, hoops and the ball. Its own
+train/val/test folders mix games, so the one 662 MB zip is fetched, its ``coco/`` part read into ``<out>/images/`` and
+written again as two COCO files split by BARD's games: ``<out>/calib_ann.json`` (the 30 calibration games: training)
+and ``<out>/check_ann.json`` (the 30 check games: held out), with the ``basketball`` class named ``ball`` (the name
+``prep-coco`` and ``detector_bench.py --coco`` read). The zip is deleted afterwards unless ``--keep-zip``.
+
 ``roboflow``: Roboflow Universe's "basketball-player-detection-2" (CC BY 4.0; human labels of NBA broadcast frames) from
 Hugging Face: the images of the splits file's ``roboflow_coco`` clips (exact clip names), the training clips' from all
 three folders of the copy to ``<out>/fit/`` with ``<out>/fit_ann.json``, the held-out clips' from its ``valid`` and
@@ -45,6 +52,7 @@ SPLITS = ROOT / "docs" / "research" / "cross_game_detector_splits.json"
 SPORTSMOT = "https://huggingface.co/datasets/MCG-NJU/SportsMOT/resolve/main"
 BARD = "https://huggingface.co/datasets/GabrieleGiudici/BARD/resolve/main"
 ROBOFLOW = "https://huggingface.co/datasets/koppolusameer/basketball-coco-player-detection/resolve/main"
+EBARD = "https://huggingface.co/datasets/GabrieleGiudici/E-BARD-detection/resolve/main"
 RETRY_S = (30, 60, 120, 240, 480)
 PAUSE_S = 0.5  # between two BARD files
 RETRYABLE = (429, 500, 502, 503, 504)
@@ -188,6 +196,81 @@ def fetch_bard(listing: str, out: Path, first: int = 0, count: int | None = None
     return 0
 
 
+# --------------------------------------------------------------------------- E-BARD
+
+
+def ebard_split(zip_path: Path, out: Path, splits: Path = SPLITS) -> dict[str, dict[str, int]]:
+    """E-BARD's zip -> ``<out>/images`` (its ``coco/`` images, once) and ``<out>/{calib,check}_ann.json`` split by
+    BARD's calibration and check games (the game is the file name before its last ``_``), "basketball" renamed
+    "ball", image and annotation ids renumbered. Returns the box counts per part and class."""
+    import zipfile
+
+    bard = json.loads(splits.read_text())["bard"]
+    calib, check = set(bard["calib_games"]), set(bard["check_games"])
+    images: list[dict] = []
+    anns: list[dict] = []
+    cats: list[dict] | None = None
+    (out / "images").mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as z:
+        names = set(z.namelist())
+        for split, folder in (("train", "train"), ("val", "valid"), ("test", "test")):
+            member = f"coco/annotations/instances_{split}.json"
+            if member not in names:
+                continue
+            d = json.loads(z.read(member))
+            if cats is None:
+                cats = [dict(c, name="ball" if c["name"] == "basketball" else c["name"]) for c in d["categories"]]
+            remap = {}
+            for im in d["images"]:
+                name = PurePosixPath(im["file_name"]).name
+                src = f"coco/{folder}/{im['file_name']}"
+                if src not in names or name in ("", ".", "..") or "/" in name:
+                    raise SystemExit(f"{zip_path}: no image {src}")
+                dest = out / "images" / name
+                if not dest.exists():
+                    dest.write_bytes(z.read(src))
+                remap[im["id"]] = len(images) + 1
+                images.append(dict(im, id=len(images) + 1, file_name=name, ebard_split=split))
+            for a in d["annotations"]:
+                anns.append(dict(a, id=len(anns) + 1, image_id=remap[a["image_id"]]))
+    game = {im["id"]: im["file_name"].rsplit("_", 1)[0] for im in images}
+    stray = sorted({g for g in game.values() if g not in calib | check})
+    if stray:
+        raise SystemExit(f"{zip_path}: games that are not BARD's: {stray[:5]}")
+    names_of = {c["id"]: c["name"] for c in cats or []}
+    counts: dict[str, dict[str, int]] = {}
+    for part, keep in (("calib", calib), ("check", check)):
+        ims = [im for im in images if game[im["id"]] in keep]
+        ids = {im["id"] for im in ims}
+        mine = [a for a in anns if a["image_id"] in ids]
+        (out / f"{part}_ann.json").write_text(json.dumps({
+            "images": ims, "annotations": mine, "categories": cats,
+            "info": {"source": f"E-BARD-detection (Giudici et al.), CC BY 4.0, footage the NBA's; BARD's {part} games"}}))
+        counts[part] = {"images": len(ims)}
+        for a in mine:
+            counts[part][names_of[a["category_id"]]] = counts[part].get(names_of[a["category_id"]], 0) + 1
+    return counts
+
+
+def fetch_ebard(out: Path, keep_zip: bool = False) -> int:
+    zpath = out / "all.zip"
+    if not (zpath.is_file() and zpath.stat().st_size > 0):
+        def one() -> None:
+            out.mkdir(parents=True, exist_ok=True)
+            tmp = zpath.with_name("all.zip.part")
+            with _get(f"{EBARD}/all.zip") as resp, tmp.open("wb") as f:
+                while chunk := resp.read(1 << 20):
+                    f.write(chunk)
+            tmp.replace(zpath)
+
+        _retry("E-BARD all.zip", one)
+    counts = ebard_split(zpath, out)
+    if not keep_zip:
+        zpath.unlink()
+    print(f"E-BARD: {counts}", flush=True)
+    return 0
+
+
 # --------------------------------------------------------------------------- Roboflow
 
 
@@ -290,6 +373,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--first", type=int, default=0, help="start at this clip of the list (fetch it in batches)")
     p.add_argument("--count", type=int, default=None, help="fetch at most this many clips")
+    p = sub.add_parser("ebard", help="E-BARD-detection's frames, split by BARD's calibration and check games")
+    p.add_argument("--out", type=Path, default=Path("data/ebard"))
+    p.add_argument("--keep-zip", action="store_true")
     p = sub.add_parser("roboflow", help="the Roboflow NBA frames of the splits file's training and held-out games")
     p.add_argument("--out", type=Path, default=Path("data/roboflow"))
     p.add_argument("--whole", action="store_true", help="also the whole copy, by folder (the referee classifier's data)")
@@ -298,6 +384,8 @@ def main(argv: list[str] | None = None) -> int:
         return fetch_sportsmot(a.split, a.out)
     if a.cmd == "roboflow":
         return fetch_roboflow(a.out, whole=a.whole)
+    if a.cmd == "ebard":
+        return fetch_ebard(a.out, a.keep_zip)
     return fetch_bard(a.clips, a.out, a.first, a.count)
 
 
