@@ -346,7 +346,8 @@ def test_court_persons_labels_the_court_ignores_its_edge_and_leaves_the_stands(t
              (390, 400, 410, 550, 0.7),  # (40, 55): 5 ft off, in between
              (390, 500, 410, 700, 0.7),  # (40, 70): the stands
              (700, 0, 720, 30, 0.6),  # foot above the horizon: not placed
-             (600, 100, 620, 250, 0.2)]  # under --score: never a target
+             (600, 100, 620, 250, 0.2),  # under --score, over --weak: unsure, ignored wherever it stands
+             (650, 100, 670, 250, 0.05)]  # under --weak: background
 
     class Everyone:
         sparse = True
@@ -361,12 +362,13 @@ def test_court_persons_labels_the_court_ignores_its_edge_and_leaves_the_stands(t
     model = Everyone()
     out = tmp_path / "court"
     counts = sf.court_persons(src, out, Path("app.onnx"), model=model, court_fn=court)
-    assert counts == {"samples": 2, "fit": 1, "persons": 2, "ignored": 2, "unplaced": 1, "off_court": 1}
+    assert counts == {"samples": 2, "fit": 1, "persons": 2, "ignored": 3, "unplaced": 1, "off_court": 1, "weak": 1}
     assert seen == [[f"{f:06d}.jpg" for f in range(1, 7)]]  # the clip's stored frames, in order
-    assert model.calls == [((1, 9, 544, 960), 0.75, 0.3)]  # the labeller runs on the sample with a court only
+    assert model.calls == [((1, 9, 544, 960), 0.75, 0.1)]  # the labeller runs on the sample with a court only
     got = {r["frame"]: r for r in map(json.loads, (out / "detections.jsonl").open())}
     assert got[3]["persons"] == [[460, 100, 480, 250, 1.0], [460, 400, 480, 515, 1.0]]
-    assert got[3]["ignore"] == [[390, 400, 410, 550], [700, 0, 720, 30]] and "person_weight" not in got[3]
+    assert got[3]["ignore"] == [[390, 400, 410, 550], [700, 0, 720, 30], [600, 100, 620, 250]]
+    assert "person_weight" not in got[3]
     assert got[6]["person_weight"] == 0.0 and got[6]["persons"] == [] and "ignore" not in got[6]  # no court
     assert all("person_weight" not in got[f] and "ignore" not in got[f] for f in (1, 2, 4, 5))  # context rows
     meta = json.loads((out / "meta.json").read_text())
@@ -385,10 +387,10 @@ def test_court_persons_labels_the_court_ignores_its_edge_and_leaves_the_stands(t
 
 def test_court_persons_cli_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     got = []
-    monkeypatch.setattr(sf, "court_persons", lambda *a: got.append(a))
+    monkeypatch.setattr(sf, "court_persons", lambda *a, **k: got.append((a, k)))
     monkeypatch.setattr(sf.cv2, "setNumThreads", lambda n: None)
     assert sf.main(["court-persons", "a", "b", "--model", "m.onnx"]) == 0
-    assert got == [(Path("a"), Path("b"), Path("m.onnx"), 0.3, 2.0, 8.0, 1)]
+    assert got == [((Path("a"), Path("b"), Path("m.onnx"), 0.3, 2.0, 8.0, 1), {"weak": 0.1})]
     with pytest.raises(SystemExit):  # the labeller is required
         sf.main(["court-persons", "a", "b"])
 

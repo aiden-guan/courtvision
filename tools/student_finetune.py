@@ -375,7 +375,7 @@ def court_split(persons: list[Any], hom: Any, scale: float, margin_in: float = 2
 
 def court_persons(src: Path, out: Path, model_path: Path, score: float = 0.3, margin_in: float = 2.0,
                   margin_out: float = 8.0, threads: int = 1, model: Any = None,
-                  court_fn: Callable[[list[Path]], list[Any]] | None = None) -> dict[str, int]:
+                  court_fn: Callable[[list[Path]], list[Any]] | None = None, weak: float = 0.1) -> dict[str, int]:
     """A pseudo folder of NBA broadcast clips (``prep-video``: ball labels, no person labels) -> the same folder
     (``out``: its frames linked, not copied) with person labels from the camera geometry. The court is fitted on each
     clip's stored frames and tracked through them (``court_fn``, default ``clip_courts``: per frame a stored px ->
@@ -384,7 +384,8 @@ def court_persons(src: Path, out: Path, model_path: Path, score: float = 0.3, ma
     ones), and each person at ``score`` or more is placed by its foot point (``court_split``): on the court grown by
     ``margin_in`` ft (players, referees, a player inbounding) a person label of score 1; more than ``margin_out`` ft
     off it (the benches, the crowd) left out, so background; in between, or above the horizon, an ``ignore`` box. A
-    sample without a court (close-ups, replays, no fit) gets ``"person_weight": 0`` on its row: no person loss
+    person the labeller is unsure of (``weak`` to ``score``; often a player it half misses) is an ``ignore`` box
+    wherever it stands, so it is not taught as background. A sample without a court (close-ups, replays, no fit) gets ``"person_weight": 0`` on its row: no person loss
     (``train_student.ClipDataset``). The folder's persons weigh ``PSEUDO_MAX_WEIGHT``; the ball labels are copied
     unchanged. ``model``: an already loaded ``detector_bench`` model (tests). Returns the counts."""
     import shutil
@@ -402,6 +403,8 @@ def court_persons(src: Path, out: Path, model_path: Path, score: float = 0.3, ma
         raise SystemExit("OUT must be a new folder, not SRC")
     if not 0.0 <= margin_in <= margin_out:
         raise SystemExit(f"--margin-in ({margin_in}) must be between 0 and --margin-out ({margin_out})")
+    if not 0.0 <= weak <= score:
+        raise SystemExit(f"--weak ({weak}) must be between 0 and --score ({score})")
     if model is None:
         model = load_model(model_path, threads, sparse=True)
     court_fn = court_fn or clip_courts
@@ -413,7 +416,7 @@ def court_persons(src: Path, out: Path, model_path: Path, score: float = 0.3, ma
     samples: dict[int, list[int]] = defaultdict(list)  # clip -> its samples (indices of ds.items)
     for i, item in enumerate(ds.items):
         samples[item[1]].append(i)
-    counts = {"samples": len(ds), "fit": 0, "persons": 0, "ignored": 0, "unplaced": 0, "off_court": 0}
+    counts = {"samples": len(ds), "fit": 0, "persons": 0, "ignored": 0, "unplaced": 0, "off_court": 0, "weak": 0}
     t0 = time.time()
     for k, clip in enumerate(sorted(samples)):
         fr = sorted(frames[clip])
@@ -426,9 +429,10 @@ def court_persons(src: Path, out: Path, model_path: Path, score: float = 0.3, ma
                 row["person_weight"] = 0.0  # no court: the sample trains no person loss
                 continue
             x, t = ds[i]
-            _, found = run_model(model, x[None], tuple(det["size"]), 0.99, score)
+            _, found = run_model(model, x[None], tuple(det["size"]), 0.99, min(weak, score))
             zones = court_split([q for q in found if q[4] >= score], hom, float(t["scale"][0]), margin_in, margin_out)
-            ignore = zones["near"] + zones["unplaced"]
+            unsure = [[round(float(v), 1) for v in q[:4]] for q in found if weak <= q[4] < score]
+            ignore = zones["near"] + zones["unplaced"] + unsure
             row["persons"] = [b + [1.0] for b in zones["court"]]
             if ignore:
                 row["ignore"] = list(row.get("ignore") or []) + ignore
@@ -437,6 +441,7 @@ def court_persons(src: Path, out: Path, model_path: Path, score: float = 0.3, ma
             counts["ignored"] += len(ignore)
             counts["unplaced"] += len(zones["unplaced"])
             counts["off_court"] += len(zones["off"])
+            counts["weak"] += len(unsure)
         counts["fit"] += fit
         print(f"[{k + 1}/{len(samples)}] clip {clip}: a court on {fit} of {len(samples[clip])} samples; in all "
               f"{counts['persons']} people on it, {counts['ignored']} ignored, {counts['off_court']} off it, "
@@ -448,9 +453,11 @@ def court_persons(src: Path, out: Path, model_path: Path, score: float = 0.3, ma
         (out / "frames").symlink_to((src / "frames").resolve(), target_is_directory=True)
     meta["person_weight"] = PSEUDO_MAX_WEIGHT  # the most a pseudo folder's persons weigh (train_student.folder_weights)
     meta["court_persons"] = {
-        "model": str(model_path), "score": score, "margin_in": margin_in, "margin_out": margin_out, **counts,
+        "model": str(model_path), "score": score, "weak": weak, "margin_in": margin_in, "margin_out": margin_out,
+        **counts,
         "what": "people whose foot point is on the court grown by margin_in ft (players, referees) labelled through "
-                "the clip's own court fit; margin_in to margin_out ft off it, or above the horizon, ignored; farther "
+                "the clip's own court fit; margin_in to margin_out ft off it, above the horizon, or scored weak to "
+                "score, ignored; farther "
                 "(the benches, the crowd) background; samples without a court fit train no person loss"}
     (out / "meta.json").write_text(json.dumps(meta, indent=1))
     print(f"{out}: {counts}", file=sys.stderr)
@@ -991,7 +998,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("out", type=Path)
     p.add_argument("--model", type=Path, required=True,
                    help="the labeller: a detector that boxes everyone (e.g. runs/models/app-v1.onnx)")
-    p.add_argument("--score", type=float, default=0.3, help="labeller boxes under this are left out (background)")
+    p.add_argument("--score", type=float, default=0.3, help="labeller boxes at this or more are placed on the court")
+    p.add_argument("--weak", type=float, default=0.1,
+                   help="labeller boxes from this to --score are ignored wherever they stand (unsure: not background)")
     p.add_argument("--margin-in", type=float, default=2.0,
                    help="feet within this many ft outside the court lines are on the court: person labels")
     p.add_argument("--margin-out", type=float, default=8.0,
@@ -1073,7 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "court-persons":
         cv2.setNumThreads(a.threads)  # the court fit's image work
-        court_persons(a.src, a.out, a.model, a.score, a.margin_in, a.margin_out, a.threads)
+        court_persons(a.src, a.out, a.model, a.score, a.margin_in, a.margin_out, a.threads, weak=a.weak)
         return 0
     if a.cmd == "mark-ignore":
         return 0 if mark_ignore(a.src, a.out, a.model, a.iou, a.score, a.margin, a.threads,
