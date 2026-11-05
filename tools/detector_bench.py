@@ -517,7 +517,8 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
         clips.setdefault(key, []).append((idx, im))
     tally = {m: {"players": Tally(), "people": Tally(), "hit": 0, "wrong": 0, "miss": 0, "false_alarm": 0,
                  "no_ball_frames": 0, "hits": [], "refs_found": 0, "refs": 0, "other": 0, "nobody": 0, "kept": 0,
-                 "rule": []} for m in models}
+                 "rule": [], "found": [], "nobody_frames": []} for m in models}
+    found_is_ref: list[int] = []  # per labelled person, in the order of each model's ``found``: a referee?
     rule_on_truth: list[tuple[bool, bool]] = []
     x = np.empty((1, 9, *INPUT_HW), np.float32)
     skipped = 0
@@ -552,6 +553,7 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
             frame_bgr = cv2.imread(str(images / im["file_name"]))
             rule_on_truth += [(bool(r), is_referee(frame_bgr, tuple(b), "learned"), is_referee(frame_bgr, tuple(b), "shirt"))
                               for b, r in zip(people, is_ref)]
+            found_is_ref += is_ref.astype(int).tolist()
             for m, model in models.items():
                 balls, persons = run_model(model, x, size, ball_thresh, DECODE_FLOOR)
                 pb = np.array([p[:4] for p in persons]).reshape(-1, 4)
@@ -567,9 +569,15 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
                 got = greedy_assign(pb[keep], sc[keep], people)
                 o["kept"] += int(keep.sum())
                 o["other"] += int((got < 0).sum())
+                nobody = 0
                 if (got < 0).any():  # on nobody labelled at all (the crowd, benches, staff), not a loose box on someone
                     near = iou_matrix(pb[keep][got < 0], people).max(axis=1) if len(people) else np.zeros(int((got < 0).sum()))
-                    o["nobody"] += int((near < 0.1).sum())
+                    nobody = int((near < 0.1).sum())
+                o["nobody"] += nobody
+                o["nobody_frames"].append(nobody)
+                matched = np.zeros(len(people), int)
+                matched[got[got >= 0]] = 1
+                o["found"] += matched.tolist()
                 o["refs"] += len(refs)
                 o["refs_found"] += int(sum(1 for j in got if j >= 0 and is_ref[j]))
                 o["rule"] += [(bool(is_ref[j]), is_referee(frame_bgr, tuple(b), "learned"),
@@ -591,6 +599,8 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
             msg = " ".join(f"{Path(m).name}: R {t['players'].summary(thresh)['recall']:.3f}" for m, t in tally.items())
             print(f"{key[:60]} ({len(frames)} frames) {msg}", file=sys.stderr, flush=True)
     first = next(iter(tally.values()))["hits"] if tally else []
+    first_found = next(iter(tally.values()))["found"] if tally else []
+    first_nobody = next(iter(tally.values()))["nobody_frames"] if tally else []
     if skipped:
         print(f"{ann.name}: {skipped} frames without a readable image left out", file=sys.stderr)
     out: dict[str, dict[str, Any]] = {}
@@ -599,11 +609,25 @@ def coco_bench(ann: Path, images: Path, models: dict[str, Any], thresh: float, b
         frames_scored = len(o["hits"]) + o["no_ball_frames"]
         out[m] = {"frames_skipped": skipped, "players": o["players"].summary(thresh), "people": o["people"].summary(thresh),
                   "referees": {"n_truth": o["refs"], "found": o["refs_found"],
-                               "recall": o["refs_found"] / o["refs"] if o["refs"] else None},
+                               "recall": o["refs_found"] / o["refs"] if o["refs"] else None,
+                               "vs_first": mcnemar([a for a, r in zip(first_found, found_is_ref) if r],
+                                                   [b for b, r in zip(o["found"], found_is_ref) if r])},
+                  # each labelled person found by a kept detection (``thresh``, one detection a person), in label
+                  # order, and whether a referee: paired tests between models (``vs_first``: against the first one)
+                  "found": {"players": sum(f for f, r in zip(o["found"], found_is_ref) if not r),
+                            "players_truth": len(found_is_ref) - sum(found_is_ref),
+                            "players_vs_first": mcnemar([a for a, r in zip(first_found, found_is_ref) if not r],
+                                                        [b for b, r in zip(o["found"], found_is_ref) if not r]),
+                            "hits": o["found"], "is_referee": found_is_ref},
                   "other": {"detections": o["other"], "share": o["other"] / o["kept"] if o["kept"] else None,
                             "per_frame": o["other"] / frames_scored if frames_scored else None,
                             "on_nobody": o["nobody"],
-                            "on_nobody_per_frame": o["nobody"] / frames_scored if frames_scored else None},
+                            "on_nobody_per_frame": o["nobody"] / frames_scored if frames_scored else None,
+                            # a paired sign test per frame: only_first = frames where the first model puts more
+                            # boxes on nobody than this one, only_second = frames where this one puts more
+                            "on_nobody_vs_first": mcnemar([int(a > b) for a, b in zip(first_nobody, o["nobody_frames"])],
+                                                          [int(b > a) for a, b in zip(first_nobody, o["nobody_frames"])]),
+                            "on_nobody_frames": o["nobody_frames"]},
                   "referee_rule": _rule_counts([(r, c) for r, c, _ in o["rule"]]),
                   "referee_rule_shirt": _rule_counts([(r, c) for r, _, c in o["rule"]]),
                   "referee_rule_on_truth": _rule_counts([(r, c) for r, c, _ in rule_on_truth]),
@@ -659,6 +683,11 @@ def main(argv: list[str] | None = None) -> int:
                               a.ball_tol, a.coco_history, a.quiet) if ann.name.endswith("_ann.json") else \
                 coco_bench(ann, ann.parent, models, a.thresh, a.ball_thresh, a.ball_tol, a.coco_history, a.quiet)
             res[str(ann)] = part
+        if a.json:  # first: a table that fails to print must not lose a long run
+            a.json.parent.mkdir(parents=True, exist_ok=True)
+            a.json.write_text(json.dumps({"coco": a.coco, "history": a.coco_history, "thresh": a.thresh,
+                                          "ball_thresh": a.ball_thresh, "tol_px_1080": a.ball_tol, "results": res},
+                                         indent=1))
         print(f"\nCOCO human labels ({a.coco}); input history {a.coco_history}; people at IoU {IOU_MATCH}, "
               f"threshold {a.thresh}; ball within {a.ball_tol:g} px of 1080 lines, threshold {a.ball_thresh}\n")
         print("| set | model | players AP50 | players recall | people AP50 | people recall | ball hit | wrong | missed |"
@@ -676,14 +705,23 @@ def main(argv: list[str] | None = None) -> int:
                       f"{rate(fa)} | {cmp} |")
         print(f"\nReferees found and detections that match nobody labelled (the crowd, benches, coaches), at {a.thresh}; "
               "the referee rule (nba.analyze.is_referee) on the matched detections\n")
-        print("| set | model | referees found | unmatched detections (share, per frame) | of them on nobody (per frame) "
-              "| learned: referees called, players called referee | shirt rule: the same |")
-        print("|---|---|---|---|---|---|---|")
+        print("| set | model | referees found | vs first: only it / only first, p | players found (vs first) "
+              "| unmatched detections (share, per frame) | of them on nobody (per frame) "
+              "| vs first: frames with more / fewer, p | learned: referees called, players called referee "
+              "| shirt rule: the same |")
+        print("|---|---|---|---|---|---|---|---|---|---|")
+        num = lambda v, f: "—" if v is None else format(v, f)  # no frame scored
         for ann, part in res.items():
-            for m, o in part.items():
-                r, ot, ru, sh = o["referees"], o["other"], o["referee_rule"], o["referee_rule_shirt"]
-                print(f"| {Path(ann).name} | {Path(m).name} | {r['found']} / {r['n_truth']} | {ot['detections']} "
-                      f"({ot['share']:.3f}, {ot['per_frame']:.2f}) | {ot['on_nobody']} ({ot['on_nobody_per_frame']:.2f}) | "
+            for i, (m, o) in enumerate(part.items()):
+                r, ot, ru, sh, fd = o["referees"], o["other"], o["referee_rule"], o["referee_rule_shirt"], o["found"]
+                vr, vp, vn = r["vs_first"], fd["players_vs_first"], ot["on_nobody_vs_first"]
+                cr = "—" if i == 0 else f"{vr['only_second']} / {vr['only_first']}, p {vr['p_value']:.3g}"
+                cp = "" if i == 0 else f" ({vp['only_second']} / {vp['only_first']}, p {vp['p_value']:.3g})"
+                cn = "—" if i == 0 else f"{vn['only_second']} / {vn['only_first']}, p {vn['p_value']:.3g}"
+                print(f"| {Path(ann).name} | {Path(m).name} | {r['found']} / {r['n_truth']} | {cr} | "
+                      f"{fd['players']} / {fd['players_truth']}{cp} | {ot['detections']} "
+                      f"({num(ot['share'], '.3f')}, {num(ot['per_frame'], '.2f')}) | {ot['on_nobody']} "
+                      f"({num(ot['on_nobody_per_frame'], '.2f')}) | {cn} | "
                       f"{ru['referees_called']} / {ru['referees']}, "
                       f"{ru['players_called_referee']} / {ru['players']} | {sh['referees_called']} / {sh['referees']}, "
                       f"{sh['players_called_referee']} / {sh['players']} |")
@@ -692,11 +730,6 @@ def main(argv: list[str] | None = None) -> int:
                 t = first[tag]
                 print(f"\n{Path(ann).name}, {tag}: {t['referees_called']} of {t['referees']} referees, "
                       f"{t['players_called_referee']} of {t['players']} players called referee")
-        if a.json:
-            a.json.parent.mkdir(parents=True, exist_ok=True)
-            a.json.write_text(json.dumps({"coco": a.coco, "history": a.coco_history, "thresh": a.thresh,
-                                          "ball_thresh": a.ball_thresh, "tol_px_1080": a.ball_tol, "results": res},
-                                         indent=1))
         return 0
 
     if a.ball_folder is not None:
