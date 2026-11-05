@@ -1326,3 +1326,35 @@ within chance of the shirt rule on both games (the Lakers @ Warriors second half
 quarter-second steps are not independent), and the box-score error is lower on both (0.197 to 0.178, 0.511 to 0.448;
 one number a game, no test). Whether it becomes the default is the owner's decision (§13.3); the shirt rule stays the
 default.
+
+**Result** (`runs/bench/local/r8_bard_link.json`; in brackets only the candidate / only v2): v2 92.8 %, R8-ctrl 92.5 %
+(14 / 17, p 0.72), R8a 91.8 % (11 / 22, p 0.080), R8e 93.4 % (15 / 8, p 0.21), R8f 93.2 % (15 / 11, p 0.56). No
+candidate is worse than v2 beyond chance, so all four still pass. The cloud's finding shows here too, not significantly
+(R8a, the new clips alone, 11 frames against 22), and E-BARD's labels undo it (R8e against R8a 19 / 1, p 4.0e-5; R8f
+16 / 1, p 0.00028).
+
+### 13.12 R8f in the pipeline
+
+R8f re-detected both games on Core ML, then `ball`, `events` (shirt rule), `timeline`, against v2's run on the same
+code (`v2-now`, which reproduces §10.14's v2 numbers exactly); made or missed paired over the shots both found:
+
+| | v2 | R8f |
+|---|---:|---:|
+| Lakers @ Warriors: team with the ball, timeline (first / second half) | **97.4 %** (98.2 / 96.6) | 97.1 % (97.9 / 96.5) |
+| the same: engine alone | **72.6 %** | 55.8 % |
+| the same: changes of possession, precision / recall (195 true) | 0.76 / 0.61 | 0.77 / 0.59 |
+| the same: real shot or not / free throw or not / made or missed | 78.0 / 95.4 / 84.6 % | 75.8 / 96.1 / **87.6 %** |
+| the same: made or missed paired (only R8f right / only v2, of 175 shots) | | 14 / 9, p 0.41 |
+| the same: box-score error; steals F1 (8 true) / turnovers F1 (22 true) | 0.197; 0.30 / 0.40 | **0.171**; 0.43 / 0.43 |
+| Cavaliers @ Warriors: team with the ball, timeline (first / second half) | 74.9 % (71.3 / 78.3) | **75.6 %** (71.3 / 79.9) |
+| the same: engine alone | 58.4 % | 59.9 % |
+| the same: candidates; real shot or not / made or missed | 266; 51.9 / 75.0 % | 288; **60.1** / 74.6 % |
+| the same: made or missed paired (of 116 shots) | | 18 / 18, p 1 |
+| the same: box-score error | 0.511 | **0.454** |
+
+The possession timeline and made-or-missed are within chance of v2 on both games, so R8f passes the rule's pipeline
+part. One number moves a lot: on the Lakers @ Warriors game the engine's own possession calls, before the timeline,
+fall from 72.6 % to 55.8 %. It is not a team swap in one stretch of the game (R8f's engine agrees with v2's on 51-77 %
+of each 10-minute window) but noisier calls throughout (363 changes of possession against v2's 303), likely because
+R8f boxes more people near the sidelines, whose shirts the team assignment then reads; the timeline, which the
+README's possession number and the box score come from, undoes it (97.1 %).
