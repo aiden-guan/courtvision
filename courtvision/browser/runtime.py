@@ -54,6 +54,12 @@ class _PreparedBroadcast(BroadcastPerception):
 
 
 class BrowserPipeline:
+    # Until the court tracker has started, a start (the tracker's search near the earliest view's camera) is tried on
+    # the clip's first frame, on each shot boundary (the game camera comes back on a cut) and every START_EVERY
+    # frames in between: a try that fails costs a camera search, and on a clip whose game view comes late (or never)
+    # one per frame made the setup the slowest part of the analysis.
+    START_EVERY = 5
+
     def __init__(self):
         self.court = court_for("nba")
         self.center = None
@@ -68,6 +74,7 @@ class BrowserPipeline:
         self.frame_idx = -1
         self.t = 0.
         self.gate = None
+        self._next_start = 0  # the frame of the next try to start the court tracker (``START_EVERY``)
 
     def calibrate(self, frames, width, height, progress=None):
         """``frames`` as nba-clip.js samples them: six views ``step`` apart from the clip's start, then (optional)
@@ -84,7 +91,10 @@ class BrowserPipeline:
     def prepare(self, rgba, width, height, frame_idx, t):
         self.image = image_rgba(rgba, width, height)
         self.frame_idx, self.t = int(frame_idx), float(t)
-        if self.pipeline is None and self.center is not None and self.initial is not None:
+        cut = self.pipeline is None and self.cuts.update(self.image)
+        if (self.pipeline is None and self.center is not None and self.initial is not None
+                and (cut or self.frame_idx >= self._next_start)):
+            self._next_start = self.frame_idx + self.START_EVERY
             auto = BroadcastCourtTracker(self.court, (width, height), self.center)
             auto.reset(self.initial)
             fix = auto.update(self.image, cut=True)
@@ -101,7 +111,7 @@ class BrowserPipeline:
             self.pipeline.prepared = self.gate
             if self.gate.cut or not self.gate.live:
                 self.history.clear()
-        elif self.cuts.update(self.image):
+        elif cut:
             self.history.clear(); self.preview.reset(); self.ball.reset()
         if self.gate is not None and not self.gate.live:
             current = preprocess_frames([self.image])

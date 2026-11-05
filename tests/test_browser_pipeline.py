@@ -134,3 +134,36 @@ def test_court_setup_starts_the_tracker_from_the_earliest_view_found(monkeypatch
     pipeline = BrowserPipeline()
     assert json.loads(pipeline.calibrate([frame] * 6, 6, 4)) == {"calibrated": True}  # the six alone, as before
     assert got == {"views": 6, "more": 0} and pipeline.initial.pan == 3.
+
+
+def test_court_tracker_start_is_tried_on_the_first_frame_on_cuts_and_every_few_frames(monkeypatch):
+    """A start that fails costs a camera search, so until the tracker starts it is tried on the clip's first frame,
+    on each shot boundary and every ``START_EVERY`` frames, not on every frame."""
+    from types import SimpleNamespace
+
+    from courtvision.browser import runtime
+    from courtvision.perception.court_search import CameraParams
+
+    tries = []
+
+    class Tracker:
+        def __init__(self, court, size, center):
+            pass
+
+        def reset(self, params):
+            pass
+
+        def update(self, image, cut=False):
+            tries.append(pipeline.frame_idx)
+            return SimpleNamespace(homography=lambda size: None)  # the court not found: no start
+
+    monkeypatch.setattr(runtime, "BroadcastCourtTracker", Tracker)
+    pipeline = BrowserPipeline()
+    pipeline.center = np.array([47., -94., 36.])
+    pipeline.initial = CameraParams(pipeline.center, 0., 15.5, 0., 2300.)
+    pipeline.cuts = SimpleNamespace(update=lambda image: pipeline.frame_idx == 7)
+    frame = cv2.cvtColor(np.zeros((4, 6, 3), np.uint8), cv2.COLOR_BGR2RGBA).ravel()
+    for index in range(13):
+        pipeline.prepare(frame, 6, 4, index, index/29.97)
+    assert BrowserPipeline.START_EVERY == 5
+    assert tries == [0, 5, 7, 12] and pipeline.pipeline is None

@@ -48,6 +48,9 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
    NBA.com clips: 0.03-0.15), so fits of 0.10 count too when at least two of them agree on one centre inside the
    prior's camera box. The browser app searches six views of a clip, and the six between them when one of the six
    shows a game view but too few fit; the Studio keeps the 0.15 rule, since its centre is saved for the game.
+   Until its court tracker has started, the browser tries the start (a camera search near the earliest view's
+   camera) on the clip's first frame, on each shot boundary and every fifth frame (`BrowserPipeline.START_EVERY`),
+   not on every frame: on clips whose game view comes late, failed tries were most of the analysis time.
 
 ## Adding a game
 
