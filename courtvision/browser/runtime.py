@@ -70,9 +70,15 @@ class BrowserPipeline:
         self.gate = None
 
     def calibrate(self, frames, width, height, progress=None):
+        """``frames`` as nba-clip.js samples them: six views ``step`` apart from the clip's start, then (optional)
+        the views between them, searched only when the six do not find the camera (``estimate_center(more=)``)."""
         images = [image_rgba(f, width, height) for f in frames]
-        self.center, cameras = estimate_center(images, self.court, progress=progress)
-        self.initial = next((cam for cam in cameras if cam is not None), None)
+        views, between = images[:6], images[6:]
+        self.center, cameras = estimate_center(views, self.court, progress=progress, more=between)
+        # the tracker starts on the clip's first frame: the camera of the earliest view (view i at i * step, the one
+        # after it at (i + 1/2) * step)
+        order = sorted(range(len(cameras)), key=lambda k: k if k < len(views) else k - len(views) + .5)
+        self.initial = next((cameras[k] for k in order if cameras[k] is not None), None)
         return json.dumps({"calibrated": self.center is not None and self.initial is not None})
 
     def prepare(self, rgba, width, height, frame_idx, t):

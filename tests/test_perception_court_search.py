@@ -441,3 +441,104 @@ def test_oriented_distance_and_explained_lines_match_the_direct_computation() ->
         p = CameraParams(CENTER, rng.uniform(-60, 60), rng.uniform(-5, 40), rng.uniform(-5, 5),
                          float(np.exp(rng.uniform(math.log(150), math.log(4000)))))
         assert explained(ev, COURT, p) == _old_explained(ev, COURT, p)
+
+
+# ---------------------------------------------------------------- estimate_center: weak fits pooled only when they agree
+
+
+def test_center_in_box_holds_game_camera_positions_only() -> None:
+    assert court_search.center_in_box(CENTER)
+    assert court_search.center_in_box(np.array([47.0, -62.0, 26.0]))  # every grid centre of the prior
+    assert not court_search.center_in_box(np.array([-20.0, 25.0, 15.0]))  # behind a baseline, low
+    assert not court_search.center_in_box(np.array([47.0, -30.0, 36.0]))  # at the sideline
+    assert not court_search.center_in_box(np.array([47.0, -94.0, 80.0]))  # in the roof
+    assert not court_search.center_in_box(np.array([47.0, np.nan, 36.0]))
+    assert not court_search.center_in_box(np.array([47.0, -94.0]))
+
+
+def _estimate(monkeypatch: pytest.MonkeyPatch, qualities: list[float | None], centre: np.ndarray,
+              at_centre: dict[int, float], more: int = 0, **kwargs):
+    """``estimate_center`` on one blank frame per entry of ``qualities`` (the last ``more`` of them passed as
+    ``more``) with the search, the joint fit and the explained-lines share faked: frame i's own fit scores
+    qualities[i] (None: no fit), ``fit_center`` returns ``centre`` and, for each pooled frame i, a camera scoring
+    at_centre[i] there. Returns (centre, cameras, the frames pooled by the last joint fit, the frames searched)."""
+    from types import SimpleNamespace
+
+    from courtvision.perception import broadcast_court as module
+
+    size = (960, 540)
+    cam = CameraParams(CENTER, 0.0, 15.5, 0.0, 2300.0)  # a plausible game camera at this size
+    frames = [np.full((size[1], size[0], 3), i, np.uint8) for i in range(len(qualities))]
+    pooled: list[int] = []
+    searched: list[int] = []
+    monkeypatch.setattr(module, "court_evidence", lambda img, *a: SimpleNamespace(size=size, frame=int(img[0, 0, 0])))
+
+    def calibrate_frame(ev, *a, **k):
+        searched.append(ev.frame)
+        q = qualities[ev.frame]
+        return None if q is None else SimpleNamespace(quality=q, params=cam, coverage=q)
+
+    def fit_center(evs, court, starts):
+        pooled[:] = [ev.frame for ev in evs]
+        return centre, [SimpleNamespace(params=cam, coverage=at_centre.get(ev.frame, 0.0)) for ev in evs]
+
+    monkeypatch.setattr(module, "calibrate_frame", calibrate_frame)
+    monkeypatch.setattr(module, "fit_center", fit_center)
+    monkeypatch.setattr(module, "explained", lambda *a: 1.0)  # a frame scores its coverage
+    first = frames[:len(frames) - more]
+    found, cams = module.estimate_center(first, COURT, more=frames[len(first):] or None, **kwargs)
+    return found, cams, pooled, searched
+
+
+def test_weak_fits_that_agree_on_a_game_camera_centre_calibrate(monkeypatch: pytest.MonkeyPatch) -> None:
+    found, cams, pooled, _ = _estimate(monkeypatch, [0.02, 0.12, None, 0.11, 0.09], CENTER, {1: 0.11, 3: 0.105})
+    assert pooled == [1, 3]  # the weak fits, not the poorer ones
+    np.testing.assert_array_equal(found, CENTER)
+    assert [c is not None for c in cams] == [False, True, False, True, False]
+    assert cams[1].f == pytest.approx(2300.0)  # the search ran at the frame's own width (no rescaling)
+
+
+@pytest.mark.parametrize("centre,at_centre", [
+    (np.array([-20.0, 25.0, 15.0]), {1: 0.12, 3: 0.12}),  # a centre no game camera has (behind the baseline)
+    (CENTER, {1: 0.12, 3: 0.06}),  # one of the two no longer fits at the shared centre
+])
+def test_weak_fits_that_disagree_do_not_calibrate(monkeypatch: pytest.MonkeyPatch, centre: np.ndarray,
+                                                  at_centre: dict[int, float]) -> None:
+    found, cams, pooled, _ = _estimate(monkeypatch, [0.02, 0.12, None, 0.11], centre, at_centre)
+    assert pooled == [1, 3] and found is None and cams == [None] * 4
+
+
+def test_a_single_weak_fit_or_weak_pooling_switched_off_does_not_calibrate(monkeypatch: pytest.MonkeyPatch) -> None:
+    found, cams, pooled, _ = _estimate(monkeypatch, [0.02, 0.14, 0.05], CENTER, {1: 0.14})
+    assert found is None and pooled == []  # nothing to agree with
+    found, cams, pooled, _ = _estimate(monkeypatch, [0.13, 0.14, 0.12], CENTER, {0: 0.13, 1: 0.14, 2: 0.12},
+                                       weak_quality=None)
+    assert found is None and pooled == [] and cams == [None] * 3
+
+
+def test_two_strong_fits_are_pooled_alone_as_before(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the centre is not checked against the box here (unchanged behaviour), and a camera stays at half min_quality
+    away = np.array([47.0, -140.0, 60.0])
+    found, cams, pooled, _ = _estimate(monkeypatch, [0.2, 0.12, 0.3, 0.16], away, {0: 0.08, 2: 0.07, 3: 0.2})
+    assert pooled == [0, 2, 3]
+    np.testing.assert_array_equal(found, away)
+    assert [c is not None for c in cams] == [True, False, False, True]
+
+
+def test_more_frames_are_searched_only_for_a_game_view_the_first_frames_could_not_fix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # one weak fit among the first three: the next frames are searched, in order, until two agree
+    found, cams, pooled, searched = _estimate(monkeypatch, [0.02, 0.12, 0.03, 0.05, 0.11, 0.3], CENTER,
+                                              {1: 0.12, 4: 0.11}, more=3)
+    assert searched == [0, 1, 2, 3, 4] and pooled == [1, 4]  # the last frame is never searched
+    np.testing.assert_array_equal(found, CENTER)
+    assert len(cams) == 6 and [c is not None for c in cams] == [False, True, False, False, True, False]
+    # no fit worth pooling among the first frames (close-ups, another camera): the others are not searched
+    found, cams, pooled, searched = _estimate(monkeypatch, [0.02, 0.05, 0.03, 0.2, 0.3], CENTER, {3: 0.2, 4: 0.3},
+                                              more=2)
+    assert searched == [0, 1, 2] and found is None and cams == [None] * 5
+    # the first frames fix the centre: the others are not searched either
+    found, cams, pooled, searched = _estimate(monkeypatch, [0.2, 0.3, 0.02, 0.2], CENTER, {0: 0.2, 1: 0.3}, more=1)
+    assert searched == [0, 1, 2] and pooled == [0, 1] and len(cams) == 4 and cams[3] is None
+

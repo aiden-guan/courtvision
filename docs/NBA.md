@@ -43,6 +43,11 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
    and after a loss in play re-acquisition is also tried 1, 4, 10 and 20 frames later
    (`--no-reacquire-after-loss` turns that off). Both were measured only on the fixed-seed synthetic arenas of
    `tools/court_bench.py`, not yet on broadcast footage.
+5. **Camera centre** (`broadcast_court.estimate_center`). Sample views are searched with the centre free; two fits
+   of quality (coverage x explained lines) 0.15 fix it. On dim or textured floors right fits score lower (720p
+   NBA.com clips: 0.03-0.15), so fits of 0.10 count too when at least two of them agree on one centre inside the
+   prior's camera box. The browser app searches six views of a clip, and the six between them when one of the six
+   shows a game view but too few fit; the Studio keeps the 0.15 rule, since its centre is saved for the game.
 
 ## Adding a game
 
