@@ -1058,3 +1058,20 @@ takes in players. On the 5 Roboflow games, where a "game" is one or two clips of
 learned check (F1 0.817 against 0.907, which is in-sample there) and falls back on 2: the method needs a game's worth
 of varied frames. Not measured: other eras (the 2017 game's referees and the Cavaliers' black jerseys are on the Mac)
 and the whole pipeline with it, so the shirt rule stays the default.
+
+### 13.4 Added before R8a, R8b, R8e or R8f was trained or any round-8 run scored: R8f, SportsMOT's officials
+
+Found while preparing it: the SportsMOT folders C (v2) and R8-ctrl trained on, the Mac's `data/ft/mot_train_ign` and
+`mot_val_ign`, carry only the foot hull's ignore boxes (521 on 494 `train` samples, 464 on 456 `val` samples; their
+`meta.json` has no referee setting), the version of `mark-ignore` from before §11's change, not R4b's referee-aware
+folders (6,920 and 4,277 boxes) that §10.9 names. So in v2's training most of SportsMOT's officials, among them the
+light-grey shirts of its Warriors-at-Oracle broadcast (2016-17, like the 2017 Finals), were taught as background:
+the cause the cloud proposed for v2's 2017 referees (§10.13: 23 % on the court, the first app model 84 %).
+
+* **R8f**: R8e with SportsMOT's officials as the cloud's `mot_*_ref` (`mark-ignore --promote`, the tool's defaults:
+  the first app model as labeller, the officials that pass `promote_officials` as person labels, the other people
+  among the players or read as referees ignored) in place of the Mac's `mot_*_ign`. Against the Mac's folders this
+  is one change to how SportsMOT's unlabelled officials are treated, made of two parts: promoted ones become people,
+  and the referee-aware ignore boxes replace the hull-only ones. The labeller runs on the GPU (its `student_from_onnx`
+  copy, as in §13.1's tools), like the first app model that made `mot_*_ign`.
+* Measured as the others (§13.1-13.2), with the 2017 game's referees on the court read beside the rule.
