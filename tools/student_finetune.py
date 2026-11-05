@@ -40,7 +40,8 @@ import os
 import random
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,7 @@ from courtvision.perception.student import (INPUT_HW, OUTPUTS, TRAIN_FPS, histor
 
 SAVE_WIDTH = 960
 DEFAULT_MODEL = ROOT / "courtvision" / "server" / "static" / "nba-student.onnx"
+APP_V1_MODEL = ROOT / "runs" / "models" / "app-v1.onnx"  # the first app model (checkpoint 8bdf229a): boxes everyone
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".m4v"}
 
 
@@ -348,14 +350,112 @@ def foot_hull_ignore(players: np.ndarray, found: np.ndarray, scores: np.ndarray,
     return out
 
 
+@dataclass(frozen=True)
+class Promote:
+    """Which unlabelled people ``mark-ignore --promote`` makes person labels (``promote_officials``). With these
+    defaults and the first app model as the labeller, 674 of 679 random promoted boxes of SportsMOT's 7 broadcasts
+    (up to 100 a broadcast, judged by eye) were officials, the rest coaches or bench staff at the sideline. Combined
+    with the learned check (``either``), about 12 of 100 drawn on one Lakers at New Orleans clip were fans seated
+    courtside; under a labeller score of 0.4 the shirt rule let in a bench in dark tracksuits and coaches in suits."""
+
+    referee: str = "shirt"  # the referee check: shirt, learned, either or both (``nba.referee.referee_calls``)
+    iou: float = 0.3  # a box overlapping a labelled player at this IoU or more is that player
+    score: float = 0.4  # the labeller's score a box needs (``ClipDataset``'s person_min_score for machine boxes)
+    ratio: tuple[float, float] = (0.8, 1.25)  # box height over ``standing_height`` at its foot row
+    above: float = 0.1  # foot row at most this share of the frame height above the farthest player's
+    border: float = 0.01  # the box keeps this share of the frame height clear of every image edge
+    min_players: int = 4  # labelled players a frame needs for the height fit
+
+
+def standing_height(players: np.ndarray, min_players: int = 4) -> tuple[float, float] | None:
+    """How tall a person standing among the labelled ``players`` of one frame (label px) is at each foot row: (a, b)
+    of ``height = a + b * foot_row`` (the box bottom), a Theil-Sen line (the median of the pairwise slopes, then the
+    median intercept), which a few crouching, jumping or occluded players do not move. Over a flat floor a standing
+    person's image height grows about linearly with the row the feet stand on (Hoiem et al. 2006, "Putting Objects
+    in Perspective"). None with fewer than ``min_players`` players or no spread of foot rows."""
+    if len(players) < max(2, min_players):
+        return None
+    y = players[:, 3].astype(float)
+    h = (players[:, 3] - players[:, 1]).astype(float)
+    i, j = np.triu_indices(len(players), 1)
+    dy = y[j] - y[i]
+    ok = np.abs(dy) > 1.0
+    if not ok.any():
+        return None
+    b = float(np.median((h[j] - h[i])[ok] / dy[ok]))
+    return float(np.median(h - b * y)), b
+
+
+def promote_officials(players: np.ndarray, found: np.ndarray, scores: np.ndarray, size: tuple[int, int],
+                      calls: Any, rule: Promote = Promote()) -> list[str]:
+    """Which boxes of ``found`` (people another model detected, label px, with ``scores``) a player-only label set
+    leaves out although they are officials: one entry per box, "" for a box to promote, else the first test it fails.
+    A box is promoted when it overlaps no labelled player (IoU under ``rule.iou``; else "player"), the labeller is
+    sure enough of it (``rule.score``; else "score"), the frame has a height fit (``standing_height``; else "fit"),
+    its foot row is at most ``rule.above`` of the frame height above the farthest player's (else "above": the
+    stands), its height is within ``rule.ratio`` of the fit's at its foot row (else "height": seated fans, the
+    benches, the raised stands), it keeps ``rule.border`` of the frame height clear of every image edge (else
+    "border": people cut off by the frame) and the referee check calls it a referee (``calls``: one flag per box;
+    else "referee")."""
+    if len(found) == 0:
+        return []
+    calls = list(calls)
+    if len(calls) != len(found) or len(scores) != len(found):
+        raise ValueError(f"{len(calls)} referee calls and {len(scores)} scores for {len(found)} boxes")
+    sys.path.insert(0, str(ROOT / "tools"))
+    from detector_bench import iou_matrix  # noqa: E402
+
+    over = iou_matrix(found, players).max(axis=1) if len(players) else np.zeros(len(found))
+    fit = standing_height(players, rule.min_players)
+    top = float(players[:, 3].min()) - rule.above * size[1] if len(players) else -math.inf
+    pad = rule.border * size[1]
+    out = []
+    for box, sc, o, ref in zip(found, scores, over, calls):
+        x1, y1, x2, y2 = (float(v) for v in box[:4])
+        want = fit[0] + fit[1] * y2 if fit is not None else 0.0
+        if o >= rule.iou:
+            out.append("player")
+        elif sc < rule.score:
+            out.append("score")
+        elif fit is None or want <= 1.0:
+            out.append("fit")
+        elif y2 < top:
+            out.append("above")
+        elif not rule.ratio[0] <= (y2 - y1) / want <= rule.ratio[1]:
+            out.append("height")
+        elif x1 < pad or y1 < pad or x2 > size[0] - pad or y2 > size[1] - pad:
+            out.append("border")
+        elif not ref:
+            out.append("referee")
+        else:
+            out.append("")
+    return out
+
+
+def referee_flags(frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]], method: str) -> np.ndarray:
+    """``nba.referee.referee_calls`` for ``Promote.referee``: ``shirt``, ``learned``, or the two combined (``either``:
+    one of them calls a referee; ``both``: the two do)."""
+    from courtvision.nba.referee import referee_calls
+
+    if method in ("shirt", "learned"):
+        return np.array(referee_calls(frame_bgr, boxes, method), bool).reshape(-1)
+    if method not in ("either", "both"):
+        raise ValueError(f"unknown referee method {method!r}")
+    shirt = np.array(referee_calls(frame_bgr, boxes, "shirt"), bool).reshape(-1)
+    learned = np.array(referee_calls(frame_bgr, boxes, "learned"), bool).reshape(-1)
+    return shirt | learned if method == "either" else shirt & learned
+
+
 def mark_ignore(src: Path, out: Path, model_path: Path, iou: float = 0.3, score: float = 0.3, margin: float = 0.05,
-                threads: int = 4, model: Any = None, referees: bool = True) -> int:
+                threads: int = 4, model: Any = None, referees: bool = True, promote: Promote | None = None) -> int:
     """A player-only folder (SportsMOT, ``prep-mot``) -> the same folder (``out``: its frames linked, not copied)
     whose rows carry ``ignore`` boxes (``foot_hull_ignore``) found by ``model_path`` (default: the app's export,
     which boxes everyone) on the network's own input of every sample: ``train_student.ClipDataset`` then leaves
     those people out of the person heatmap loss, so the referees the labels skip are not taught as background.
     ``referees``: also the people the referee check (``nba.referee``) reads as referees, wherever they stand.
-    ``model``: an already loaded ``detector_bench`` model (tests). Returns the number of ignore boxes."""
+    ``promote``: the people ``promote_officials`` passes become person labels instead (score 1, their indices in the
+    row's ``promoted``), whether they would have been ignore boxes or background; everyone else is treated as without
+    it. ``model``: an already loaded ``detector_bench`` model (tests). Returns the number of ignore boxes."""
     import shutil
 
     sys.path.insert(0, str(ROOT / "tools"))
@@ -367,7 +467,13 @@ def mark_ignore(src: Path, out: Path, model_path: Path, iou: float = 0.3, score:
         model = load_model(model_path, threads, sparse=True)
     plan = plan_data([str(src)])
     ds = ClipDataset(plan.folders, plan.train | plan.val, train=False, weights=plan.weights)
+    src_meta = json.loads((src / "meta.json").read_text())
+    sequence = {c["clip"]: c.get("sequence", str(c["clip"])) for c in src_meta.get("clips", [])}
     marks: dict[tuple[int, int], list[list[float]]] = {}
+    ups: dict[tuple[int, int], list[list[float]]] = {}
+    why: Counter[str] = Counter()
+    by_seq: Counter[str] = Counter()
+    up_ignored = 0  # promoted boxes that would have been ignore boxes (the rest would have been background)
     n_rows = 0
     for i, (fi, clip, frames, det, _) in enumerate(ds.items):
         players = np.array([q[:4] for q in det["persons"]], float).reshape(-1, 4)
@@ -379,36 +485,68 @@ def mark_ignore(src: Path, out: Path, model_path: Path, iou: float = 0.3, score:
         found = np.array([q[:4] for q in persons], float).reshape(-1, 4)
         scores = np.array([q[4] for q in persons], float)
         ref = None
+        img, stored = None, []
+        if (referees or promote is not None) and len(found):
+            img = ds._img(fi, clip, frames[-1])
+            k = img.shape[1] / float(size[0])  # stored px per label px
+            stored = [tuple(float(v) * k for v in b) for b in found]
         if referees and len(found):
             from courtvision.nba import referee_model
             from courtvision.nba.referee import referee_probs
 
-            img = ds._img(fi, clip, frames[-1])
-            k = img.shape[1] / float(size[0])  # stored px per label px
-            ref = referee_probs(img, [tuple(float(v) * k for v in b) for b in found], referee_model) \
-                >= referee_model.THRESHOLD
-        boxes = foot_hull_ignore(players, found, scores, size, iou, score, margin, ref)
+            ref = referee_probs(img, stored, referee_model) >= referee_model.THRESHOLD
+        up = np.zeros(len(found), bool)
+        if promote is not None and len(found):
+            tests = promote_officials(players, found, scores, size, referee_flags(img, stored, promote.referee),
+                                      promote)
+            why.update(t or "promoted" for t in tests)
+            up = np.array([t == "" for t in tests])
+            if up.any():
+                ups[(clip, frames[-1])] = [[round(float(v), 1) for v in b[:4]] + [1.0] for b in found[up]]
+                by_seq[sequence.get(clip, str(clip))] += int(up.sum())
+                up_ignored += len(foot_hull_ignore(players, found[up], scores[up], size, iou, score, margin,
+                                                   None if ref is None else ref[up]))
+        boxes = foot_hull_ignore(players, found[~up], scores[~up], size, iou, score, margin,
+                                 None if ref is None else ref[~up])
         n_rows += 1
         if boxes:
             marks[(clip, frames[-1])] = boxes
         if n_rows % 500 == 0:
-            print(f"{n_rows} samples, {sum(len(v) for v in marks.values())} ignore boxes", file=sys.stderr, flush=True)
+            print(f"{n_rows} samples, {sum(len(v) for v in marks.values())} ignore boxes, "
+                  f"{sum(len(v) for v in ups.values())} promoted", file=sys.stderr, flush=True)
     out.mkdir(parents=True, exist_ok=True)
     rows = [json.loads(line) for line in (src / "detections.jsonl").open()]
     for r in rows:
         if (r["clip"], r["frame"]) in marks:
             r["ignore"] = marks[(r["clip"], r["frame"])]
+        if (r["clip"], r["frame"]) in ups:
+            n_players = len(r["persons"])
+            r["persons"] = r["persons"] + ups[(r["clip"], r["frame"])]
+            r["promoted"] = list(range(n_players, len(r["persons"])))
     (out / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     shutil.copyfile(src / "ball_labels.jsonl", out / "ball_labels.jsonl")
     if not (out / "frames").exists():
         (out / "frames").symlink_to((src / "frames").resolve(), target_is_directory=True)
-    meta = json.loads((src / "meta.json").read_text())
+    meta = src_meta
     n = sum(len(v) for v in marks.values())
     meta["ignore"] = {"model": str(model_path), "iou": iou, "score": score, "margin": margin, "referees": referees,
                       "boxes": n, "rows": len(marks), "samples": n_rows,
                       "what": "unlabelled people among the labelled players or read as referees: no person loss"}
+    if promote is not None:
+        n_up = sum(len(v) for v in ups.values())
+        meta["persons"] = f"{meta.get('persons', 'players')}; and the officials promoted from {Path(model_path).name}"
+        meta["promote"] = {
+            "model": str(model_path), "rule": asdict(promote), "boxes": n_up, "rows": len(ups),
+            "were_ignore": up_ignored, "were_background": n_up - up_ignored,
+            "tests": {k: why[k] for k in ("promoted", "player", "score", "fit", "above", "height", "border",
+                                          "referee")},
+            "by_sequence": dict(sorted(by_seq.items())),
+            "what": "unlabelled people standing among the players, clear of the image border, called referees: person "
+                    "labels with score 1 (the row's promoted indices into persons)"}
     (out / "meta.json").write_text(json.dumps(meta, indent=1))
-    print(f"{out}: {n} ignore boxes on {len(marks)} of {n_rows} samples", file=sys.stderr)
+    print(f"{out}: {n} ignore boxes on {len(marks)} of {n_rows} samples"
+          + (f", {sum(len(v) for v in ups.values())} promoted on {len(ups)}" if promote is not None else ""),
+          file=sys.stderr)
     return n
 
 
@@ -840,13 +978,30 @@ def main(argv: list[str] | None = None) -> int:
                                          "players (mostly referees) left out of the person loss")
     p.add_argument("src", type=Path)
     p.add_argument("out", type=Path)
-    p.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="the model that finds everyone (the app's export)")
+    p.add_argument("--model", type=Path, default=None,
+                   help=f"the model that finds everyone (default: the app's export {DEFAULT_MODEL.relative_to(ROOT)}; "
+                        f"with --promote the first app model {APP_V1_MODEL.relative_to(ROOT)})")
     p.add_argument("--iou", type=float, default=0.3, help="overlap with a labelled player that makes a box that player")
     p.add_argument("--score", type=float, default=0.3)
     p.add_argument("--margin", type=float, default=0.05, help="growth of the players' foot hull, share of frame height")
     p.add_argument("--referees", action=argparse.BooleanOptionalAction, default=True,
                    help="also ignore the people the referee check reads as referees, wherever they stand")
     p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--promote", action="store_true",
+                   help="make the unlabelled officials person labels (promote_officials): no labelled player within "
+                        "--iou, standing among the players, clear of the image border, called a referee")
+    p.add_argument("--promote-referee", choices=("shirt", "learned", "either", "both"), default=Promote.referee,
+                   help="the referee check of --promote")
+    p.add_argument("--promote-score", type=float, default=Promote.score,
+                   help="the labeller's score a promoted box needs")
+    p.add_argument("--promote-ratio", default=",".join(str(v) for v in Promote.ratio),
+                   help="LOW,HIGH: box height over the players' fitted height at its foot row")
+    p.add_argument("--promote-above", type=float, default=Promote.above,
+                   help="foot row at most this share of the frame height above the farthest player's")
+    p.add_argument("--promote-border", type=float, default=Promote.border,
+                   help="clearance from every image edge, share of the frame height")
+    p.add_argument("--promote-min-players", type=int, default=Promote.min_players,
+                   help="labelled players a frame needs for the height fit")
     p = sub.add_parser("prep-teacher", help="videos -> an RF-DETR teacher folder (held-out ball checks)")
     p.add_argument("src", type=Path)
     p.add_argument("out", type=Path)
@@ -911,8 +1066,14 @@ def main(argv: list[str] | None = None) -> int:
         court_people(a.src, a.game, a.out, a.keep_ft, a.ignore_ft, a.min_score)
         return 0
     if a.cmd == "mark-ignore":
-        return 0 if mark_ignore(a.src, a.out, a.model, a.iou, a.score, a.margin, a.threads,
-                                referees=a.referees) >= 0 else 2
+        rule = None
+        if a.promote:
+            lo, hi = (float(v) for v in a.promote_ratio.split(","))
+            rule = Promote(a.promote_referee, a.iou, a.promote_score, (lo, hi), a.promote_above, a.promote_border,
+                           a.promote_min_players)
+        model = a.model or (APP_V1_MODEL if a.promote else DEFAULT_MODEL)
+        return 0 if mark_ignore(a.src, a.out, model, a.iou, a.score, a.margin, a.threads,
+                                referees=a.referees, promote=rule) >= 0 else 2
     if a.cmd == "prep-teacher":
         return 0 if prep_teacher(a.src, a.out, a.frames, a.weights, a.shape, a.device) else 2
     if a.cmd == "train":

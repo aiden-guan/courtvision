@@ -288,6 +288,180 @@ def test_mark_ignore_writes_ignore_boxes_and_links_the_frames(tmp_path: Path) ->
     assert meta["video"] == "mot:x" and meta["ignore"]["boxes"] == 1
 
 
+def _standing(foot_x: float, foot_y: float, w: float = 40.0, scale: float = 1.0) -> list[float]:
+    """A box (label px) of a person standing with feet at (foot_x, foot_y), as tall as the players of the promote
+    tests (``0.2 * foot_y + 20``) times ``scale``."""
+    h = (0.2 * foot_y + 20.0) * scale
+    return [foot_x - w / 2, foot_y - h, foot_x + w / 2, foot_y]
+
+
+# five players of 1280 x 720 frames whose heights grow with their foot rows; foot hull (200, 600)-(1000, 600)-
+# (900, 300)-(300, 300)
+_PLAYERS = [_standing(200, 600), _standing(1000, 600), _standing(300, 300, 30), _standing(900, 300, 30),
+            _standing(600, 520)]
+
+
+def test_standing_height_fits_the_players_and_shrugs_off_a_crouch() -> None:
+    players = np.array(_PLAYERS)
+    a, b = sf.standing_height(players)
+    assert a == pytest.approx(20.0) and b == pytest.approx(0.2)
+    crouch = players.copy()
+    crouch[4, 1] += 50.0  # one player crouching: 50 px shorter
+    a, b = sf.standing_height(crouch)
+    assert a + b * 450 == pytest.approx(110.0, abs=4.0)
+    assert sf.standing_height(players[:3]) is None  # too few players for the default fit
+    assert sf.standing_height(players[:3], min_players=3) == pytest.approx((20.0, 0.2))
+    flat = players.copy()
+    flat[:, 3] = 400.0
+    assert sf.standing_height(flat) is None  # every foot on one row: no slope
+
+
+def test_promote_officials_takes_standing_referees_only() -> None:
+    players = np.array(_PLAYERS)
+    found = np.array([_PLAYERS[0],                              # a labelled player
+                      _standing(500, 450),                      # a referee standing among the players
+                      _standing(405, 450, 50, scale=0.55),      # seated: about half as tall as the fit says
+                      _standing(500, 450, scale=1.6),           # far taller than a person standing there
+                      _standing(615, 120, 30),                  # the stands, far above the farthest player
+                      _standing(1264, 450, 30),                 # cut off by the frame's right edge
+                      _standing(720, 450),                      # standing, but not dressed as a referee
+                      _standing(820, 450)])                     # a referee the labeller is unsure of
+    scores = np.array([0.9, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.35])
+    calls = [True, True, True, True, True, True, False, True]
+    assert sf.promote_officials(players, found, scores, (1280, 720), calls) == [
+        "player", "", "height", "height", "above", "border", "referee", "score"]
+    assert sf.promote_officials(players[:3], found, scores, (1280, 720), calls) == ["player"] + ["fit"] * 6 + ["score"]
+    # each test relaxed: each box it rejected passes
+    loose = sf.Promote(score=0.3, ratio=(0.5, 1.7), above=0.5, border=0.0)
+    assert sf.promote_officials(players, found, scores, (1280, 720), calls, loose) == [
+        "player", "", "", "", "", "", "referee", ""]
+    assert sf.promote_officials(players, np.zeros((0, 4)), np.zeros(0), (1280, 720), []) == []
+    with pytest.raises(ValueError):
+        sf.promote_officials(players, found, scores, (1280, 720), calls[:3])
+
+
+def _draw_person(img: np.ndarray, box: list[float], k: float, shirt: tuple[int, int, int], striped: bool) -> None:
+    """A person in ``box`` (label px; ``k`` stored px per label px): a shirt (rows 15-52 %; black stripes every other
+    eighth of the width when ``striped``, as a referee's) and dark trousers."""
+    x1, y1, x2, y2 = (int(round(v * k)) for v in box)
+    h, w = y2 - y1, x2 - x1
+    img[y1 + int(0.15 * h):y1 + int(0.52 * h), x1:x2] = shirt
+    if striped:
+        for j in range(0, 8, 2):
+            img[y1 + int(0.15 * h):y1 + int(0.52 * h), x1 + int(j * w / 8):x1 + int((j + 1) * w / 8)] = (25, 25, 25)
+    img[y1 + int(0.52 * h):y1 + int(0.9 * h), x1:x2] = (20, 20, 20)
+
+
+def _promote_folder(tmp_path: Path) -> tuple[Path, dict[str, list[float]]]:
+    """A SportsMOT-like folder (prep-mot's layout; one clip of 3 frames, the third a sample) with the five players
+    labelled, and people the labels leave out drawn into the frames."""
+    people = {"referee": _standing(500, 450),                   # among the players: mark-ignore ignores him
+              "near": _standing(125, 680, 50),                  # at the near sideline, below every player: background
+              "blue": _standing(720, 450),                      # among the players in a blue shirt: ignored
+              "seated": _standing(405, 450, 50, scale=0.55),    # seated, dressed as a referee: ignored
+              "stands": _standing(615, 120, 30),                # in the stands: background
+              "edge": _standing(1264, 450, 30),                 # cut off by the frame's edge: background
+              "faint": _standing(820, 450)}                     # a referee the labeller is unsure of: ignored
+    src = tmp_path / "mot"
+    (src / "frames" / "0000").mkdir(parents=True)
+    rows = []
+    for f in range(1, 4):
+        img = np.full((540, 960, 3), 90, np.uint8)
+        for name in ("referee", "near", "seated", "edge", "faint"):
+            _draw_person(img, people[name], 0.75, (150, 150, 150), True)
+        _draw_person(img, people["blue"], 0.75, (200, 60, 30), False)
+        cv2.imwrite(str(src / "frames" / "0000" / f"{f:06d}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        row = {"clip": 0, "frame": f, "size": [1280, 720], "persons": [p + [1.0] for p in _PLAYERS], "balls": []}
+        if f < 3:
+            row["context"] = True
+        rows.append(row)
+    (src / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (src / "ball_labels.jsonl").write_text("".join(json.dumps({"clip": 0, "frame": f, "xy": None, "w": 0.0}) + "\n"
+                                                   for f in range(1, 4)))
+    (src / "meta.json").write_text(json.dumps({"kind": "human", "video": "mot:x",
+                                               "persons": "players on the court only",
+                                               "clips": [{"clip": 0, "sequence": "v_abc_c001", "frames": 3}]}))
+    return src, people
+
+
+class _Everyone:
+    """A labeller that boxes the players and everyone ``people`` names (at 0.8; the faint one at 0.35), on every
+    input."""
+
+    sparse = True
+
+    def __init__(self, people: dict[str, list[float]]) -> None:
+        self.boxes = [tuple(p) + (0.9,) for p in _PLAYERS] + [tuple(b) + (0.35 if name == "faint" else 0.8,)
+                                                              for name, b in people.items()]
+
+    def detect(self, x, scale, ball_thresh, person_floor):  # noqa: ANN001, ANN201
+        return [], list(self.boxes)
+
+
+def test_mark_ignore_promote_makes_the_officials_people(tmp_path: Path) -> None:
+    src, people = _promote_folder(tmp_path)
+    rnd = lambda b: [round(float(v), 1) for v in b]  # noqa: E731
+
+    plain = tmp_path / "mot_ign"
+    assert sf.mark_ignore(src, plain, Path("app.onnx"), model=_Everyone(people), referees=False) == 4
+    got = [json.loads(line) for line in (plain / "detections.jsonl").open()]
+    assert got[2]["ignore"] == [rnd(people[k]) for k in ("referee", "blue", "seated", "faint")]
+    assert all("promoted" not in r for r in got) and "promote" not in json.loads((plain / "meta.json").read_text())
+
+    out = tmp_path / "mot_ref"
+    assert sf.mark_ignore(src, out, Path("app.onnx"), model=_Everyone(people), referees=False,
+                          promote=sf.Promote()) == 3
+    got = [json.loads(line) for line in (out / "detections.jsonl").open()]
+    assert got[2]["persons"][:5] == [p + [1.0] for p in _PLAYERS]
+    assert got[2]["persons"][5:] == [rnd(people["referee"]) + [1.0], rnd(people["near"]) + [1.0]]
+    assert got[2]["promoted"] == [5, 6]
+    # everyone else as without --promote
+    assert got[2]["ignore"] == [rnd(people[k]) for k in ("blue", "seated", "faint")]
+    assert all("promoted" not in r and "ignore" not in r for r in got[:2])  # context rows untouched
+    assert (out / "frames").is_symlink()
+    meta = json.loads((out / "meta.json").read_text())
+    assert meta["ignore"]["boxes"] == 3 and meta["promote"]["boxes"] == 2 and meta["promote"]["rows"] == 1
+    assert meta["promote"]["were_ignore"] == 1 and meta["promote"]["were_background"] == 1
+    assert meta["promote"]["tests"] == {"promoted": 2, "player": 5, "score": 1, "fit": 0, "above": 1, "height": 1,
+                                        "border": 1, "referee": 1}
+    assert meta["promote"]["by_sequence"] == {"v_abc_c001": 2} and meta["promote"]["rule"]["referee"] == "shirt"
+    assert meta["persons"].startswith("players on the court only; and the officials promoted")
+
+    # the training loader reads a promoted official as a person, not as an ignore region
+    plan = plan_data([str(out)])
+    _, t = ClipDataset(plan.folders, plan.train | plan.val, train=False, weights=plan.weights)[0]
+    s = 0.75 / 4  # label px -> output cells
+    x1, y1, x2, y2 = people["referee"]
+    cu, cv = (x1 + x2) / 2 * s, (y1 + y2) / 2 * s
+    assert t["person_hm"][0, int(cv), int(cu)] == pytest.approx(1.0) and t["person_valid"][0, int(cv), int(cu)] == 1.0
+    x1, y1, x2, y2 = people["blue"]
+    assert t["person_valid"][0, int((y1 + y2) / 2 * s), int((x1 + x2) / 2 * s)] == 0.0
+
+
+def test_mark_ignore_cli_promote_defaults_to_the_first_app_model(tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    import detector_bench
+
+    src, people = _promote_folder(tmp_path)
+    loaded = []
+
+    def fake_load(path: Path, threads: int, sparse: bool = False) -> _Everyone:
+        loaded.append(Path(path))
+        return _Everyone(people)
+
+    monkeypatch.setattr(detector_bench, "load_model", fake_load)
+    assert sf.main(["mark-ignore", str(src), str(tmp_path / "ref"), "--promote", "--no-referees"]) == 0
+    assert sf.main(["mark-ignore", str(src), str(tmp_path / "ign"), "--no-referees"]) == 0
+    assert loaded == [sf.APP_V1_MODEL, sf.DEFAULT_MODEL]
+    meta = json.loads((tmp_path / "ref" / "meta.json").read_text())
+    assert meta["promote"]["model"] == str(sf.APP_V1_MODEL) and meta["promote"]["boxes"] == 2
+    assert meta["promote"]["rule"] == {"referee": "shirt", "iou": 0.3, "score": 0.4, "ratio": [0.8, 1.25],
+                                       "above": 0.1, "border": 0.01, "min_players": 4}
+    assert sf.main(["mark-ignore", str(src), str(tmp_path / "ref2"), "--promote", "--no-referees",
+                    "--promote-ratio", "0.5,1.25"]) == 0
+    assert json.loads((tmp_path / "ref2" / "meta.json").read_text())["promote"]["boxes"] == 3  # the seated one too
+
+
 def test_court_zone_keeps_the_court_and_drops_the_stands() -> None:
     assert sf.court_zone((47.0, 25.0)) == "court"
     assert sf.court_zone((-2.0, 10.0)) == "court"  # a player inbounding behind the baseline
