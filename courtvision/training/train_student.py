@@ -14,8 +14,11 @@ by the label weight and skipped on frames without a ball label (the teacher's si
 Folders are teacher folders (``tools/nba_teacher_labels.py``) unless their ``meta.json`` says ``"kind": "pseudo"``
 (``pseudo_labels.py``: the student's own analysis of a game). ``DIR:WEIGHT`` scales a folder's label weights (default
 1). A pseudo folder's ball labels never weigh more than ``PSEUDO_MAX_WEIGHT`` (the teacher's filled frames; its
-detections weigh 0.75-1.0) and its persons train with the ``person_weight`` of its ``meta.json``. Every 10th clip of
-each teacher folder is held out; pseudo folders are never held out or evaluated, so the score stays teacher-only.
+detections weigh 0.75-1.0) and its persons train with the ``person_weight`` of its ``meta.json``. A row of
+``detections.jsonl`` with a ``person_weight`` of its own uses it in place of the folder's for that sample's person
+losses (scaled and capped as the folder's is; e.g. 0 on a frame without a court fit, ``tools/student_finetune.py
+court-persons``); rows without one are unchanged. Every 10th clip of each teacher folder is held out; pseudo folders
+are never held out or evaluated, so the score stays teacher-only.
 A training clip within ``VAL_GUARD_S`` of a held-out clip of another folder of the same video is left out (two
 folders without ``meta.json`` are split as before). ``best.pt`` keeps the epoch with the best held-out ball F1
 (within 12 full-resolution px). ``--resume`` continues from ``last.pt`` in ``--out`` with the same ``--epochs`` and
@@ -83,6 +86,13 @@ class FolderWeights:
     ball_cap: float  # upper bound of a label's weight (pseudo folders)
     person: float  # weight of the person losses
     pseudo: bool
+
+    def row_person(self, det: dict[str, Any]) -> float:
+        """The person weight of one sample: the folder's, unless its ``detections.jsonl`` row has a
+        ``person_weight`` of its own, which then stands in for the folder's ``meta.json`` one (scaled by the
+        folder's weight and capped as in ``folder_weights``)."""
+        w = det.get("person_weight")
+        return self.person if w is None else min(float(w) * self.ball, self.ball_cap)
 
 
 def folder_weights(meta: dict[str, Any], weight: float = 1.0) -> FolderWeights:
@@ -266,11 +276,12 @@ class ClipDataset:
 
         oh, ow = h_in // STRIDE, w_in // STRIDE
         fw = self.weights[fi]
+        pw = fw.row_person(det)  # the folder's person weight, or the row's own (0: no person loss on this sample)
         t = {"ball_hm": np.zeros((1, oh, ow), np.float32), "ball_off": np.zeros((2, oh, ow), np.float32),
              "ball_mask": np.zeros((1, oh, ow), np.float32), "ball_w": np.zeros(1, np.float32),
              "person_hm": np.zeros((1, oh, ow), np.float32), "person_wh": np.zeros((2, oh, ow), np.float32),
              "person_off": np.zeros((2, oh, ow), np.float32), "person_mask": np.zeros((1, oh, ow), np.float32),
-             "person_w": np.array([fw.person], np.float32), "scale": np.array([s], np.float32)}
+             "person_w": np.array([pw], np.float32), "scale": np.array([s], np.float32)}
         if lab.get("w", 0) > 0 and lab.get("xy"):
             u, v = tf(*lab["xy"])
             cu, cv = u / STRIDE, v / STRIDE
@@ -280,7 +291,7 @@ class ClipDataset:
                 draw_gaussian(t["ball_hm"][0], cu, cv, self.ball_sigma)
                 t["ball_off"][:, int(cv), int(cu)] = (cu - int(cu), cv - int(cv))
                 t["ball_mask"][0, int(cv), int(cu)] = bw if fw.pseudo else fw.ball
-        for x1, y1, x2, y2, sc in det["persons"] if fw.person > 0 else ():
+        for x1, y1, x2, y2, sc in det["persons"] if pw > 0 else ():
             if sc < self.person_min:
                 continue
             a, b = tf(x1, y1)
@@ -295,7 +306,7 @@ class ClipDataset:
             draw_gaussian(t["person_hm"][0], cu, cv, max(0.6, (2 * gaussian_radius(hc, wc) + 1) / 6))
             t["person_wh"][:, int(cv), int(cu)] = (math.log(wc), math.log(hc))
             t["person_off"][:, int(cv), int(cu)] = (cu - int(cu), cv - int(cv))
-            t["person_mask"][0, int(cv), int(cu)] = fw.person
+            t["person_mask"][0, int(cv), int(cu)] = pw
         # people a folder leaves unlabelled on purpose (``ignore`` boxes, label px; e.g. SportsMOT's referees, which
         # its player-only labels would otherwise teach as background): their cells count for nothing in the person
         # heatmap loss, except near a labelled person's centre

@@ -11,18 +11,27 @@ This tool adds varied footage without losing what the network already does well:
   flights the detector misses) and kept as pseudo labels (weight at most 0.5, ``train_student.PSEUDO_MAX_WEIGHT``).
   This anchors the ball head while the shared trunk adapts (self-training with temporal consistency, after Noisy
   Student, Xie et al. 2020);
+* **the people on the court** of NBA footage from the camera geometry (``court-persons``, on a ``prep-video``
+  folder): the court is fitted on each clip's stored frames and tracked through them as the browser runtime does
+  (``estimate_center``, ``BroadcastCourtTracker``), a labeller that boxes everyone (the app's original model) runs on
+  each sample, and its people are placed on the floor by their foot points: within ``--margin-in`` ft of the court a
+  person label (players, referees), beyond ``--margin-out`` ft background (the benches, the crowd), in between an
+  ``ignore`` box. A sample without a court fit (close-ups, replays) trains no person loss (``"person_weight": 0`` on
+  its row). The person head learns to box the people on the court and to leave the spectators alone;
 * training (``train``) from ``student_from_onnx``'s exact copy of the export, batch norms frozen (they hold the folded
   statistics), the stem and first stage frozen, AdamW with cosine decay, ``train_student``'s data loading,
   augmentation and losses. ``export`` writes the ONNX export (browser interface) and a ``.pt`` checkpoint;
 * ``soup`` averages fine-tunes of the same start in weight space (optionally pulled back towards that start): one
   network, so no extra cost per frame.
 
-Both data folders use ``train_student.ClipDataset``'s layout (``frames/<clip>/<frame>.jpg`` at 960 px wide,
+The data folders use ``train_student.ClipDataset``'s layout (``frames/<clip>/<frame>.jpg`` at 960 px wide,
 ``detections.jsonl``, ``ball_labels.jsonl``, ``meta.json``), so ``python -m courtvision.training.train_student`` can
 read them too.
 
     .venv/bin/python tools/student_finetune.py prep-mot data/sportsmot/train data/ft/mot_train
     .venv/bin/python tools/student_finetune.py prep-video data/bard/split/calib data/ft/bard_calib
+    .venv/bin/python tools/student_finetune.py court-persons data/ft/bard_calib data/ft/bard_calib_court \\
+        --model runs/models/app-v1.onnx
     .venv/bin/python tools/student_finetune.py train --data data/ft/mot_train --data data/ft/bard_calib \\
         --init runs/models/student-from-onnx.pt --out runs/models/student-ft --steps 3000
     .venv/bin/python tools/student_finetune.py export runs/models/student-ft/last.pt --out runs/models/student-ft.onnx
@@ -41,6 +50,7 @@ import random
 import sys
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -309,6 +319,144 @@ def court_people(src: Path, game: Path, out: Path, keep_ft: float = 3.0, ignore_
     return counts
 
 
+# --------------------------------------------------------------------------- court-persons
+
+
+def clip_courts(paths: list[Path], court: Any = None) -> list[Any]:
+    """The court in each stored frame of a clip (``paths``, in order), found as the browser runtime finds it
+    (``browser/runtime.py``): ``estimate_center`` on six frames spread over the clip (the browser's choice for a clip
+    of up to 5 s), a ``BroadcastCourtTracker`` restarted from the first camera found on each frame until it fits one,
+    then tracked through the frames with the cuts of ``ShotBoundaryDetector`` (as ``BroadcastPerception.gate`` drives
+    it). Per frame the image -> court homography (stored px -> court ft), or None: no camera for the clip (close-ups,
+    replays, too few court views), the court lost, or a camera only held from an earlier frame (``held``: this frame's
+    lines did not confirm it)."""
+    from courtvision.geometry.court import court_for
+    from courtvision.perception.broadcast import ShotBoundaryDetector
+    from courtvision.perception.broadcast_court import BroadcastCourtTracker, estimate_center
+
+    court = court or court_for("nba")
+    if not paths:
+        return []
+    views = [cv2.imread(str(paths[i])) for i in sorted({round(k * (len(paths) - 1) / 5) for k in range(6)})]
+    center, cams = estimate_center(views, court)
+    initial = next((c for c in cams if c is not None), None)
+    if center is None or initial is None:
+        return [None] * len(paths)
+    size = (views[0].shape[1], views[0].shape[0])
+    tracker, cuts, out = None, ShotBoundaryDetector(), []
+    for p in paths:
+        img = cv2.imread(str(p))
+        if tracker is None:  # BrowserPipeline.prepare: the first camera, restarted on each frame until it fits
+            first = BroadcastCourtTracker(court, size, center)
+            first.reset(initial)
+            if first.update(img, cut=True).homography(size) is None:
+                out.append(None)
+                continue
+            tracker = first  # then the broadcast gate updates it on that frame too
+        fix = tracker.update(img, cut=cuts.update(img))
+        out.append(fix.homography(size) if fix.status in ("tracking", "reacquired") else None)
+    return out
+
+
+def court_split(persons: list[Any], hom: Any, scale: float, margin_in: float = 2.0,
+                margin_out: float = 8.0) -> dict[str, list[list[float]]]:
+    """``persons`` (x1, y1, x2, y2, ... in label px) by where each one's foot point (its box's bottom centre) stands
+    on the floor; ``hom`` maps stored px (``scale`` of them per label px) to court ft. "court": inside the court
+    grown by ``margin_in`` ft; "off": more than ``margin_out`` ft outside it; "near": in between; "unplaced": not on
+    the floor in front of the camera (above the horizon). Boxes as [x1, y1, x2, y2] in label px (0.1 px)."""
+    zones: dict[str, list[list[float]]] = {"court": [], "near": [], "off": [], "unplaced": []}
+    for q in persons:
+        foot = np.array([[0.5 * (q[0] + q[2]) * scale, q[3] * scale]], float)
+        fx, fy = (float(v) for v in hom.image_to_court(foot, front_only=True)[0])
+        zone = court_zone((fx, fy), margin_in, margin_out) if math.isfinite(fx) and math.isfinite(fy) else "unplaced"
+        zones[zone].append([round(float(v), 1) for v in q[:4]])
+    return zones
+
+
+def court_persons(src: Path, out: Path, model_path: Path, score: float = 0.3, margin_in: float = 2.0,
+                  margin_out: float = 8.0, threads: int = 1, model: Any = None,
+                  court_fn: Callable[[list[Path]], list[Any]] | None = None) -> dict[str, int]:
+    """A pseudo folder of NBA broadcast clips (``prep-video``: ball labels, no person labels) -> the same folder
+    (``out``: its frames linked, not copied) with person labels from the camera geometry. The court is fitted on each
+    clip's stored frames and tracked through them (``court_fn``, default ``clip_courts``: per frame a stored px ->
+    court ft mapping or None). On every sample with a court, ``model_path`` (a detector that boxes everyone, e.g. the
+    app's original model) runs on the sample's own network input (``ClipDataset``: its two earlier frames are the real
+    ones), and each person at ``score`` or more is placed by its foot point (``court_split``): on the court grown by
+    ``margin_in`` ft (players, referees, a player inbounding) a person label of score 1; more than ``margin_out`` ft
+    off it (the benches, the crowd) left out, so background; in between, or above the horizon, an ``ignore`` box. A
+    sample without a court (close-ups, replays, no fit) gets ``"person_weight": 0`` on its row: no person loss
+    (``train_student.ClipDataset``). The folder's persons weigh ``PSEUDO_MAX_WEIGHT``; the ball labels are copied
+    unchanged. ``model``: an already loaded ``detector_bench`` model (tests). Returns the counts."""
+    import shutil
+
+    sys.path.insert(0, str(ROOT / "tools"))
+    from detector_bench import load_model, run_model  # noqa: E402
+
+    from courtvision.training.train_student import PSEUDO_MAX_WEIGHT, ClipDataset, folder_meta, is_pseudo
+
+    meta = folder_meta(src)
+    rows = [json.loads(line) for line in (src / "detections.jsonl").open()]
+    if not is_pseudo(meta) or any(r.get("persons") for r in rows):
+        raise SystemExit(f"{src}: court-persons labels a pseudo folder without person labels (prep-video's)")
+    if out.resolve() == src.resolve():
+        raise SystemExit("OUT must be a new folder, not SRC")
+    if not 0.0 <= margin_in <= margin_out:
+        raise SystemExit(f"--margin-in ({margin_in}) must be between 0 and --margin-out ({margin_out})")
+    if model is None:
+        model = load_model(model_path, threads, sparse=True)
+    court_fn = court_fn or clip_courts
+    ds = ClipDataset([src], None, train=False)
+    by_key = {(r["clip"], r["frame"]): r for r in rows}
+    frames: dict[int, list[int]] = defaultdict(list)  # clip -> its stored frames
+    for clip, frame in by_key:
+        frames[clip].append(frame)
+    samples: dict[int, list[int]] = defaultdict(list)  # clip -> its samples (indices of ds.items)
+    for i, item in enumerate(ds.items):
+        samples[item[1]].append(i)
+    counts = {"samples": len(ds), "fit": 0, "persons": 0, "ignored": 0, "unplaced": 0, "off_court": 0}
+    t0 = time.time()
+    for k, clip in enumerate(sorted(samples)):
+        fr = sorted(frames[clip])
+        homs = dict(zip(fr, court_fn([src / "frames" / f"{clip:04d}" / f"{f:06d}.jpg" for f in fr]), strict=True))
+        fit = 0
+        for i in samples[clip]:
+            _, _, inputs, det, _ = ds.items[i]
+            row, hom = by_key[(clip, inputs[-1])], homs[inputs[-1]]
+            if hom is None:
+                row["person_weight"] = 0.0  # no court: the sample trains no person loss
+                continue
+            x, t = ds[i]
+            _, found = run_model(model, x[None], tuple(det["size"]), 0.99, score)
+            zones = court_split([q for q in found if q[4] >= score], hom, float(t["scale"][0]), margin_in, margin_out)
+            ignore = zones["near"] + zones["unplaced"]
+            row["persons"] = [b + [1.0] for b in zones["court"]]
+            if ignore:
+                row["ignore"] = list(row.get("ignore") or []) + ignore
+            fit += 1
+            counts["persons"] += len(zones["court"])
+            counts["ignored"] += len(ignore)
+            counts["unplaced"] += len(zones["unplaced"])
+            counts["off_court"] += len(zones["off"])
+        counts["fit"] += fit
+        print(f"[{k + 1}/{len(samples)}] clip {clip}: a court on {fit} of {len(samples[clip])} samples; in all "
+              f"{counts['persons']} people on it, {counts['ignored']} ignored, {counts['off_court']} off it, "
+              f"{time.time() - t0:.0f}s", file=sys.stderr, flush=True)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    shutil.copyfile(src / "ball_labels.jsonl", out / "ball_labels.jsonl")
+    if not (out / "frames").exists():
+        (out / "frames").symlink_to((src / "frames").resolve(), target_is_directory=True)
+    meta["person_weight"] = PSEUDO_MAX_WEIGHT  # the most a pseudo folder's persons weigh (train_student.folder_weights)
+    meta["court_persons"] = {
+        "model": str(model_path), "score": score, "margin_in": margin_in, "margin_out": margin_out, **counts,
+        "what": "people whose foot point is on the court grown by margin_in ft (players, referees) labelled through "
+                "the clip's own court fit; margin_in to margin_out ft off it, or above the horizon, ignored; farther "
+                "(the benches, the crowd) background; samples without a court fit train no person loss"}
+    (out / "meta.json").write_text(json.dumps(meta, indent=1))
+    print(f"{out}: {counts}", file=sys.stderr)
+    return counts
+
+
 # --------------------------------------------------------------------------- mark-ignore
 
 
@@ -557,10 +705,11 @@ class FineTuneDataset(_clip_dataset()):  # type: ignore[misc]
     def __init__(self, *a: Any, hue_deg: float = 0.0, static_p: float = 0.0, **k: Any) -> None:
         super().__init__(*a, **k)
         self.hue_deg, self.static_p = hue_deg, static_p
-        # a sample of a folder without person labels and with no ball label of its own trains nothing
+        # a sample without person loss (its folder's or its row's person weight 0) and with no ball label of its own
+        # trains nothing
         before = len(self.items)
         self.items = [it for it in self.items
-                      if self.weights[it[0]].person > 0 or (it[4].get("xy") and it[4].get("w", 0) > 0)]
+                      if self.weights[it[0]].row_person(it[3]) > 0 or (it[4].get("xy") and it[4].get("w", 0) > 0)]
         self.dropped = before - len(self.items)
 
     def __getitem__(self, idx: int) -> Any:
@@ -836,6 +985,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--keep-ft", type=float, default=3.0, help="people within this of the lines are kept")
     p.add_argument("--ignore-ft", type=float, default=10.0, help="people up to this off the lines are ignored")
     p.add_argument("--min-score", type=float, default=0.4, help="teacher boxes under this are dropped (never targets)")
+    p = sub.add_parser("court-persons", help="a pseudo NBA folder -> the same with person labels from its own court "
+                                           "fit: the people on the court labelled, the benches and crowd background")
+    p.add_argument("src", type=Path)
+    p.add_argument("out", type=Path)
+    p.add_argument("--model", type=Path, required=True,
+                   help="the labeller: a detector that boxes everyone (e.g. runs/models/app-v1.onnx)")
+    p.add_argument("--score", type=float, default=0.3, help="labeller boxes under this are left out (background)")
+    p.add_argument("--margin-in", type=float, default=2.0,
+                   help="feet within this many ft outside the court lines are on the court: person labels")
+    p.add_argument("--margin-out", type=float, default=8.0,
+                   help="feet farther than this many ft outside are background; in between: ignored")
+    p.add_argument("--threads", type=int, default=1, help="ONNX Runtime and OpenCV threads")
     p = sub.add_parser("mark-ignore", help="player-only folder -> the same with the unlabelled people among the "
                                          "players (mostly referees) left out of the person loss")
     p.add_argument("src", type=Path)
@@ -909,6 +1070,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if prep_coco(a.ann, a.images, a.out, games, excl, a.referees) else 2
     if a.cmd == "court-people":
         court_people(a.src, a.game, a.out, a.keep_ft, a.ignore_ft, a.min_score)
+        return 0
+    if a.cmd == "court-persons":
+        cv2.setNumThreads(a.threads)  # the court fit's image work
+        court_persons(a.src, a.out, a.model, a.score, a.margin_in, a.margin_out, a.threads)
         return 0
     if a.cmd == "mark-ignore":
         return 0 if mark_ignore(a.src, a.out, a.model, a.iou, a.score, a.margin, a.threads,

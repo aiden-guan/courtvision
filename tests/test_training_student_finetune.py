@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import quantize_student as qs  # noqa: E402
 import student_finetune as sf  # noqa: E402
 
-from courtvision.training.train_student import ClipDataset, plan_data  # noqa: E402
+from courtvision.training.train_student import ClipDataset, folder_weights, plan_data  # noqa: E402
 
 
 def _folder(root: Path, kind: str, video: str, ball_frames: set[int], persons: bool) -> Path:
@@ -325,3 +325,87 @@ def test_court_people_keeps_court_boxes_ignores_unplaced_ones(tmp_path: Path, mo
     assert [q[:4] for q in got[0]["persons"]] == [boxes[0][:4]] and got[0]["ignore"] == [boxes[1][:4]]
     assert got[1]["persons"] == [] and got[1]["ignore"] == [boxes[0][:4]]  # no camera fit: unsure
     assert (out / "frames").is_symlink() and json.loads((out / "meta.json").read_text())["kind"] == "teacher"
+
+
+def test_court_persons_labels_the_court_ignores_its_edge_and_leaves_the_stands(tmp_path: Path) -> None:
+    src = _folder(tmp_path / "pseudo", "pseudo", "v", {3}, persons=False)  # samples at frames 3 and 6 (1280x720)
+
+    class _H:  # stored px / 7.5 = court ft (label px / 10: 960-px frames of 1280-px video); no floor above y = 30
+        def image_to_court(self, pts, front_only=False):  # noqa: ANN001, ANN202
+            p = np.asarray(pts, float)
+            return np.where(p[:, 1:] < 30, np.nan, p / 7.5)
+
+    seen = []
+
+    def court(paths: list[Path]) -> list:
+        seen.append([p.name for p in paths])
+        return [_H() if p.stem == "000003" else None for p in paths]  # a court on frame 3 only
+
+    boxes = [(460, 100, 480, 250, 0.9),  # foot (470, 250) -> (47, 25) ft: on the court
+             (460, 400, 480, 515, 0.8),  # (47, 51.5): 1.5 ft over the sideline, within margin_in
+             (390, 400, 410, 550, 0.7),  # (40, 55): 5 ft off, in between
+             (390, 500, 410, 700, 0.7),  # (40, 70): the stands
+             (700, 0, 720, 30, 0.6),  # foot above the horizon: not placed
+             (600, 100, 620, 250, 0.2)]  # under --score: never a target
+
+    class Everyone:
+        sparse = True
+
+        def __init__(self) -> None:
+            self.calls: list = []
+
+        def detect(self, x, scale, ball_thresh, person_floor):  # noqa: ANN001, ANN201
+            self.calls.append((x.shape, scale, person_floor))
+            return [], boxes
+
+    model = Everyone()
+    out = tmp_path / "court"
+    counts = sf.court_persons(src, out, Path("app.onnx"), model=model, court_fn=court)
+    assert counts == {"samples": 2, "fit": 1, "persons": 2, "ignored": 2, "unplaced": 1, "off_court": 1}
+    assert seen == [[f"{f:06d}.jpg" for f in range(1, 7)]]  # the clip's stored frames, in order
+    assert model.calls == [((1, 9, 544, 960), 0.75, 0.3)]  # the labeller runs on the sample with a court only
+    got = {r["frame"]: r for r in map(json.loads, (out / "detections.jsonl").open())}
+    assert got[3]["persons"] == [[460, 100, 480, 250, 1.0], [460, 400, 480, 515, 1.0]]
+    assert got[3]["ignore"] == [[390, 400, 410, 550], [700, 0, 720, 30]] and "person_weight" not in got[3]
+    assert got[6]["person_weight"] == 0.0 and got[6]["persons"] == [] and "ignore" not in got[6]  # no court
+    assert all("person_weight" not in got[f] and "ignore" not in got[f] for f in (1, 2, 4, 5))  # context rows
+    meta = json.loads((out / "meta.json").read_text())
+    assert meta["kind"] == "pseudo" and meta["video"] == "v" and meta["person_weight"] == 0.5
+    assert meta["court_persons"]["fit"] == 1 and meta["court_persons"]["margin_out"] == 8.0
+    assert (out / "frames").is_symlink() and (out / "ball_labels.jsonl").read_text() == (
+        src / "ball_labels.jsonl").read_text()
+    # what training sees: the people on the court at the pseudo cap, the edge ignored, no person loss without a court
+    ds = ClipDataset([out], None, train=False)
+    (_, t3), (_, t6) = ds[0], ds[1]
+    assert t3["person_w"][0] == 0.5 and t3["person_mask"].max() == 0.5 and t3["person_valid"].min() == 0.0
+    assert t6["person_w"][0] == 0.0 and t6["person_mask"].max() == 0.0
+    with pytest.raises(SystemExit):  # a folder that has person labels already
+        sf.court_persons(out, tmp_path / "again", Path("app.onnx"), model=model, court_fn=court)
+
+
+def test_court_persons_cli_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    got = []
+    monkeypatch.setattr(sf, "court_persons", lambda *a: got.append(a))
+    monkeypatch.setattr(sf.cv2, "setNumThreads", lambda n: None)
+    assert sf.main(["court-persons", "a", "b", "--model", "m.onnx"]) == 0
+    assert got == [(Path("a"), Path("b"), Path("m.onnx"), 0.3, 2.0, 8.0, 1)]
+    with pytest.raises(SystemExit):  # the labeller is required
+        sf.main(["court-persons", "a", "b"])
+
+
+def test_row_person_weight_stands_in_for_the_folders(tmp_path: Path) -> None:
+    pseudo = _folder(tmp_path / "pseudo", "pseudo", "v", set(), persons=True)  # samples at frames 3 and 6
+    (pseudo / "meta.json").write_text(json.dumps({"kind": "pseudo", "video": "v", "person_weight": 0.5}))
+    rows = [json.loads(line) for line in (pseudo / "detections.jsonl").open()]
+    rows[5]["person_weight"] = 0.0  # frame 6: e.g. no court fit
+    (pseudo / "detections.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    ds = ClipDataset([pseudo], None, train=False)
+    (_, t3), (_, t6) = ds[0], ds[1]
+    assert t3["person_w"][0] == 0.5 and t3["person_mask"].max() == 0.5 and t3["person_hm"].max() == 1.0  # the folder's
+    assert t6["person_w"][0] == 0.0 and t6["person_mask"].max() == 0.0 and t6["person_hm"].max() == 0.0  # the row's
+    # the row's weight is scaled by the folder's and capped as the folder's own is
+    assert ds.weights[0].row_person({}) == 0.5 and ds.weights[0].row_person({"person_weight": 1.0}) == 0.5
+    assert folder_weights({}, 2.0).row_person({"person_weight": 0.25}) == 0.5
+    # the fine-tune dataset leaves out the sample that then trains nothing (no person loss, no ball label)
+    ft = sf.finetune_dataset(ClipDataset, 0.0)([pseudo], None, train=False)
+    assert [it[2][-1] for it in ft.items] == [3] and ft.dropped == 1
