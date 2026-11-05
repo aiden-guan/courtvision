@@ -1069,7 +1069,8 @@ The earlier models on E-BARD's held-out games, as the plan asked (paired against
 
 On 30 games it never saw, v2 keeps what the earlier rounds measured on fewer: the first model boxes everyone (most
 referees, and 0.61 boxes a frame on people nobody labelled), T5 leaves referees out (60 of 1,918) and the sideline
-alone, and v2 sits between them with the most players and balls.
+alone, and v2 sits between them: 62 % of the referees at 0.16 boxes a frame on nobody, with as many players as T5
+(p 0.48) and more than R4b, and a ball not significantly different from either (p 0.30, 0.17).
 
 What each step of data did, paired on the same frames:
 
