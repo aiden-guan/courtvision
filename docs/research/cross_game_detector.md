@@ -946,3 +946,30 @@ regions keep SportsMOT's NCAA and FIBA referees from being taught as background,
 (both runs train on every SportsMOT broadcast). R4b is kept: the same referees, a few fewer boxes on nobody, and its
 single-frame ball within chance of T5's. Not yet measured: what it boxes off the court on video, the owner's complaint,
 which the README's two games can answer (§10.2's table).
+
+## 13. Round 8 (cloud): does new data help main model v2? Plan, fixed before training
+
+The owner asked for faster iteration on new data with many agents in parallel. Round 8 starts from main model v2 (C,
+§10.15; its exact PyTorch copy rebuilt from the app's export by `student_from_onnx`). Two sources of new data:
+
+* **600 new BARD clips** of the 30 calibration games (20 a game, a seeded sample of the 6,931 not used yet; splits
+  file `calib_clips_round8`; never the 30 check games), the ball pseudo-labelled by v2 (int8) with `prep-video` (60
+  frames a clip, linked paths);
+* **court-geometry person labels** on those clips (`court-persons`, being written): the original app model, which
+  boxes everyone, labels the people; a person whose feet fall on the court (grown by 2 ft) is a positive (players
+  and referees), one more than 8 ft outside it stays background (the crowd, benches), one in between is ignored;
+  frames without a court fit train no person loss.
+
+The cloud lacks one of C's sources (the Lakers @ Warriors teacher folder, on the Mac), so its runs are ablations, not
+candidates for the app: they measure what the new data does. All three use C's recipe (T5's: temporal dropout 0.25,
+4,000 steps, folders sampled equally) on the cloud's copies of C's other data (SportsMOT with ignore regions, the 3
+Roboflow games' players and referees, the 390 calibration clips' ball labels):
+
+* **K0**: that data only (more training on the same data: the control);
+* **K1**: K0 plus the new clips' ball labels;
+* **K2**: K1 plus the court-geometry person labels.
+
+Measures, each against v2 with paired tests: the ball on the 30 BARD check games (per frame and linked, the cloud's
+teacher labels, §5) and, on the 5 held-out Roboflow games, the referees found, the boxes on nobody, the players and
+referees, and the ball (§11.2). The Mac trains the candidates for the app on all of C's data plus these sources and
+scores them on the README's two games by §10.8's rule.
