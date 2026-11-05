@@ -3,7 +3,11 @@
 importScripts("ort.min.js");
 let session = null, manifest = null, backend = "wasm", python = null, pipeline = null;
 let queue = Promise.resolve();
-ort.env.wasm.numThreads = 1;
+// WebAssembly threads need SharedArrayBuffer, which browsers allow only on a cross-origin isolated page (the server's
+// COOP/COEP headers); ORT runs one thread without it. At most 4: ORT gives each thread an equal share of every
+// convolution, so the slowest core sets the pace, and hardwareConcurrency also counts hyper-threads and efficiency
+// cores. 4 is also ORT's own default ceiling. The count includes this worker's thread and must be set before a session.
+ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, self.navigator.hardwareConcurrency || 1) : 1;
 ort.env.wasm.wasmPaths = new URL(".", self.location.href).href;
 
 async function verify(candidate, reference) {
@@ -95,7 +99,8 @@ async function handle(data) {
       await python.runPythonAsync("from courtvision.browser.runtime import BrowserPipeline");
       pipeline = python.runPython("BrowserPipeline()");
       progress("runtime", "Local analysis tools ready", 3, 3);
-      self.postMessage({ id, result: { backend, checkpoint: manifest.checkpoint_sha256, pipeline: "original-python", source: packageHash, validated: true } });
+      self.postMessage({ id, result: { backend, checkpoint: manifest.checkpoint_sha256, pipeline: "original-python", source: packageHash, validated: true,
+        threads: ort.env.wasm.numThreads, isolated: self.crossOriginIsolated } });
     } else if (action === "reset") {
       pipeline?.destroy(); pipeline = python.runPython("BrowserPipeline()");
       self.postMessage({ id, result: true });

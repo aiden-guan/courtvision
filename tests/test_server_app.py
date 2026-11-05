@@ -154,10 +154,31 @@ def test_dashboard_index_and_assets_are_served(client: TestClient):
     csp = r.headers["content-security-policy"]
     assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["cross-origin-opener-policy"] == "same-origin"
+    assert r.headers["cross-origin-embedder-policy"] == "require-corp"
     js = client.get("/static/app.js")
     assert js.status_code == 200 and "javascript" in js.headers["content-type"]
     css = client.get("/static/styles.css")
     assert css.status_code == 200 and css.headers["content-type"].startswith("text/css")
+
+
+@pytest.mark.parametrize("path", [
+    "/", "/static/nba-worker.js", "/static/ort-wasm-simd-threaded.jsep.mjs", "/static/archivo.woff2", "/api/state",
+])
+def test_page_workers_and_assets_are_cross_origin_isolated(client: TestClient, path: str):
+    # WebAssembly threads (nba-worker.js) need SharedArrayBuffer: COOP and COEP on the page, and COEP on each worker
+    # script's own response, the detector's worker and ORT's thread workers (ort-wasm-simd-threaded.jsep.mjs).
+    r = client.get(path)
+    assert r.status_code == 200
+    assert r.headers["cross-origin-opener-policy"] == "same-origin"
+    assert r.headers["cross-origin-embedder-policy"] == "require-corp"
+
+
+def test_the_only_third_party_source_is_pyodide(client: TestClient):
+    # Under COEP require-corp a cross-origin load needs CORS or a Cross-Origin-Resource-Policy header. Pyodide's CDN
+    # path sends both; any new third-party source must too, or the isolated page cannot load it.
+    csp = client.get("/").headers["content-security-policy"]
+    assert set(re.findall(r"https://[^\s;]+", csp)) == {"https://cdn.jsdelivr.net/pyodide/v314.0.7/full/"}
 
 
 @pytest.mark.parametrize("path", [

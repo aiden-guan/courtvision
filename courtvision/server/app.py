@@ -18,6 +18,9 @@ Security model (local, in-gym server):
   teammate/opponent relation of ``other_player_id``.
 * Static files are served by Starlette ``StaticFiles`` (rejects ``..`` traversal and symlinks
   out of the directory); responses carry a strict same-origin CSP.
+* Every response is also cross-origin isolated (COOP ``same-origin``, COEP ``require-corp``), so the
+  browser detector (``static/nba-worker.js``) can run WebAssembly threads. The CSP's only
+  third-party source is Pyodide's CDN path, which answers with CORS and CORP headers.
 """
 
 from __future__ import annotations
@@ -447,6 +450,11 @@ class _GuardMiddleware:
                     (b"referrer-policy", b"no-referrer"),
                     (b"x-frame-options", b"DENY"),
                     (b"content-security-policy", csp.encode("latin-1")),
+                    # Cross-origin isolation, for SharedArrayBuffer (WebAssembly threads in nba-worker.js).
+                    # On every response, not only the page: a worker script needs COEP on its own response
+                    # (nba-worker.js and ORT's thread script), and one page serves the Studio and the demo.
+                    (b"cross-origin-opener-policy", b"same-origin"),
+                    (b"cross-origin-embedder-policy", b"require-corp"),
                 ]
                 message = {**message, "headers": list(message.get("headers", [])) + extra}
             await send(message)

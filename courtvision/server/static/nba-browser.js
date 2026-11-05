@@ -2,7 +2,7 @@
 (() => {
   "use strict";
   async function load({ signal, progress = () => {} } = {}) {
-    const worker = new Worker("static/nba-worker.js?v=20261101-progress1");
+    const worker = new Worker("static/nba-worker.js?v=20261105-threads1");
     const pending = new Map();
     let serial = 0;
     worker.onmessage = ({ data }) => {
