@@ -596,3 +596,31 @@ def test_ema_update_moves_towards_the_weights_and_copies_counters() -> None:
     assert d == pytest.approx(0.1) and torch.allclose(ema["w"], torch.full((3,), 0.9)) and int(ema["n"]) == 5
     d = sf.ema_update(ema, state, 0.5, 1000)  # late: the decay itself
     assert d == 0.5 and torch.allclose(ema["w"], torch.full((3,), 0.95))
+
+
+def test_clip_dataset_retries_a_failed_frame_read(tmp_path, monkeypatch):
+    """A stored frame whose read fails once is read again (the same image); one that never reads names the file."""
+    import cv2
+    import numpy as np
+    import pytest
+
+    from courtvision.training import train_student as ts
+
+    (tmp_path / "frames" / "0000").mkdir(parents=True)
+    img = np.full((54, 96, 3), 7, np.uint8)
+    cv2.imwrite(str(tmp_path / "frames" / "0000" / "000001.jpg"), img)
+    ds = ts.ClipDataset.__new__(ts.ClipDataset)
+    ds.folders = [tmp_path]
+    real, calls = cv2.imread, {"n": 0}
+
+    def flaky(path, *a):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real(path, *a)
+
+    monkeypatch.setattr(ts.cv2, "imread", flaky)
+    monkeypatch.setattr(ts.time, "sleep", lambda s: None)
+    assert np.array_equal(ds._img(0, 0, 1), real(str(tmp_path / "frames" / "0000" / "000001.jpg")))
+    assert calls["n"] == 2
+    monkeypatch.setattr(ts.cv2, "imread", lambda *a: None)
+    with pytest.raises(OSError, match="000002.jpg"):
+        ds._img(0, 0, 2)

@@ -49,6 +49,7 @@ from courtvision.perception.student import INPUT_HW, MEAN, STD, STRIDE, build_ne
 
 TEACHER_SCALE = 0.5  # stored px per label px for rows without a ``size`` (960-px frames of 1920-px video)
 OUT_HW = (INPUT_HW[0] // STRIDE, INPUT_HW[1] // STRIDE)
+IMREAD_TRIES = 4  # reads of a stored frame before ClipDataset gives up (ClipDataset._img)
 PSEUDO_MAX_WEIGHT = 0.5  # cap of a pseudo label's weight: the teacher's filled frames (its detections: 0.75-1.0)
 VAL_GUARD_S = 2.0  # training clips this close to a held-out clip of the same video are left out
 
@@ -233,7 +234,16 @@ class ClipDataset:
         return len(self.items)
 
     def _img(self, fi: int, clip: int, frame: int) -> np.ndarray:
-        return cv2.imread(str(self.folders[fi] / "frames" / f"{clip:04d}" / f"{frame:06d}.jpg"))
+        """A stored frame. A failed read is tried again (a machine short of memory can fail one, as one did on a Mac in
+        round 8), then names the file; a read that succeeds is the same image, so training stays deterministic."""
+        path = self.folders[fi] / "frames" / f"{clip:04d}" / f"{frame:06d}.jpg"
+        for attempt in range(IMREAD_TRIES):
+            img = cv2.imread(str(path))
+            if img is not None:
+                return img
+            if attempt + 1 < IMREAD_TRIES:
+                time.sleep(0.5 * (attempt + 1))
+        raise OSError(f"cannot read {path} ({IMREAD_TRIES} tries)")
 
     def __getitem__(self, idx: int) -> tuple[np.ndarray, dict[str, np.ndarray]]:
         fi, clip, frames, det, lab = self.items[idx]
