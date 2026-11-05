@@ -1104,3 +1104,10 @@ boxes are the hard ones (where the other two checks disagree, plus 20 both call 
 (18 and 72 frames rather than 5 minutes of a game), and one person labelled them. Whether it can be the pipeline's
 default is decided by the pipeline on both games (`events --referees game` against the shirt rule), queued after the
 round-8 detectors.
+
+### 13.6 Before R8b's labels were made
+
+`court-persons` fits each clip's court as the browser does. After the cloud's first check found a court on 2 of 5
+clips (§13), the browser's court setup changed (d9655f7: weak camera fits that agree are pooled, and more views of a
+hard clip are searched). R8b's labels are made with the changed setup, merged before they were made, when no R8b
+result existed; the share of samples with a court is reported with them.
