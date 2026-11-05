@@ -51,3 +51,32 @@ def test_roboflow_split_takes_exact_clips_from_the_named_folders_and_renumbers()
     assert [(a["id"], a["image_id"]) for a in part["annotations"]] == [(1, 1), (2, 2)]
     assert part["categories"] == cats
     assert len(fd.roboflow_split(anns, ["game-a-q1"], ("valid",))["images"]) == 1
+
+
+def test_ebard_split_by_bard_games(tmp_path: Path) -> None:
+    import zipfile
+
+    splits = tmp_path / "splits.json"
+    splits.write_text(json.dumps({"bard": {"calib_games": ["aaa-vs-bbb-001"], "check_games": ["ccc-vs-ddd-002"]}}))
+    cats = [{"id": 0, "name": "basketball"}, {"id": 2, "name": "player"}, {"id": 3, "name": "referee"}]
+    zpath = tmp_path / "all.zip"
+    with zipfile.ZipFile(zpath, "w") as z:
+        for split, folder, name in (("train", "train", "aaa-vs-bbb-001_000001.jpg"),
+                                    ("test", "test", "ccc-vs-ddd-002_000002.jpg")):
+            z.writestr(f"coco/{folder}/{name}", b"jpeg")
+            z.writestr(f"coco/annotations/instances_{split}.json", json.dumps({
+                "images": [{"id": 7, "file_name": name, "width": 1280, "height": 720}],
+                "annotations": [{"id": 1, "image_id": 7, "category_id": 2, "bbox": [1, 2, 3, 4]},
+                                {"id": 2, "image_id": 7, "category_id": 0, "bbox": [5, 6, 2, 2]}],
+                "categories": cats}))
+    out = tmp_path / "ebard"
+    counts = fd.ebard_split(zpath, out, splits)
+    assert counts == {"calib": {"images": 1, "player": 1, "ball": 1}, "check": {"images": 1, "player": 1, "ball": 1}}
+    calib = json.loads((out / "calib_ann.json").read_text())
+    check = json.loads((out / "check_ann.json").read_text())
+    assert [im["file_name"] for im in calib["images"]] == ["aaa-vs-bbb-001_000001.jpg"]
+    assert [im["file_name"] for im in check["images"]] == ["ccc-vs-ddd-002_000002.jpg"]
+    assert {c["name"] for c in calib["categories"]} == {"ball", "player", "referee"}
+    ids = [im["id"] for im in calib["images"] + check["images"]]
+    assert len(set(ids)) == 2 and all(a["image_id"] in ids for a in calib["annotations"] + check["annotations"])
+    assert (out / "images" / "ccc-vs-ddd-002_000002.jpg").read_bytes() == b"jpeg"
