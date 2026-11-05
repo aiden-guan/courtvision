@@ -1358,3 +1358,43 @@ fall from 72.6 % to 55.8 %. It is not a team swap in one stretch of the game (R8
 of each 10-minute window) but noisier calls throughout (363 changes of possession against v2's 303), likely because
 R8f boxes more people near the sidelines, whose shirts the team assignment then reads; the timeline, which the
 README's possession number and the box score come from, undoes it (97.1 %).
+
+### 13.13 R8b and R8g, and what the rule picks
+
+R8b's and R8g's labels (`court-persons` with the new court setup, §13.6): a court on 6,182 of the 12,000 samples
+(52 %, the cloud's first check 39 %); 48,356 people on the court labelled people, 75,644 boxes ignored (71,012 of
+them people the labeller was unsure of, 0.1-0.3), and only 161 people well off the court left as background: these
+game-camera views show little crowd. Scored as the others (`runs/bench/local/r8bg_*`; v2's calls are identical in
+both scoring runs, so the candidates of §13.7 pair with these frame by frame):
+
+| | v2 | R8b | R8g | R8f (§13.7) |
+|---|---:|---:|---:|---:|
+| Ball: Lakers @ Warriors held out, top / linked | 95.1 / 95.1 % | 95.1 / 95.1 % | 94.2 / 95.1 % | 95.1 / 95.5 % |
+| Ball: Cavaliers @ Warriors, top / linked | 79.2 / 78.4 % | 78.7 / 79.4 % | 77.9 / 77.9 % | 78.1 / 77.7 % |
+| Ball: BARD check games, top / linked | 91.4 / 92.8 % | 92.1 / 93.0 % | **93.0** (27 / 10, p 0.0076) / **93.7 %** (12 / 2, p 0.013) | 92.7 / 93.2 % |
+| Ball: 5 Roboflow games / E-BARD check | 68.0 / 86.3 % | 68.6 / 87.3 % | 72.2 / **89.5 %** (32 / 8, p 0.00018) | 73.2 / 89.5 % |
+| Lakers @ Warriors: players / referees on the court | 97.9 / 98.7 % | 98.0 / 100 % | 98.4 / 100 % | 98.8 / 99.6 % |
+| Cavaliers @ Warriors: players on the court | 84.8 % | 86.1 % (+1.3, +0.3 to +2.4) | **90.8 %** (+6.0, +4.2 to +7.9) | 90.8 % |
+| the same: referees / off the court (lower is better) | 23.3 / 29.6 % | 24.1 / **17.3 %** | 75.0 / 71.2 % | 75.9 / 70.4 % |
+| E-BARD: referees found / boxes on nobody a frame | 1,194 / **0.16** | 1,391 / 0.24 | **1,623** / 0.25 | 1,612 / 0.24 |
+| Roboflow: referees found / boxes on nobody a frame | 426 / 0.19 | 437 / 0.24 | 427 / **0.11** | 430 / 0.12 |
+
+Both pass the detector tests (no ball test worse than v2 at p < 0.05, no players' interval below zero). On their own
+(R8b against R8a) the court-geometry labels leave more of the 2017 crowd alone (23 % to 17 %) and change little else;
+on top of SportsMOT's officials (R8g against R8f) they change nothing measurable: every ball, referee, player and
+boxes-on-nobody test of R8g against R8f is within chance (the nearest: the BARD linked ball 14 / 8, p 0.29), and the
+2017 crowd stays at 71 %. The officials' lesson outweighs theirs.
+
+**What the rule picks.** Counting the paired tests against v2 that are significant in the candidate's favour (the
+eight ball tests, the two games' players on the court by clips, and the six people tests of the Roboflow and E-BARD
+frames): R8f 7 and R8g 7, R8e 5, R8a 4, R8b 3, R8-ctrl 3; every candidate is also significantly worse on E-BARD's
+boxes on nobody except R8-ctrl (which is worse on the Roboflow games', p 0.049). R8f and R8g tie, and on a tie §13.1
+takes the one with fewer changes: **R8f**, which has passed the pipeline (§13.12). So by the rule fixed before
+training, R8f may replace v2.
+
+Its costs, stated plainly: the people off the court that v2 had learnt to leave alone come back on the 2017 game
+(30 % to 70 % of the teacher's benches and crowd boxed; the first app model 76 %) and, less, on 2024-25 footage
+(E-BARD's boxes on nobody 0.16 to 0.24 a frame; the first app model 0.61); and on the Lakers @ Warriors game the
+engine's own possession calls fall from 72.6 % to 55.8 % (the possession timeline 97.4 % to 97.1 %). Its gains: the
+2017 game's referees 23 % to 76 % and players 84.8 % to 90.8 %, E-BARD's referees 62 % to 84 %, the ball on the BARD,
+Roboflow and E-BARD sets, the box-score error on both games (0.197 to 0.171, 0.511 to 0.454).
