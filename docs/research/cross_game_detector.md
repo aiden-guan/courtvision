@@ -1075,3 +1075,32 @@ the cause the cloud proposed for v2's 2017 referees (§10.13: 23 % on the court,
   and the referee-aware ignore boxes replace the hull-only ones. The labeller runs on the GPU (its `student_from_onnx`
   copy, as in §13.1's tools), like the first app model that made `mot_*_ign`.
 * Measured as the others (§13.1-13.2), with the 2017 game's referees on the court read beside the rule.
+
+### 13.5 The in-game referee check on the README's two games: the 160 boxes labelled by eye
+
+§13.3's check could not be tried on other eras on the cloud; `tools/referee_game_two.py` tries it on the Mac's two
+games. Each game's context is the population §10.10 drew its labelled boxes from (the teacher's people at 0.5 or more
+on the court on the test frames), taken as `RefereeCheck("game")` observes a game: frames at least 30 video frames
+apart within each clip (Lakers @ Warriors 18 frames, 159 boxes; Cavaliers @ Warriors 72 frames, 519), clustered once
+without tracks, with `GameConfig`'s defaults; each labelled box is placed by the fit's vote
+(`runs/bench/local/ref_game_two2.json`).
+
+| Game | The fit | Right of 80: in-game / shirt rule / learned | In-game against the rule (only it right / only the rule, p) | against the learned check |
+|---|---|---|---|---|
+| Lakers @ Warriors | accepted: 1.85 a frame, silhouette 0.36 | **64** / 44 / 56 | 35 / 15, p 0.0066 | 9 / 1, p 0.021 |
+| Cavaliers @ Warriors | accepted: 1.41 a frame, silhouette 0.15 | **74** / 66 / 32 | 12 / 4, p 0.077 | 44 / 2, p 3.1e-11 |
+
+By label (the in-game check; the shirt rule in brackets): referees called referee, Lakers @ Warriors 42 of 43 (23),
+Cavaliers @ Warriors 30 of 32 (19), the 2017 game's light-grey shirts included; players called referee 0 of 21 (16) and
+**1 of 45** (0), the Cavaliers' black jerseys the learned check takes for referees (§10.10); the other people placed on
+the court, fans and staff at the baselines, 15 of 16 (0) and 3 of 3 (1) called referees, which counts as wrong here
+though it keeps them out of both teams.
+
+Fed every frame of every clip instead (all 2,788 and 9,310 on-court boxes, consecutive frames), the fit was accepted on
+neither game (its smallest cluster held 0.02 and 0.24 boxes a frame: neighbouring frames put the same few people next
+to each other in the graph) and the check fell back to the shirt rule on every box: like on the Roboflow clips
+(§13.3), it needs its context spread over a game, as the pipeline's `observe_every` spreads it. Limits: the labelled
+boxes are the hard ones (where the other two checks disagree, plus 20 both call referees), the two contexts are small
+(18 and 72 frames rather than 5 minutes of a game), and one person labelled them. Whether it can be the pipeline's
+default is decided by the pipeline on both games (`events --referees game` against the shirt rule), queued after the
+round-8 detectors.
