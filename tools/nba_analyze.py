@@ -469,10 +469,12 @@ def main() -> int:
     ap.add_argument("--team-refit", action="store_true",
                     help="events: refit the two team clusters as player crops accumulate (TeamConfig.refit_at), so a "
                          "first fit on a few frames does not hold for the whole game")
-    ap.add_argument("--referees", choices=("shirt", "learned", "guarded"), default="shirt",
+    ap.add_argument("--referees", choices=("shirt", "learned", "guarded", "game"), default="shirt",
                     help="events: how referees are told from players (analyze.RefereeCheck): the shirt rule, the "
-                         "learned check, or the learned check that falls back to the rule for a game once it calls more "
-                         "than 3.5 referees a frame")
+                         "learned check, the learned check that falls back to the rule for a game once it calls more "
+                         "than 3.5 referees a frame, or the in-game check (the game's people clustered: two team "
+                         "uniforms and the referees' third; the rule while that third is not 1-3.5 a frame and "
+                         "compact)")
     ap.add_argument("--referee-model", default=None,
                     help="events: the learned referee check's weights from this file (tools/referee_classifier.py --out)")
     ap.add_argument("--tol", type=float, default=2.5)

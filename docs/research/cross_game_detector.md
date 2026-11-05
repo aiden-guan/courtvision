@@ -1031,3 +1031,30 @@ R8-ctrl had trained (not scored) when E-BARD-detection was found (§13). Changed
   (`detector_bench.py --coco data/ebard/check_ann.json`: referees found, boxes on nobody, players and referees AP50
   and recall, the ball). Its ball, paired with v2 frame by frame (McNemar), joins the rule of §13.1; its people are
   reported beside the rule, as the Roboflow games' are.
+
+### 13.3 Telling referees apart within each game (`method="game"`; the shirt rule stays the default)
+
+(Written on the cloud as §13.1 while the Mac's plan took that number; renumbered on merge.)
+
+A referee check that uses the game itself (`nba.referee`, `RefereeCheck("game")`, `nba_analyze.py events --referees
+game`; the research notes' experiment 2): within a game, the people's shirt and trouser statistics and colour
+histograms are clustered into three groups (spectral clustering of a 12-nearest-neighbour graph); the two largest are
+the teams, the smallest the referees, accepted only if it holds 1.0-3.5 boxes a frame, is compact (silhouette 0.04 or
+more) and the graph has no more than 3 parts, else the shirt rule decides. Per track by majority where tracks exist.
+Fixed on E-BARD's 30 calibration games (F1 0.897 there, about 100 variants tried, so optimistic), then scored once on
+the labelled boxes of the 30 held-out check games (each game's 30 frames its context):
+
+| E-BARD, 30 held-out games | Referees called | Players called referee | Precision | Recall | F1 |
+|---|---:|---:|---:|---:|---:|
+| Shirt rule (the default) | 1,449 / 1,918 | 938 / 7,728 | 0.607 | 0.755 | 0.673 |
+| Learned check (§11.1) | 1,764 / 1,918 | 442 / 7,728 | 0.800 | 0.920 | 0.855 |
+| In-game check | 1,748 / 1,918 | **158** / 7,728 | **0.917** | 0.911 | **0.914** |
+
+Per box, against the shirt rule 1,210 boxes right only by the in-game check and 131 the other way; against the
+learned check 417 and 149 (boxes of one game share one fit, so the game-level counts are the sturdier evidence:
+better than the shirt rule in 30 of 30 games, than the learned check in 26, worse in 3). It never fell back. Its worst
+games have a team in black or dark navy (Thunder v Spurs F1 0.667, Kings v Rockets 0.706), where the "referee" cluster
+takes in players. On the 5 Roboflow games, where a "game" is one or two clips of a few seconds, it is worse than the
+learned check (F1 0.817 against 0.907, which is in-sample there) and falls back on 2: the method needs a game's worth
+of varied frames. Not measured: other eras (the 2017 game's referees and the Cavaliers' black jerseys are on the Mac)
+and the whole pipeline with it, so the shirt rule stays the default.

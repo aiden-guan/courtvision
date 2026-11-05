@@ -39,6 +39,7 @@ import queue
 import shutil
 import subprocess
 import threading
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -50,6 +51,7 @@ import numpy as np
 
 from courtvision.geometry.court import CourtSpec, court_for
 from courtvision.geometry.homography import Calibration, Homography
+from courtvision.nba.referee import GAME_FEATURE_NAMES, GameConfig, GameFit, fit_game, game_features_batch
 from courtvision.nba.referee import is_referee_shirt  # noqa: F401 - the shirt rule, also ``analyze``'s name
 from courtvision.perception.ball3d import Flight3D, FlightSearchConfig, find_flights
 from courtvision.perception.court_search import CameraParams
@@ -852,24 +854,55 @@ def rectify_box(box: tuple[float, float, float, float], cam: CameraParams, size:
 
 
 class RefereeCheck:
-    """The referee calls of one game, frame after frame: ``shirt`` or ``learned`` as ``are_referees``, or ``guarded``:
+    """The referee calls of one game, frame after frame: ``shirt`` or ``learned`` as ``are_referees``; ``guarded``:
     the learned check until it has called more people referees than a game has: over the frames with at least
     ``min_people`` boxes, once ``min_frames`` of them are seen, a mean above ``max_mean`` calls a frame (an NBA game has
     3 referees; a team's dark uniform read as a referee's shirt adds several a frame) switches the rest of the game to
-    the shirt rule."""
+    the shirt rule; or ``game``: the in-game check (``nba.referee.fit_game``, settings ``game``): the boxes of every
+    ``observe_every``-th frame join a context of the newest ``window`` such frames, clustered again every
+    ``refit_every`` of them; while the latest fit is accepted a box is a referee when most of its nearest clustered
+    boxes are in the referee cluster, otherwise (and before the first fit) the shirt rule decides. With ``track_ids``
+    (one per box, None for a box without a track) a track takes the majority of its boxes' calls so far, so one call
+    does not flip it."""
 
     def __init__(self, method: str = "shirt", max_mean: float = 3.5, min_frames: int = 100, min_people: int = 8,
-                 model: Any = None) -> None:
-        if method not in ("shirt", "learned", "guarded"):
+                 model: Any = None, game: GameConfig | None = None) -> None:
+        if method not in ("shirt", "learned", "guarded", "game"):
             raise ValueError(f"unknown referee method {method!r}")
         self.method, self.max_mean, self.min_frames, self.min_people = method, max_mean, min_frames, min_people
         self.model = model  # the learned check's weights (None: the packaged ones)
         self.frames = 0
         self.calls = 0
         self.fell_back_at: int | None = None  # the frame index the guard switched to the rule at
+        self.game = game or GameConfig()  # the in-game check's settings
+        self.fit: GameFit | None = None  # its latest fit
+        self.fits = 0
+        self.rejected = 0  # fits not accepted (the shirt rule until the next)
+        self._context: deque[np.ndarray] = deque(maxlen=max(1, self.game.window))
+        self._seen = 0  # frames passed to the in-game check
+        self._observed = 0  # of them, frames added to the context since the last fit
+        self._votes: dict[int, list[int]] = {}  # track -> [referee calls, calls]
 
     def __call__(self, frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]],
-                 frame_idx: int | None = None) -> list[bool]:
+                 frame_idx: int | None = None, track_ids: list[int | None] | None = None) -> list[bool]:
+        calls = self._calls(frame_bgr, boxes, frame_idx)
+        if track_ids is None:
+            return calls
+        out = []
+        for call, track in zip(calls, track_ids):
+            if track is None or track < 0:
+                out.append(call)
+                continue
+            votes = self._votes.setdefault(int(track), [0, 0])
+            votes[0] += int(call)
+            votes[1] += 1
+            out.append(2 * votes[0] > votes[1])
+        return out
+
+    def _calls(self, frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]],
+               frame_idx: int | None) -> list[bool]:
+        if self.method == "game":
+            return self._game(frame_bgr, boxes)
         if self.method == "shirt" or self.fell_back_at is not None:
             return are_referees(frame_bgr, boxes, "shirt")
         calls = are_referees(frame_bgr, boxes, "learned", self.model)
@@ -883,6 +916,29 @@ class RefereeCheck:
                         self.calls / self.frames, self.frames)
             return are_referees(frame_bgr, boxes, "shirt")
         return calls
+
+    def _game(self, frame_bgr: np.ndarray, boxes: list[tuple[float, float, float, float]]) -> list[bool]:
+        feats = np.full((len(boxes), len(GAME_FEATURE_NAMES)), np.nan)
+        if len(boxes):
+            f, keep = game_features_batch(frame_bgr, boxes)
+            feats[keep] = f
+        cfg = self.game
+        if len(boxes) and self._seen % max(1, cfg.observe_every) == 0:
+            self._context.append(feats)
+            self._observed += 1
+            if self._observed >= cfg.refit_every:
+                frames = np.concatenate([np.full(len(c), i) for i, c in enumerate(self._context)])
+                self.fit = fit_game(np.concatenate(list(self._context)), frames, cfg)
+                self.fits += 1
+                self._observed = 0
+                if not self.fit.accepted:
+                    self.rejected += 1
+                    log.info("in-game referee check not accepted (%s); the shirt rule until the next fit",
+                             self.fit.reason)
+        self._seen += 1
+        if self.fit is not None and self.fit.accepted:
+            return [bool(c) for c in self.fit.predict(feats)]
+        return are_referees(frame_bgr, boxes, "shirt")
 
 
 class CachedDetector:
@@ -976,7 +1032,7 @@ class PerceiveConfig:
     home_color_bgr: tuple[int, int, int] | None = None
     away_color_bgr: tuple[int, int, int] | None = None
     team_refit_at: tuple[int, ...] = ()  # TeamConfig.refit_at (nba_analyze.py events --team-refit)
-    referees: str = "shirt"  # RefereeCheck method: shirt, learned or guarded (nba_analyze.py events --referees)
+    referees: str = "shirt"  # RefereeCheck method: shirt, learned, guarded or game (nba_analyze.py events --referees)
     referee_model: str | None = None  # the learned check's weights from this file (load_referee_model), not the packaged
     league: str = "nba"
     # ByteTrack thresholds for the student detector, whose person scores sit lower than RF-DETR's (a centre
