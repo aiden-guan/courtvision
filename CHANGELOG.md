@@ -5,6 +5,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — Round 8: new data tried on main model v2 (the app's model unchanged)
+
+Cloud, 2026-11-05; [research note §13](docs/research/cross_game_detector.md) (§13.2 the results).
+
+- **Three ablations from main model v2**, scored against it with paired tests on footage none trained on: K0 (more
+  training on the same data), K1 (plus ball labels by v2 on 600 more BARD clips) and K3 (plus E-BARD-detection's human
+  labels on the 30 BARD calibration games). **v2 stays**: K3 finds far more referees and more players on E-BARD's 30
+  held-out games (1,602 against 1,194 of 1,918 referees, p 3e-97; 6,803 against 6,576 of 7,728 players) and more
+  balls (E-BARD 88.1 against 86.3 %, p 0.047; BARD per frame 91.4 against 90.0 %, p 0.017), is level with v2 on the 5
+  held-out Roboflow games and the BARD linked path, but puts more boxes on people nobody labelled (0.217 against 0.156
+  a frame, p 4.5e-6): by eye mostly coaches, staff and bench players on the sideline and some courtside fans. The 600
+  self-labelled clips changed nothing per frame and made the linked ball path worse (91.0 against 92.5 %, p 0.014).
+  The cloud lacks one of v2's sources (the Lakers @ Warriors teacher folder), so its runs were ablations; candidates
+  for the app are trained and checked on the Mac (research note §10.8's rule).
+- **E-BARD-detection as a held-out test and as training data** (`tools/fetch_data.py ebard`; Giudici et al., CC BY
+  4.0, the footage the NBA's): human boxes of players, referees and the ball on 30 frames of each of BARD's 60 games,
+  re-split by BARD's games: 900 frames of the calibration games for training, 900 of the check games held out
+  (7,728 players, 1,918 referees, 762 balls).
+- **Tools**: `student_finetune.py train --ema DECAY` and `export --ema` (an exponential moving average of the weights);
+  `mark-ignore --promote` (SportsMOT's unlabelled officials become person labels when they overlap no player, stand
+  at the players' height for their foot row and are called referees; 674 of 679 hand-checked crops were officials);
+  `court-persons --weak` (people the labeller is unsure of become ignore boxes, not background); the in-game referee
+  check (`RefereeCheck("game")`, `nba_analyze.py events --referees game`: per game, shirt colours clustered into two
+  teams and the referees; on E-BARD's 30 held-out games F1 0.914 against the learned check's 0.855 and the shirt
+  rule's 0.673; the shirt rule stays the default until the README's two games are checked).
+
+---
+
 ## [Unreleased] — The browser finds the court on more NBA.com clips
 
 - **Court setup on dim or textured floors** (`perception/broadcast_court.estimate_center`, the court fit of the
