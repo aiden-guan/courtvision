@@ -1197,3 +1197,15 @@ What each change did, one at a time:
 
 So the change that restores the 2017 referees costs the one thing the owner had asked to be fixed before them: the
 people off the court. R8f's pipeline is §13.8.
+
+### 13.8 Added after §13.7, before R8b's labels were made: R8g
+
+§13.2 named the sum of the changes that pass before it trains. All four passed the detector tests, and R8f's cost (the
+crowd, §13.7) is what R8b's court-geometry labels are meant to remove (people well off the court as background, on
+the court as people). So, with R8b unchanged:
+
+* **R8g**: R8f with R8b's court-geometry labels on the 600 new clips (the same folder in place of their ball-only
+  one): every change of round 8 at once, and one change against R8f.
+
+Named after §13.7's results were read, so its choice is not blind to the held-out sets (the sets were not trained or
+tuned on). R8b and R8g are scored as the others; if R8g passes and has more gains than R8f, it goes to the pipeline.
