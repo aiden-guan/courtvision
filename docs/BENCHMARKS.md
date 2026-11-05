@@ -4,6 +4,32 @@ Every accuracy and speed measurement the README summarises, in full. Simulator f
 simulator in `courtvision/sim` scored by `courtvision/eval`; NBA figures from two broadcasts scored against the ESPN
 box score and play-by-play (research use, [NBA.md](NBA.md)). Newest first.
 
+## Round 8 (2026-11-05, cloud): a 30-game human-labelled test; the browser app faster and finding the court more often
+
+**Main model v2 on E-BARD-detection's 30 held-out games** (`tools/fetch_data.py ebard`; human boxes on 900 frames of
+the 30 BARD check games, 2024-25 NBA.com broadcasts, none trained on by either model; benches and crowd not labelled;
+people at 0.3, IoU 0.5; [research note §13.2](research/cross_game_detector.md)). Paired: labelled people (or frames)
+only v2 finds / only the first model finds.
+
+| | First model | Main model v2 | Paired |
+|---|---:|---:|---|
+| Players found (of 7,728) | 4,810 (62.2 %) | **6,576 (85.1 %)** | 1,898 / 132, p about 1e-400 |
+| Referees found (of 1,918) | **1,405 (73.3 %)** | 1,194 (62.3 %) | 137 / 348, p 3.2e-22 |
+| Boxes on people nobody labelled (benches, sideline, crowd), a frame; lower is better | 0.608 | **0.156** | frames with more for v2 / fewer: 30 / 310, p 8.8e-60 |
+| Ball (746 frames) | 75.3 % | **86.3 %** | 97 / 15 frames, p 7.1e-16 |
+| Players and referees AP50 | 0.773 | **0.892** | |
+
+The round's three ablations from v2 (§13.2) did not replace it: E-BARD's own human labels (K3) find far more
+referees (1,602) and more players and balls on these games, but put more boxes on the sideline (0.217 a frame).
+
+**The browser app** (measured on the cloud machine, 4 cores, Chromium 153):
+
+| | Before | After | Same results |
+|---|---:|---:|---|
+| Detector on the WebAssembly fallback (no WebGPU), one frame, median of 10 paired runs | 3,956 ms (1 thread) | **1,143 ms** (4 threads; the page cross-origin isolated) | bit-identical outputs |
+| Court found, one BARD clip per held-out game (29 games) | 16 clips, 51.9 % of frames live | **20 clips, 57.6 %** | no false fit seen in the drawn courts |
+| the same, the 30 training games | 14 clips, 41.5 % | **18 clips, 51.5 %** | |
+
 ## Main model v2 in the app (2026-11-03)
 
 The app's detector (`courtvision/server/static/nba-student.onnx`, the Studio's `models/nba-student.pt`) is now main
