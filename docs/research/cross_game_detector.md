@@ -1111,3 +1111,89 @@ round-8 detectors.
 clips (§13), the browser's court setup changed (d9655f7: weak camera fits that agree are pooled, and more views of a
 hard clip are searched). R8b's labels are made with the changed setup, merged before they were made, when no R8b
 result existed; the share of samples with a court is reported with them.
+
+### 13.7 Results: R8-ctrl, R8a, R8e and R8f on the held-out tests
+
+Each trained 4,000 steps on MPS from v2 (22-31 minutes). The new clips' labels: 600 clips of the 30 calibration
+games (20 a game), 36,000 frames, 31,988 with a ball label. E-BARD's calibration part: 900 frames (719 with a ball).
+`mark-ignore --promote` on the Mac promoted 2,018 officials on 1,681 `train` samples and 1,506 on 1,400 `val` samples,
+the cloud's counts exactly. The Mac's CPU was oversubscribed by other work for most of the round (load averages
+20-60, at times far more), where ONNX Runtime took 13-19 s a frame, so every network ran on the GPU
+(`tools/mac_round8`): v2 there reproduces its published numbers of §10.13 exactly (ball 95.1 / 79.2 / 91.4 / 68.0 %,
+players on the court 97.9 / 84.8 %, the 2017 referees 23.3 %, off the court 29.6 %), so these runs and §10.13's agree
+(`runs/bench/local/r8_*`).
+
+Ball, within 15 px of 1080p (in brackets: frames only the candidate hits / only v2, and p where below 0.2):
+
+| Test set (frames) | v2 | R8-ctrl | R8a | R8e | R8f |
+|---|---:|---:|---:|---:|---:|
+| Lakers @ Warriors held out (243), top | 95.1 % | 95.1 (0 / 0) | 94.2 (1 / 3) | 93.4 (1 / 5) | 95.1 (1 / 1) |
+| the same, linked | 95.1 % | 94.7 (0 / 1) | 95.1 (0 / 0) | 95.1 (0 / 0) | **95.5** (1 / 0) |
+| Cavaliers @ Warriors (606), top | 79.2 % | 77.9 (4 / 12, p 0.077) | **79.9** (8 / 4) | 77.9 (6 / 14, p 0.12) | 78.1 (6 / 13, p 0.17) |
+| the same, linked | 78.4 % | 77.1 (5 / 13, p 0.096) | **79.5** (10 / 3, p 0.092) | 77.1 (9 / 17, p 0.17) | 77.7 (10 / 14) |
+| BARD check games (1,097) | 91.4 % | 91.1 (9 / 13) | 91.3 (18 / 19) | **93.0** (22 / 5, p 0.0015) | 92.7 (24 / 10, p 0.024) |
+| 5 held-out Roboflow games (194) | 68.0 % | 67.5 (4 / 5) | 68.6 (8 / 7) | 72.7 (15 / 6, p 0.078) | **73.2** (14 / 4, p 0.031) |
+| E-BARD's 30 check games (746) | 86.3 % | 86.6 (13 / 11) | 88.3 (22 / 7, p 0.0081) | **90.1** (35 / 7, p 1.5e-5) | 89.5 (33 / 9, p 0.00027) |
+
+(The first app model on E-BARD's check games: 75.3 %, 15 / 97 against v2.)
+
+People on the README's two games, the teacher's boxes placed on the court (§10.2; the first app model: 99.0 / 99.1 %,
+80.2 / 83.6 / 76.1 %):
+
+| | v2 | R8-ctrl | R8a | R8e | R8f |
+|---|---:|---:|---:|---:|---:|
+| Lakers @ Warriors: players on the court (1,311) | 97.9 % | 97.9 % | 97.7 % | 98.6 % | **98.8 %** |
+| the same: referees on the court (230) | 98.7 % | 97.8 % | 99.6 % | 99.1 % | 99.6 % |
+| Cavaliers @ Warriors: players on the court (3,535) | 84.8 % | 85.2 % | 86.0 % | 85.9 % | **90.8 %** |
+| the same: referees on the court (116) | 23.3 % | 21.6 % | 21.6 % | 34.5 % | **75.9 %** |
+| the same: off the court, benches and the crowd (226; lower is better) | 29.6 % | **12.4 %** | 23.0 % | 40.7 % | 70.4 % |
+
+Players on the court paired with v2 (95 % bootstrap interval over clips; per box only the candidate / only v2):
+Lakers @ Warriors (9 clips) R8-ctrl +0.0 points (-0.3 to +0.3), R8a -0.2 (-1.0 to +0.3), R8e +0.7 (-0.1 to +1.6;
+13 / 4 boxes, p 0.049), R8f +0.9 (-0.3 to +3.0; 19 / 7, p 0.029); Cavaliers @ Warriors (34 clips) R8-ctrl +0.4 (-0.6 to
++1.4), R8a +1.1 (**+0.5 to +1.7**; 79 / 39, p 0.00029), R8e +1.0 (-0.2 to +2.2; 84 / 48, p 0.0022), R8f **+6.0 (+4.1
+to +7.7**; 228 / 17, p 2.5e-48; 24 clips up, 3 down, p 4.9e-5).
+
+Human labels of single frames (people at 0.3, IoU 0.5; per person or per frame paired with v2, `detector_bench
+--coco` since 640fdbf):
+
+| | v2 | R8-ctrl | R8a | R8e | R8f |
+|---|---:|---:|---:|---:|---:|
+| E-BARD check (900 frames): referees found (of 1,918) | 1,194 | 1,183 (94 / 105) | 1,325 (183 / 52, p 2.7e-18) | 1,518 (351 / 27, p 4.9e-73) | **1,612** (438 / 20, p 1.3e-103) |
+| the same: players found (of 7,728) | 6,576 | 6,668 (p 3.7e-8) | 6,628 (p 0.0094) | 6,710 (p 3.1e-11) | **6,720** (p 2.4e-12) |
+| the same: boxes on nobody labelled, a frame (lower is better) | **0.16** | 0.17 | 0.23 (p 7.3e-8) | 0.18 (p 0.0073) | 0.24 (p 3.2e-11) |
+| the same: players and referees AP50 / recall | 0.892 / 0.806 | 0.897 / 0.814 | 0.898 / 0.824 | 0.917 / 0.853 | **0.918 / 0.864** |
+| 5 Roboflow games: referees found (of 506) | 426 | **438** (14 / 2, p 0.0042) | 429 | 429 | 430 |
+| the same: boxes on nobody, a frame | 0.19 | 0.23 (p 0.049) | 0.18 | 0.13 (p 0.023) | **0.12** (p 0.011) |
+| the same: players and referees AP50 | 0.892 | **0.901** | 0.896 | 0.898 | 0.898 |
+
+(The first app model on E-BARD's check games: 1,405 referees, 4,810 players, 0.61 boxes on nobody a frame. E-BARD
+labels no benches or crowd, so its "boxes on nobody" are the owner's complaint of §11; the boxes on nobody count
+frames with more or fewer than v2 in a sign test.)
+
+**Against the rule** (§13.1-13.2): no candidate is worse than v2 on any ball test (the nearest: R8-ctrl on the
+Cavaliers @ Warriors top candidate, 4 / 12, p 0.077) or on the players on the court of either game (no interval
+wholly below zero), and each is better somewhere: R8-ctrl only on the reported people measures (the Roboflow games'
+referees, E-BARD's players), R8a on the Cavaliers @ Warriors players and E-BARD's ball, R8e on the BARD and E-BARD
+ball, R8f on the BARD, Roboflow and E-BARD ball and the Cavaliers @ Warriors players. So all four pass the detector
+tests, and R8f has the most gains beyond chance; it goes to the pipeline first (the rule picks, of those that pass the
+pipeline too, the one with more gains, so R8f decides alone if it passes).
+
+What each change did, one at a time:
+
+* **A second pass over C's data (R8-ctrl against v2)**: within chance on every ball and player test; it leaves more
+  of the crowd alone on the 2017 game (12 % against 30 % off the court boxed) and finds a few more referees and
+  players on the single frames.
+* **The 600 new clips' ball labels (R8a against R8-ctrl)**: the Cavaliers @ Warriors ball (top 13 frames to 1,
+  p 0.0018; linked 20 to 5, p 0.0041) and players (78 / 51 boxes, p 0.022); the BARD check games unmoved.
+* **E-BARD's human labels (R8e against R8a)**: the BARD ball (24 / 6, p 0.0014) and E-BARD's referees; the Cavaliers
+  @ Warriors ball falls back (top 5 / 17, p 0.017; linked 4 / 19, p 0.0026) to about v2's, and more of its crowd is
+  boxed (41 % against 23 %).
+* **SportsMOT's officials (R8f against R8e)**: the 2017 game's referees on the court 35 % to 76 % and its players
+  +5.0 points (+3.1 to +6.7; 188 / 13 boxes), E-BARD's referees 1,518 to 1,612; its crowd boxed 41 % to **70 %**, the
+  first app model's level (76 %). The promoted officials stand at the sidelines, and the referee-aware ignore boxes
+  take away many of the background examples the hull-only folders gave (§13.4: the two parts cannot be told apart
+  here).
+
+So the change that restores the 2017 referees costs the one thing the owner had asked to be fixed before them: the
+people off the court. R8f's pipeline is §13.8.
