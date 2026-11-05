@@ -54,10 +54,13 @@ class _PreparedBroadcast(BroadcastPerception):
 
 
 class BrowserPipeline:
-    # Until the court tracker has started, a start (the tracker's search near the earliest view's camera) is tried on
-    # the clip's first frame, on each shot boundary (the game camera comes back on a cut) and every START_EVERY
-    # frames in between: a try that fails costs a camera search, and on a clip whose game view comes late (or never)
-    # one per frame made the setup the slowest part of the analysis.
+    # Until the court tracker has started, its start (a camera search near the earliest view's camera: about 3 s of
+    # CPU at 960 px when it fails) is tried on every one of the clip's first START_ALL_FRAMES frames, then on each shot
+    # boundary (the game camera comes back on a cut) and every START_EVERY frames. On dim or textured floors a start
+    # passes on a lucky frame (a BARD clip whose only start in 196 frames came at frame 21 never started when tried
+    # every fifth frame), and every start of the 38 calibrated BARD clips measured came by frame 86; after that, a
+    # clip whose tracker never starts no longer pays a search a frame.
+    START_ALL_FRAMES = 90
     START_EVERY = 5
 
     def __init__(self):
@@ -93,7 +96,7 @@ class BrowserPipeline:
         self.frame_idx, self.t = int(frame_idx), float(t)
         cut = self.pipeline is None and self.cuts.update(self.image)
         if (self.pipeline is None and self.center is not None and self.initial is not None
-                and (cut or self.frame_idx >= self._next_start)):
+                and (cut or self.frame_idx < self.START_ALL_FRAMES or self.frame_idx >= self._next_start)):
             self._next_start = self.frame_idx + self.START_EVERY
             auto = BroadcastCourtTracker(self.court, (width, height), self.center)
             auto.reset(self.initial)

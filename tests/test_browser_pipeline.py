@@ -136,9 +136,9 @@ def test_court_setup_starts_the_tracker_from_the_earliest_view_found(monkeypatch
     assert got == {"views": 6, "more": 0} and pipeline.initial.pan == 3.
 
 
-def test_court_tracker_start_is_tried_on_the_first_frame_on_cuts_and_every_few_frames(monkeypatch):
-    """A start that fails costs a camera search, so until the tracker starts it is tried on the clip's first frame,
-    on each shot boundary and every ``START_EVERY`` frames, not on every frame."""
+def test_court_tracker_start_is_tried_on_every_early_frame_then_on_cuts_and_every_few_frames(monkeypatch):
+    """A start that fails costs a camera search: until the tracker starts it is tried on every frame of the clip's
+    first ``START_ALL_FRAMES`` frames, then only on shot boundaries and every ``START_EVERY`` frames."""
     from types import SimpleNamespace
 
     from courtvision.browser import runtime
@@ -158,12 +158,14 @@ def test_court_tracker_start_is_tried_on_the_first_frame_on_cuts_and_every_few_f
             return SimpleNamespace(homography=lambda size: None)  # the court not found: no start
 
     monkeypatch.setattr(runtime, "BroadcastCourtTracker", Tracker)
+    assert (BrowserPipeline.START_ALL_FRAMES, BrowserPipeline.START_EVERY) == (90, 5)
+    monkeypatch.setattr(BrowserPipeline, "START_ALL_FRAMES", 3)
     pipeline = BrowserPipeline()
     pipeline.center = np.array([47., -94., 36.])
     pipeline.initial = CameraParams(pipeline.center, 0., 15.5, 0., 2300.)
-    pipeline.cuts = SimpleNamespace(update=lambda image: pipeline.frame_idx == 7)
+    pipeline.cuts = SimpleNamespace(update=lambda image: pipeline.frame_idx == 9)
     frame = cv2.cvtColor(np.zeros((4, 6, 3), np.uint8), cv2.COLOR_BGR2RGBA).ravel()
-    for index in range(13):
+    for index in range(15):
         pipeline.prepare(frame, 6, 4, index, index/29.97)
-    assert BrowserPipeline.START_EVERY == 5
-    assert tries == [0, 5, 7, 12] and pipeline.pipeline is None
+    # every frame of the first three, then every fifth after the last try, and the cut at frame 9
+    assert tries == [0, 1, 2, 7, 9, 14] and pipeline.pipeline is None

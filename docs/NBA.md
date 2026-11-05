@@ -49,8 +49,9 @@ and statistics may not be shipped in a product (docs/TRAINING.md §1).
    prior's camera box. The browser app searches six views of a clip, and the six between them when one of the six
    shows a game view but too few fit; the Studio keeps the 0.15 rule, since its centre is saved for the game.
    Until its court tracker has started, the browser tries the start (a camera search near the earliest view's
-   camera) on the clip's first frame, on each shot boundary and every fifth frame (`BrowserPipeline.START_EVERY`),
-   not on every frame: on clips whose game view comes late, failed tries were most of the analysis time.
+   camera, about 3 s of CPU when it fails) on every one of the clip's first 90 frames, then only on shot boundaries
+   and every fifth frame (`BrowserPipeline.START_ALL_FRAMES`, `START_EVERY`): on dim or textured floors a start
+   passes on a lucky frame, and every start of the 38 calibrated BARD clips measured came by frame 86.
 
 ## Adding a game
 
