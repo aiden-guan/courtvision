@@ -1018,3 +1018,16 @@ be better than v2 beyond chance somewhere. A candidate that passes runs the pipe
 pass, the one with more significant gains; on a tie, the one with fewer changes. Reported beside the rule, as the two
 known costs of v2: the 2017 game's referees on the court (v2 23.3 %, the first app model 83.6 %) and the Lakers @
 Warriors players on the court (v2 97.9 %, the first app model 99.0 %).
+
+### 13.2 Added before R8a, R8b or R8e was trained or any round-8 run scored
+
+R8-ctrl had trained (not scored) when E-BARD-detection was found (§13). Changed then:
+
+* **R8e**: R8a plus E-BARD's 900 calibration-game frames (`prep-coco --referees`: players and referees as people, the
+  ball; the Mac's K3). R8b and R8e each add one thing to R8a, as K2 and K3 do to K1; if both pass, their sum is
+  named before it trains. With folders sampled equally R8e draws a seventh of its samples from 900 frames (about 2.5
+  passes over each), and every other folder's share falls from 1/6 to 1/7.
+* **E-BARD's 900 check-game frames** join the held-out tests of every candidate, v2 and the first app model
+  (`detector_bench.py --coco data/ebard/check_ann.json`: referees found, boxes on nobody, players and referees AP50
+  and recall, the ball). Its ball, paired with v2 frame by frame (McNemar), joins the rule of §13.1; its people are
+  reported beside the rule, as the Roboflow games' are.
