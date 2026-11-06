@@ -1263,6 +1263,20 @@ referees; 746 frames with the ball):
 (Players AP50 counts a boxed referee against the model, so a model that boxes more referees loses there: K3's lower
 players AP50 goes with its 408 more referees found.)
 
+The earlier models on E-BARD's held-out games, as the plan asked (paired against v2, "only the model / only v2"):
+
+| | Referees found | Players found | Boxes on nobody a frame | Ball | People AP50 |
+|---|---:|---:|---:|---:|---:|
+| The first app model | 1,405 (348 / 137, p 3.2e-22) | 4,810 (132 / 1,898) | 0.608 (310 / 30 frames, p 8.8e-60) | 75.3 % (15 / 97, p 7.1e-16) | 0.773 |
+| T5 (§9) | 60 (1 / 1,135) | 6,560 (221 / 237, p 0.48) | 0.116 (47 / 83, p 0.002) | 85.3 % (19 / 27, p 0.30) | 0.787 |
+| R4b (§11.2) | 1,231 (207 / 170, p 0.064) | 6,480 (199 / 295, p 1.8e-5) | 0.181 (69 / 48, p 0.064) | 85.0 % (17 / 27, p 0.17) | 0.879 |
+| v2 | 1,194 | 6,576 | 0.156 | 86.3 % | 0.892 |
+
+On 30 games it never saw, v2 keeps what the earlier rounds measured on fewer: the first model boxes everyone (most
+referees, and 0.61 boxes a frame on people nobody labelled), T5 leaves referees out (60 of 1,918) and the sideline
+alone, and v2 sits between them: 62 % of the referees at 0.16 boxes a frame on nobody, with as many players as T5
+(p 0.48) and more than R4b, and a ball not significantly different from either (p 0.30, 0.17).
+
 What each step of data did, paired on the same frames:
 
 * **More training on the same data (K0 against v2)** finds more players on both sets, and on E-BARD fewer referees and

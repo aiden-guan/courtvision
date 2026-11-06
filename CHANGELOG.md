@@ -39,7 +39,7 @@ after seeing its costs.
 
 ## [Unreleased] — Round 8 on the cloud: new data tried on main model v2 (ablations)
 
-Cloud, 2026-11-05; [research note §13](docs/research/cross_game_detector.md) (§13.2 the results).
+Cloud, 2026-11-05; [research note §13](docs/research/cross_game_detector.md) (§13.9 the results; the Mac's candidates §13.1-13.8, §13.10-13.14).
 
 - **Three ablations from main model v2**, scored against it with paired tests on footage none trained on: K0 (more
   training on the same data), K1 (plus ball labels by v2 on 600 more BARD clips) and K3 (plus E-BARD-detection's human
@@ -65,7 +65,13 @@ Cloud, 2026-11-05; [research note §13](docs/research/cross_game_detector.md) (�
 
 ---
 
-## [Unreleased] — The browser finds the court on more NBA.com clips
+## [Unreleased] — The browser app finds the court on more NBA.com clips, and its WebAssembly detector runs 3.8 times faster
+
+- **WebAssembly threads** for the browser detector's fallback when WebGPU is unavailable: the server sends COOP
+  `same-origin` and COEP `require-corp` on every response, so the page is cross-origin isolated and `nba-worker.js`
+  runs ONNX Runtime on up to 4 threads (one without isolation). On the 4-core cloud machine, one frame: 3,956 ms on
+  1 thread, 1,143 ms on 4 (medians of 10 paired runs, 4 threads faster in all 10), outputs bit-identical. Pyodide's
+  CDN answers with CORS and CORP headers, so it still loads.
 
 - **Court setup on dim or textured floors** (`perception/broadcast_court.estimate_center`, the court fit of the
   browser app): a camera fit of 0.10-0.15 (coverage x explained lines; the tracker's own re-acquisition bar) now
