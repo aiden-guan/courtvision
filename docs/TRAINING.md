@@ -509,7 +509,8 @@ A real broadcast still needs four things that are not in this repository:
 The student detector (`perception/student.py`) was first distilled on two NBA games; on human-labelled clips of
 seven other broadcasts that model found 61% of the players (`tools/detector_bench.py`; research note
 `docs/research/cross_game_detector.md`). These tools fine-tune it with more varied footage, starting from any of its
-exports; main model v2, in the app since 2026-11-03, was made with them (research note §10.8-10.15):
+exports; main model v2 (2026-11-03, research note §10.8-10.15) and main model v3, in the app since 2026-11-05 (§13), were
+made with them:
 
 | Step | Command |
 |---|---|
@@ -521,6 +522,9 @@ exports; main model v2, in the app since 2026-11-03, was made with them (researc
 | Held-out ball labels from the RF-DETR teacher (the `nba_teacher_labels.py` recipe; `--device mps` on a Mac) | `tools/student_finetune.py prep-teacher <clips> data/ft/bard_check_teacher` |
 | Fine-tune (batch norms frozen; `--freeze` keeps modules fixed; `--hue` turns player-only frames' colours; `--balance` samples every folder equally; `--static-p` replaces the earlier input frames by the frame itself for that share of samples; `--bf16 --channels-last` for 3.6 times faster steps on CPUs with AMX; `--device mps` trains on a Mac's GPU, `--fp16` there) | `tools/student_finetune.py train --data data/ft/mot_train --data data/ft/bard_calib --init runs/models/student-from-onnx.pt --out runs/models/student-ft` |
 | Export (the browser interface) and score | `tools/student_finetune.py export runs/models/student-ft/last.pt --out runs/models/student-ft.onnx`; `tools/detector_bench.py --models a.onnx,b.onnx --split val --sparse` (SportsMOT), `--ball-folder` (teacher-labelled clips, with paired McNemar tests), `--coco` (COCO-format human labels) |
+| SportsMOT's unlabelled people among the players left out of the person loss; with `--promote` its officials become people (labelled by the first app model; how v3 was made) | `tools/student_finetune.py mark-ignore data/ft/mot_train data/ft/mot_train_ref --promote` |
+| E-BARD-detection's human labels of players, referees and the ball, split by BARD's games (calibration games for training, check games held out) | `tools/fetch_data.py ebard --out data/ebard`; `tools/student_finetune.py prep-coco data/ebard/calib_ann.json data/ebard/images data/ft/ebard_calib --referees` |
+| Person labels from the court's geometry on `prep-video` clips (on the court: people; far off it: background) | `tools/student_finetune.py court-persons <prep-video folder> <out> --model runs/models/app-v1.onnx` |
 | int8 for CPUs (calibrated on held-apart frames, checked against fp32) | `tools/quantize_student.py --calib <folder> --check <folder> --out runs/models/student-int8.onnx` |
 | Weight averaging of fine-tunes from one start (a uniform soup; `--base` and `--alpha` pull it back towards the start, WiSE-FT) | `tools/student_finetune.py soup a/last.pt b/last.pt --out runs/models/soup.pt [--base runs/models/student-from-onnx.pt --alpha 0.5]` |
 
@@ -532,7 +536,10 @@ one, `plan_data` treats two folders as one video and leaves out every clip near 
 from the current main model with everything the earlier rounds used; a candidate replaces the main model only when it
 beats it on the fixed held-out tests (`docs/research/cross_game_detector.md` §10), after the owner has seen the numbers.
 Candidates live under `runs/` (git-ignored). Main model v2 (2026-11-03, research note §10.15) took in what the
-research rounds taught; their files were retired from `models/research/` to git history.
+research rounds taught; their files were retired from `models/research/` to git history. Main model v3 (2026-11-05,
+research note §13.13) added SportsMOT's officials as people, E-BARD's human labels and 600 more clips' ball labels; the
+owner accepted its cost, more of the benches and crowd boxed. On a Mac whose CPU is shared with other work,
+`tools/mac_round8/` runs the networks on the GPU (checked equal to the tools it copies).
 
 **Sharing a machine's CPU.** On Linux with `kernel.sched_autogroup_enabled = 1` (the default on most desktops and
 on the cloud containers), the scheduler shares the CPU between sessions (autogroups) before it looks at `nice`, so

@@ -4,19 +4,19 @@
   "duration_s": 29.996633333333335,
   "frames": 899,
   "fps": 29.97002997002997,
-  "analysis_tag": "main-c",
+  "analysis_tag": "r8f",
   "detector": {
-    "det_dir": "detections-main-c",
-    "weights": "runs/models/main-c/last.pt",
-    "weights_sha256": "1eee0dd1b9f62bf633f6f079cc3f554cfafdd72fd2769e085b72dee4a0323880",
-    "model": "main model v2 (docs/research/cross_game_detector.md section 10.15)"
+    "det_dir": "detections-r8f",
+    "weights": "runs/models/r8f/last.pt",
+    "weights_sha256": "961efb561e29da5327bd9e9b46174891d0b4b8b1ddbcbe2320d8905190f06347",
+    "model": "main model v3 (docs/research/cross_game_detector.md section 13)"
   },
-  "video": "showcase/media/nba-analysis-082b2ae643a4.mp4",
-  "video_sha256": "082b2ae643a4e14bf8c6a40adfd1bbf674d4186665134a14d05cce35cb2a02e2",
-  "poster": "showcase/media/nba-analysis-082b2ae643a4.webp",
+  "video": "showcase/media/nba-analysis-ced39a4e682d.mp4",
+  "video_sha256": "ced39a4e682d5b39cf00ccd4941e23a749fc6b1a2537cb60a6caee98da171edc",
+  "poster": "showcase/media/nba-analysis-ced39a4e682d.webp",
   "audio": false,
   "detection_caches": {
-    "runs/nba/2024-12-25-LAL-GSW/detections-main-c/0017795-0035581.npz": "4bf4dcac825b6b0e322aa2fca9f866e1f761a072498a0d58e1de632301f6ddfd"
+    "runs/nba/2024-12-25-LAL-GSW/detections-r8f/0017795-0035581.npz": "45a01a1e009e7c42b144b24b7f8c551606c8074be9bb389c2bf49b129c8a2a79"
   },
-  "timeline_sha256": "94a3194882b42acea2d37baee65797f614591f7c4a579650e0fc762638868233"
+  "timeline_sha256": "7bb26a9cdce7c8b9f15009907e0d154e65e01364f6373666b886ac76de55a344"
 }

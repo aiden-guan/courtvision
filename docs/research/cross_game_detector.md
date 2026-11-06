@@ -1398,3 +1398,33 @@ Its costs, stated plainly: the people off the court that v2 had learnt to leave 
 engine's own possession calls fall from 72.6 % to 55.8 % (the possession timeline 97.4 % to 97.1 %). Its gains: the
 2017 game's referees 23 % to 76 % and players 84.8 % to 90.8 %, E-BARD's referees 62 % to 84 %, the ball on the BARD,
 Roboflow and E-BARD sets, the box-score error on both games (0.197 to 0.171, 0.511 to 0.454).
+
+### 13.14 Main model v3: R8f in the app
+
+On 2026-11-05 the owner, shown §13.13 (R8f's gains and its costs: the benches and crowd boxed again, and the engine's
+own possession calls on the Lakers game), chose R8f as main model v3. Installed as v2 was (§10.15;
+`tools/mac_round8/install.sh`):
+
+* the browser app's `courtvision/server/static/nba-student.onnx` (`tools/export_student_browser.py --training ...`:
+  parity with the checkpoint on 3 inputs of the validation clip within 8.4e-5; `nba-student.json` and the browser's
+  reference outputs `nba-validation.json` written again; checkpoint sha256 `961efb56…`, ONNX `90337566…`); in the
+  browser (ONNX Runtime Web, WASM, `tools/mac_round8/browser_check`) the export's hash matches the reference and its
+  outputs match it within 1.9e-6 (tolerance 0.003);
+* the Studio's `models/nba-student.pt` on the Mac, with its shot models (ball zones), rim model (each game held out for
+  the judge's reads, then once on both) and shot judge refitted on R8f's pipeline runs (§13.12), v2's four files kept
+  in `models/previous-v2-1eee0dd1/`;
+* the public showcase re-rendered from R8f's detections, ball track and timeline (the same 30 s window).
+
+After the swap: on the README's ball protocol (`tools/nba_ball_bench.py`, 256 frames) v3 finds 95.7 % (3.5 % wrong,
+0.8 % missed), v2's and the first model's figure exactly. The rim model, each game held out, calls 71.3 % of real
+shots right (AUC 0.79; v2's 67.1 %, AUC 0.77). The refitted shot judge, each game judged by a judge fitted on the
+other, is right on 81.7 % and 72.2 % of the shots v3's events give (v2's judge 84.8 % and 72.0 % of its own); over the
+shots both models' events give (`tools/mac_round8/judge_pair.py`, matched within 1.5 s) the two judges are within
+chance: Lakers @ Warriors 126 against 133 of 156 (p 0.17), Cavaliers @ Warriors 66 against 68 of 92 (p 0.80); within
+each game 141 against 141 and 70 against 69. Made or missed with the ball's zones at the rim, Lakers @ Warriors: 88.8 %
+(v2 90.3 %, other shots).
+
+Its lineage: the first main model (`8bdf229a…`) → T5 (`student-ft-r3`) → v2 (`1eee0dd1…`, §10.15) → v3 (R8f: v2's
+data with SportsMOT's officials promoted, E-BARD-detection's 30 calibration games and ball labels by v2 on 600 more
+BARD clips; 4,000 steps on MPS). Research use only like the models before it; it carries SportsMOT's non-commercial
+licence, and credits E-BARD-detection (CC BY 4.0) with the other datasets (`models/research/README.md`).

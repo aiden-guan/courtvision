@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>verify</title></head>
+<body><pre id="out">starting</pre>
+<script src="ort.min.js"></script>
+<script>
+(async () => {
+  const res = {};
+  try {
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.wasmPaths = location.origin + "/";
+    const bytes = await (await fetch("nba-student.onnx")).arrayBuffer();
+    const ref = await (await fetch("nba-validation.json")).json();
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), b => b.toString(16).padStart(2, "0")).join("");
+    res.sha_matches_reference = digest === ref.onnx_sha256;
+    const s = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"] });
+    const input = new Float32Array(9 * 544 * 960);
+    for (let i = 0; i < input.length; i++) input[i] = ((i * 13 + (i >>> 10) * 7) % 251 - 125) / 128;
+    const out = await s.run({ frames: new ort.Tensor("float32", input, [1, 9, 544, 960]) });
+    let worst = 0;
+    for (const [name, probes] of Object.entries(ref.outputs))
+      for (let i = 0; i < probes.indices.length; i++)
+        worst = Math.max(worst, Math.abs(out[name].data[probes.indices[i]] - probes.values[i]));
+    res.max_abs_diff = worst; res.tolerance = ref.tolerance; res.passes = worst <= ref.tolerance;
+  } catch (e) { res.error = String(e && e.message || e); }
+  window.RESULT = res; document.getElementById("out").textContent = JSON.stringify(res);
+})();
+</script></body></html>

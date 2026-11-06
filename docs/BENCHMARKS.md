@@ -4,6 +4,47 @@ Every accuracy and speed measurement the README summarises, in full. Simulator f
 simulator in `courtvision/sim` scored by `courtvision/eval`; NBA figures from two broadcasts scored against the ESPN
 box score and play-by-play (research use, [NBA.md](NBA.md)). Newest first.
 
+## Main model v3 in the app (2026-11-05)
+
+The app's detector (`courtvision/server/static/nba-student.onnx`, the Studio's `models/nba-student.pt`) is now main
+model v3, candidate R8f of [research note §13](research/cross_game_detector.md): main model v2 fine-tuned 4,000 steps
+on its own data with SportsMOT's unlabelled officials as people (`mark-ignore --promote`), E-BARD-detection's human
+labels on the 30 BARD calibration games (players, referees, the ball) and v2's ball labels on 600 more BARD clips.
+Every figure is on footage the model never trained on except where marked; paired tests against v2 (frames, people or
+shots only v3 gets right / only v2).
+
+| | Main model v2 | Main model v3 | Paired |
+|---|---:|---:|---|
+| Ball, 30 BARD NBA games (1,097 frames, Mac teacher labels), top / linked | 91.4 / 92.8 % | **92.7** / 93.2 % | 24 / 10 frames, p 0.024; 15 / 11, p 0.56 |
+| Ball, E-BARD's 30 held-out games (746 frames, human labels) | 86.3 % | **89.5 %** | 33 / 9, p 0.00027 |
+| Ball, 5 held-out Roboflow games (194 single frames) | 68.0 % | **73.2 %** | 14 / 4, p 0.031 |
+| Ball, Cavaliers @ Warriors (606 frames), top / linked | 79.2 / 78.4 % | 78.1 / 77.7 % | 6 / 13, p 0.17; 10 / 14, p 0.54 |
+| Ball, Lakers @ Warriors held-out clips, linked (README protocol, 256 frames; v2's training game) | 95.7 % | 95.7 % | the same rate |
+| Referees found: E-BARD's 30 held-out games (1,918) / the 5 Roboflow games (506) | 62 / 84 % | **84** / 85 % | 438 / 20, p 1.3e-103; 19 / 15, p 0.61 |
+| Players found, E-BARD's 30 held-out games (7,728) | 85.1 % | **87.0 %** | 284 / 140, p 2.4e-12 |
+| Boxes on people nobody labelled, a frame: E-BARD / Roboflow (lower is better) | **0.16** / 0.19 | 0.24 / **0.12** | frames with more / fewer: 99 / 26, p 3.2e-11; 5 / 18, p 0.011 |
+| Cavaliers @ Warriors: players / referees on the court | 84.8 / 23.3 % | **90.8 / 75.9 %** | +6.0 points (clips +4.1 to +7.7) |
+| Cavaliers @ Warriors: benches and crowd boxed (lower is better) | **30 %** | 70 % | |
+| Lakers @ Warriors held-out clips: players / referees on the court (v2's training game) | 97.9 / 98.7 % | 98.8 / 99.6 % | +0.9 points (clips -0.3 to +3.0) |
+| Team with the ball, settled live play: Lakers @ Warriors / Cavaliers @ Warriors | **97.4** / 74.9 % | 97.1 / **75.6 %** | per half: 97.9 / 96.5 against 98.2 / 96.6; 71.3 / 79.9 against 71.3 / 78.3 |
+| the same, the event engine alone (before the timeline) | **72.6** / 58.4 % | 55.8 / 59.9 % | |
+| Made or missed, real shots (timeline) | 84.6 / 75.0 % | 87.6 / 74.6 % | 14 / 9 shots, p 0.41; 18 / 18, p 1 |
+| Made or missed with the ball's zones at the rim, Lakers @ Warriors | 90.3 % | 88.8 % | |
+| Studio shot judge across games (each game by a judge fitted on the other) | 84.8 / 72.0 % | 81.7 / 72.2 % | over the shots both see: 126 / 133 of 156, p 0.17; 66 / 68 of 92, p 0.80 |
+| Studio rim model, made or missed on real shots (each game held out) | 67.1 % | 71.3 % (AUC 0.79) | |
+| Box-score error from the timeline | 0.197 / 0.511 | **0.171 / 0.454** | |
+
+The Studio's rim model, shot judge and shot models were refitted on v3's output (v2's are kept in
+`models/previous-v2-1eee0dd1/` of its data folder). Court registration reads no detections and is unchanged. The
+browser export reproduces the checkpoint within 8.4e-5 on the validation clip and the reference outputs within 1.9e-6 on
+WASM.
+
+**The in-game referee check on the two games** (v2's detections; research note §13.5, §13.11): on the 160 boxes labelled
+by eye it is right on 64 and 74 of 80 (the shirt rule 44 and 66, the learned check 56 and 32) and calls 1 of 45
+Cavaliers players a referee; in the pipeline possession and made-or-missed are within chance of the shirt rule
+(97.4 to 96.9 %, 74.9 to 74.9 %; 3 / 2 and 7 / 9 shots) and the box-score error is lower (0.197 to 0.178, 0.511 to
+0.448). The shirt rule stays the default.
+
 ## Main model v2 in the app (2026-11-03)
 
 The app's detector (`courtvision/server/static/nba-student.onnx`, the Studio's `models/nba-student.pt`) is now main

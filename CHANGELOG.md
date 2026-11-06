@@ -5,7 +5,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
-## [Unreleased] — Round 8: new data tried on main model v2 (the app's model unchanged)
+## [Unreleased] — Main model v3 in the app (round 8 on the Mac)
+
+Mac, 2026-11-05; [research note §13.1-13.14](docs/research/cross_game_detector.md); installed by the owner's decision
+after seeing its costs.
+
+- **Main model v3**: v2 fine-tuned with SportsMOT's officials as people (`mark-ignore --promote`), E-BARD-detection's
+  human labels on the 30 BARD calibration games and v2's ball labels on 600 more BARD clips (candidate R8f, the pick of
+  the rule fixed before training among six candidates). On footage it never trained on: the 2017 game's referees on
+  the court 23 to 76 % and its players 84.8 to 90.8 %; referees on E-BARD's 30 held-out games 62 to 84 %; the ball on
+  the BARD, Roboflow and E-BARD sets; box-score error 0.197 to 0.171 and 0.511 to 0.454; possession and made-or-missed
+  within chance on both games. **Costs**: the 2017 game's benches and crowd boxed 30 to 70 %; on 2024-25 footage boxes
+  on people nobody labelled 0.16 to 0.24 a frame; the engine's own possession calls on the Lakers game 72.6 to 55.8 %
+  (the possession timeline 97.4 to 97.1 %). In the browser app (`nba-student.onnx`, its manifest and
+  `nba-validation.json`; checked on WASM within 1.9e-6) and the Studio (rim model, shot judge and shot models refitted
+  on its output; v2's kept); the showcase re-rendered with it.
+- **Found**: the SportsMOT folders v2 trained on held only the foot hull's ignore boxes, so most of SportsMOT's
+  officials, the 2017-style grey shirts among them, were taught as background: the likely cause of v2's lost 2017
+  referees (research note §13.4).
+- **The in-game referee check on the README's two games**: on the 160 hand-labelled boxes right on 64 and 74 of 80 (the
+  shirt rule 44 and 66, the learned check 56 and 32), the Cavaliers' black jerseys kept a team; in the pipeline
+  possession and made-or-missed within chance of the shirt rule, box-score error lower (0.197 to 0.178, 0.511 to
+  0.448). The shirt rule stays the default until the owner decides.
+- **The other candidates**, all reported: a second pass over v2's data, the new ball labels alone, with E-BARD, and the
+  court-geometry person labels (`court-persons`) alone and on top of v3's data. All pass the detector tests; the
+  court-geometry labels leave more of the 2017 crowd alone on their own (23 to 17 %) but do not undo the officials'
+  crowd cost.
+- **Tools**: `tools/mac_round8/` (the round's scripts, the networks on the Mac's GPU while its CPU was shared with other
+  work; checked equal to the tools they copy); `tools/referee_game_two.py`; `train_student.ClipDataset` tries a failed
+  frame read again and then names the file.
+
+---
+
+## [Unreleased] — Round 8 on the cloud: new data tried on main model v2 (ablations)
 
 Cloud, 2026-11-05; [research note §13](docs/research/cross_game_detector.md) (§13.2 the results).
 

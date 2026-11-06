@@ -13,12 +13,16 @@ same held-out tests (research note §10.1: the README's two games, the 30 BARD c
 games, and the full pipeline); a candidate replaces the main model only when it is better somewhere and worse nowhere
 that matters, after the owner has seen the numbers.
 
-**Main model v2 is in the app** (2026-11-03, research note §10.13-10.15): the first model fine-tuned, through round 3,
+**Main model v2 went into the app** (2026-11-03, research note §10.13-10.15): the first model fine-tuned, through round 3,
 on everything the rounds below used, with round 4's referee and crowd changes and the Lakers @ Warriors game's people on
 the court. What the three rounds below taught is in it: round 2's model made its ball labels, it started from round 3,
 and round 4's two changes are in its data. So their files were **retired from the repo**; the table below keeps their
 hashes and results, and the files are in git history (the last commit holding them: `b24f936`; e.g. `git show
 b24f936:models/research/student-ft-r3.onnx > student-ft-r3.onnx`). New candidates live under `runs/`, not here.
+
+**Main model v3 replaced v2** (2026-11-05, research note §13): v2 fine-tuned with SportsMOT's officials as people,
+E-BARD-detection's human labels and ball labels on 600 more BARD clips. It finds far more referees (the 2017 game's
+23 % to 76 %) and boxes more of the benches and crowd (the 2017 game's 30 % to 70 %); the owner chose it seeing both.
 
 **Research and evaluation only** (see [Sources and terms](#sources-and-terms)).
 
@@ -144,6 +148,10 @@ The weights learnt from:
   <https://github.com/MCG-NJU/SportsMOT>): the player boxes. Licence **CC BY-NC 4.0**: non-commercial use, with credit.
 * **BARD** (Giudici et al., CVIU 2026; <https://github.com/GabrieleGiudic/BARD>): the NBA.com clips the ball labels come
   from. Dataset licence CC BY 4.0; the footage is the NBA's.
+* **E-BARD-detection** (Giudici et al.; <https://huggingface.co/datasets/GabrieleGiudici/E-BARD-detection>): human boxes
+  of players, referees and the ball on 30 frames of each of BARD's 60 games; main model v3 trained on the 900 frames of
+  the 30 calibration games, and the 900 of the 30 check games are a held-out test. Licence CC BY 4.0; the footage is
+  the NBA's.
 * **basketball-player-detection-2** (r3 and r4; a Roboflow Universe dataset provided by a Roboflow user,
   <https://universe.roboflow.com/sameer-prasad-koppolu/basketball-player-detection-2-othh3>, mirrored on Hugging Face as
   `koppolusameer/basketball-coco-player-detection`): player, referee and ball boxes on NBA frames. Licence CC BY 4.0;

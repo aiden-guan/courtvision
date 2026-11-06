@@ -114,7 +114,7 @@ flowchart LR
 
 1. **Detect.** For NBA broadcasts a ResNet-18 CenterNet student ([`perception/student.py`](courtvision/perception/student.py))
    sees the current frame plus the two before it, so a motion-blurred ball stands out. It was distilled from an
-   RF-DETR teacher on broadcast footage, then fine-tuned on more broadcasts and human labels (main model v2), and runs
+   RF-DETR teacher on broadcast footage, then fine-tuned on more broadcasts and human labels (main model v3), and runs
    on Apple's Neural Engine through Core ML.
 2. **Register the court.** [`perception/broadcast_court.py`](courtvision/perception/broadcast_court.py) estimates the
    main camera's position once per game, then fits only pan, tilt, roll and zoom per frame. A worker process does this
@@ -140,37 +140,40 @@ stage: [docs/NBA.md](docs/NBA.md).
 
 Two games so far: Lakers @ Warriors (2024-12-25, ESPN, 1080p) and Cavaliers @ Warriors (2017 Finals Game 5, ABC,
 720p). Every number below is from the video alone (no scorebug evidence) and **held out**: fitted on one half and
-scored on the other, or fitted on one game and scored on the other. Since 2026-11-03 the app runs **main model v2** of
-the detector (below); the figures are v2's, with the first model's on the same code in brackets.
+scored on the other, or fitted on one game and scored on the other. Since 2026-11-05 the app runs **main model v3** of
+the detector (below); the figures are v3's, with v2's on the same code in brackets.
 
 | What | Result | Held out how |
 |---|---|---|
-| Team with the ball, settled live play | **97.4%** (96.4%); second game **74.9%** (75.8%) | half vs half, per game |
-| Made or missed, real shots | **84.6%** (83.1%) from the video; **90.3%** with the ball's zones at the rim (first model 88.1%, earlier code); 87.6% adding TypeSafe Jev (first model) | half vs half, Lakers @ Warriors |
-| Made or missed, Studio shot judge across games | **84.8% / 72.0%** (84.0% / 77.8%); on the shots both models' events give, the same as the first model's | each game judged by models fitted on the other |
+| Team with the ball, settled live play | **97.1%** (97.4%); second game **75.6%** (74.9%) | half vs half, per game |
+| Made or missed, real shots | **87.6%** (84.6%) from the video; **88.8%** with the ball's zones at the rim (90.3%); 87.6% adding TypeSafe Jev (first model) | half vs half, Lakers @ Warriors |
+| Made or missed, Studio shot judge across games | **81.7% / 72.2%** (84.8% / 72.0%); on the shots both models' events give, within chance of v2's | each game judged by models fitted on the other |
 | Studio made-shot F1 | **0.32 → 0.81** after moving the call from the scorebug to the rim (first model) | a 10-minute stretch the judge was not fitted on |
 | Ball found within 15 px (linked ball path) | **95.7%** (95.7%; RF-DETR Nano starter: 25.8%) | 256 labelled held-out frames |
-| Box-score error from the timeline | **0.197 / 0.511** (0.209 / 0.570) | the two games |
+| Box-score error from the timeline | **0.171 / 0.454** (0.197 / 0.511) | the two games |
 | Court registered, no clicks | 22,160 of 26,103 first-quarter frames tracking; 3,726 without the court (out of view or not found) | Lakers @ Warriors Q1 |
 
 Gains shrink across games, and the second game exposes failures the first did not (see [Limitations](#limitations)).
 More, varied games are the main lever. All tables, including the simulator rounds:
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-**Main model v2** (2026-11-03, [details](docs/research/cross_game_detector.md#10-on-the-owners-mac-m3-pro-the-readmes-two-games)).
-The app's detector is now the first model fine-tuned on everything the research rounds below used: SportsMOT's players
-in seven broadcasts, three human-labelled NBA games with their referees, ball labels on 390 NBA clips and the Lakers @
-Warriors game's people on the court. It replaced the first model only after beating it on footage neither trained on
-(the ball on 30 NBA games 84.8% to 91.4%; the 2017 game's linked ball 72.4% to 78.4%; its players on the court 80.2% to
-84.8%; referees on 2024-25 footage 37% to 84%; the 2017 game's benches and crowd boxed 76% to 30%) with the pipeline
-within chance on both games. It misses most of the 2017 game's light-grey-shirted referees (84% to 23%) and finds about
-1 point fewer players on the Lakers game. Like the first model it is for research use; it also carries SportsMOT's
-non-commercial licence.
+**Main model v3** (2026-11-05, [details](docs/research/cross_game_detector.md#13-round-8-cloud-does-new-data-help-main-model-v2-plan-fixed-before-training)).
+The app's detector is main model v2 (2026-11-03: the first model fine-tuned on SportsMOT's players, three human-labelled
+NBA games with their referees, ball labels on 390 NBA clips and the Lakers @ Warriors game's people on the court)
+fine-tuned again with SportsMOT's referees as people (v2 had learnt them as background), human labels of players,
+referees and the ball on 30 more NBA games (E-BARD-detection) and ball labels on 600 more NBA clips. It replaced v2 by
+the rule fixed before training (no held-out test worse beyond chance; the pipeline within chance on both games), after
+the owner had seen its costs. On footage it never trained on: the 2017 game's referees on the court 23% to 76% and its
+players 84.8% to 90.8%; referees on 30 held-out 2024-25 games 62% to 84%; the ball on 30 NBA games 91.4% to 92.7%; the
+box-score error lower on both games. Its costs: it boxes the 2017 game's benches and crowd again (30% to 70%; the first
+model 76%) and more sideline staff, coaches and bench players on 2024-25 footage (0.16 to 0.24 boxes a frame on people
+nobody labelled); the event engine's own possession calls on the Lakers game fall (72.6% to 55.8%), which the
+possession timeline undoes. Like v2 it is for research use and carries SportsMOT's non-commercial licence.
 
 **The detector beyond its two games** (2026-11-03, [details](docs/research/cross_game_detector.md)). Footage it never
 trained on, scored against human player boxes (SportsMOT basketball) and teacher-labelled NBA ball positions (BARD,
 2024-25 season) and human-labelled NBA frames (Roboflow Universe); the datasets are research-only, and so are the
-fine-tuned weights. These research rounds' candidates were folded into main model v2 above and retired to git history
+fine-tuned weights. These research rounds' candidates were folded into the main model above (v2) and retired to git history
 ([models/research](models/research/README.md): sources, terms and how to recover them); the first model's figures:
 
 | What | First model | Research fine-tune | Held out how |
@@ -186,8 +189,9 @@ fine-tuned weights. These research rounds' candidates were folded into main mode
 | Ball, linked path, Lakers @ Warriors (243 frames of the app model's 15 held-out clips) | 95.5% | 95.5% (round 2; the same frames) | teacher labels, the game the published detector learnt from |
 
 On the README's two games neither research fine-tune moved the pipeline beyond chance, and both left referees and
-the crowd unboxed, as their human labels do. Main model v2 (above) took in what they learnt, boxes the referees and
-leaves the crowd alone; it too is within chance of the first model on the pipeline, with a lower box-score error
+the crowd unboxed, as their human labels do. Main model v2 took in what they learnt, boxed the referees and left the
+crowd alone; v3 (above) boxes the 2017 game's referees too and more of the benches and crowd again. Each is within
+chance of the model before it on the pipeline, with a lower box-score error
 ([details](docs/research/cross_game_detector.md#10-on-the-owners-mac-m3-pro-the-readmes-two-games)).
 
 **Simulator, held-out seeds 101–104** (macro-F1 over 9 event kinds, [report](docs/bench/round5-heldout.md)):
@@ -301,7 +305,7 @@ To analyse a full NBA broadcast and score it against ESPN, follow [docs/NBA.md](
 .venv/bin/python tools/nba_loop.py run --game <YYYY-MM-DD-AWY-HOM>
 ```
 
-The NBA detector ships as the browser app's model (`courtvision/server/static/nba-student.onnx`, main model v2;
+The NBA detector ships as the browser app's model (`courtvision/server/static/nba-student.onnx`, main model v3;
 research use, see [models/research](models/research/README.md) for its sources and terms). The Studio's PyTorch copy,
 the rim model and the shot models are trained locally from your own footage and are not distributed with the
 repository (footage and weights under `runs/` are git-ignored; see [docs/TRAINING.md](docs/TRAINING.md)).
