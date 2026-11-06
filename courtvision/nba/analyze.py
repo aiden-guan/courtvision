@@ -942,12 +942,13 @@ class RefereeCheck:
 
 
 class CachedDetector:
-    """``Detector`` replaying the cache (persons; referees relabelled by ``referees``, a ``RefereeCheck`` method; no
-    balls: the ball is set afterwards). With ``camera``, person boxes are rectified to a standing player at their
-    centre (``rectify_box``)."""
+    """``Detector`` replaying the cache (persons; referees relabelled by ``referees``, a ``RefereeCheck`` method,
+    by default the in-game check, which uses the shirt rule until its fit of the game is accepted; no balls: the ball
+    is set afterwards). With ``camera``, person boxes are rectified to a standing player at their centre
+    (``rectify_box``)."""
 
     def __init__(self, cache: DetectionCache, min_person: float = 0.3, camera: CameraTrack | None = None,
-                 referees: str = "shirt", referee_model: str | None = None) -> None:
+                 referees: str = "game", referee_model: str | None = None) -> None:
         self.cache = cache
         self.min_person = min_person
         self.camera = camera
@@ -1032,7 +1033,9 @@ class PerceiveConfig:
     home_color_bgr: tuple[int, int, int] | None = None
     away_color_bgr: tuple[int, int, int] | None = None
     team_refit_at: tuple[int, ...] = ()  # TeamConfig.refit_at (nba_analyze.py events --team-refit)
-    referees: str = "shirt"  # RefereeCheck method: shirt, learned, guarded or game (nba_analyze.py events --referees)
+    # RefereeCheck method: game (the in-game check, the default since 2026-11-05: the owner's decision, research note
+    # §13.15), shirt, learned or guarded (nba_analyze.py events --referees)
+    referees: str = "game"
     referee_model: str | None = None  # the learned check's weights from this file (load_referee_model), not the packaged
     league: str = "nba"
     # ByteTrack thresholds for the student detector, whose person scores sit lower than RF-DETR's (a centre

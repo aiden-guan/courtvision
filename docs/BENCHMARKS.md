@@ -43,7 +43,9 @@ WASM.
 by eye it is right on 64 and 74 of 80 (the shirt rule 44 and 66, the learned check 56 and 32) and calls 1 of 45
 Cavaliers players a referee; in the pipeline possession and made-or-missed are within chance of the shirt rule
 (97.4 to 96.9 %, 74.9 to 74.9 %; 3 / 2 and 7 / 9 shots) and the box-score error is lower (0.197 to 0.178, 0.511 to
-0.448). The shirt rule stays the default.
+0.448). Since 2026-11-05 it is the pipeline's default (the owner's decision); the pipeline rows above were measured
+with the shirt rule, and v3 with the in-game check is not measured (the two games' videos were lost; research note
+§13.15).
 
 ## Round 8 (2026-11-05, cloud): a 30-game human-labelled test; the browser app faster and finding the court more often
 

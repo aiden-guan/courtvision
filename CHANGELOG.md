@@ -5,6 +5,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — The pipeline tells referees apart within each game
+
+- **The in-game referee check is the NBA pipeline's default** (`PerceiveConfig.referees`, `CachedDetector`,
+  `nba_analyze.py events --referees`: `game`; the owner's decision, research note §13.15). It clusters a game's people
+  into two uniforms and the referees, and uses the shirt rule until that fit is accepted. On v2's detections of the
+  README's two games it was within chance of the shirt rule on possession and made-or-missed, with a lower box-score
+  error (0.197 to 0.178, 0.511 to 0.448). Not measured with v3: the two games' source videos were lost before that run.
+  The per-box and per-frame calls (`is_referee`, `are_referees`, `referee_calls`), and with them the browser app and
+  the Studio's live detector, keep the shirt rule.
+
+---
+
 ## [Unreleased] — Main model v3 in the app (round 8 on the Mac)
 
 Mac, 2026-11-05; [research note §13.1-13.14](docs/research/cross_game_detector.md); installed by the owner's decision

@@ -153,6 +153,11 @@ the detector (below); the figures are v3's, with v2's on the same code in bracke
 | Box-score error from the timeline | **0.171 / 0.454** (0.197 / 0.511) | the two games |
 | Court registered, no clicks | 22,160 of 26,103 first-quarter frames tracking; 3,726 without the court (out of view or not found) | Lakers @ Warriors Q1 |
 
+Referees were told apart by their shirts for these runs. Since 2026-11-05 the pipeline tells them apart within each
+game (the game's people clustered into two uniforms and the referees'), which on v2's detections was within chance of
+the shirt rule on both games with a lower box-score error (0.178 / 0.448;
+[details](docs/research/cross_game_detector.md#1315-the-in-game-referee-check-becomes-the-pipelines-default)).
+
 Gains shrink across games, and the second game exposes failures the first did not (see [Limitations](#limitations)).
 More, varied games are the main lever. All tables, including the simulator rounds:
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md).

@@ -821,3 +821,16 @@ def test_prefetch_keeps_order_raises_the_producers_error_and_stops_early() -> No
         if i == 5:
             break
     assert closed == [True]  # the producer stopped and closed its generator
+
+
+def test_the_pipeline_tells_referees_apart_within_the_game_by_default() -> None:
+    """The NBA pipeline's referee check is the in-game check (the owner's decision, research note §13.15); the
+    per-box and per-frame calls, which hold no game, keep the shirt rule."""
+    import inspect
+
+    from courtvision.nba.analyze import CachedDetector, PerceiveConfig, are_referees, is_referee
+
+    assert PerceiveConfig().referees == "game"
+    assert inspect.signature(CachedDetector).parameters["referees"].default == "game"
+    assert inspect.signature(is_referee).parameters["method"].default == "shirt"
+    assert inspect.signature(are_referees).parameters["method"].default == "shirt"

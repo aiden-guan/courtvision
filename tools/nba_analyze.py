@@ -114,7 +114,7 @@ def cmd_events(root: Path, args: argparse.Namespace) -> None:
     cfg = PerceiveConfig(use_3d_flights=args.use_3d, home_color_bgr=tuple(game["home_color_bgr"]) if game.get("home_color_bgr") else None,
                          away_color_bgr=tuple(game["away_color_bgr"]) if game.get("away_color_bgr") else None,
                          team_refit_at=TEAM_REFIT if getattr(args, "team_refit", False) else (),
-                         referees=getattr(args, "referees", "shirt"),
+                         referees=getattr(args, "referees", "game"),
                          referee_model=getattr(args, "referee_model", None))
     start = frame_bound(camera, args.start) if args.start else 0
     end = frame_bound(camera, args.end) if args.end else None
@@ -469,12 +469,12 @@ def main() -> int:
     ap.add_argument("--team-refit", action="store_true",
                     help="events: refit the two team clusters as player crops accumulate (TeamConfig.refit_at), so a "
                          "first fit on a few frames does not hold for the whole game")
-    ap.add_argument("--referees", choices=("shirt", "learned", "guarded", "game"), default="shirt",
-                    help="events: how referees are told from players (analyze.RefereeCheck): the shirt rule, the "
-                         "learned check, the learned check that falls back to the rule for a game once it calls more "
-                         "than 3.5 referees a frame, or the in-game check (the game's people clustered: two team "
-                         "uniforms and the referees' third; the rule while that third is not 1-3.5 a frame and "
-                         "compact)")
+    ap.add_argument("--referees", choices=("shirt", "learned", "guarded", "game"), default="game",
+                    help="events: how referees are told from players (analyze.RefereeCheck): the in-game check (the "
+                         "default: the game's people clustered into two team uniforms and the referees' third; the "
+                         "shirt rule until that third is 1-3.5 a frame and compact), the shirt rule, the learned "
+                         "check, or the learned check that falls back to the rule for a game once it calls more than "
+                         "3.5 referees a frame")
     ap.add_argument("--referee-model", default=None,
                     help="events: the learned referee check's weights from this file (tools/referee_classifier.py --out)")
     ap.add_argument("--tol", type=float, default=2.5)

@@ -1442,3 +1442,20 @@ Its lineage: the first main model (`8bdf229a…`) → T5 (`student-ft-r3`) → v
 data with SportsMOT's officials promoted, E-BARD-detection's 30 calibration games and ball labels by v2 on 600 more
 BARD clips; 4,000 steps on MPS). Research use only like the models before it; it carries SportsMOT's non-commercial
 licence, and credits E-BARD-detection (CC BY 4.0) with the other datasets (`models/research/README.md`).
+
+### 13.15 The in-game referee check becomes the pipeline's default
+
+On 2026-11-05, shown §13.5 and §13.11, the owner made the in-game check the NBA pipeline's referee check
+(`PerceiveConfig.referees`, `CachedDetector` and `nba_analyze.py events --referees` default to `game`). The per-box and
+per-frame calls (`is_referee`, `are_referees`, `referee_calls`), which hold no game, keep the shirt rule, and so do
+the browser app and the Studio's live detector, which call them frame by frame. Until the check's first fit of a game
+is accepted (30 observed frames a second apart), and whenever a fit is not, it uses the shirt rule.
+
+What it rests on: v2's detections of both games (§13.11), where possession and made-or-missed were within chance of
+the shirt rule and the box-score error lower on both. It was not measured with v3's detections, which box more people
+at the sidelines: the two games' source videos (`runs/studio/72e1…/source.video`, `runs/studio/8cb3…/source.video` and
+`runs/nba/2017-06-12-CLE-GSW/source30.mp4`) were deleted by accident on 2026-11-05 before that run, and no copy is left
+on the Mac. The pipeline figures of §13.12 and the README were measured with the shirt rule. Everything that reads
+stored frames instead (the teacher folders of §10.1, the BARD, Roboflow and E-BARD sets) still runs; anything that
+re-reads the two games' video (detect, events, timeline, rim clips, the showcase) needs the original files back at
+those paths.
