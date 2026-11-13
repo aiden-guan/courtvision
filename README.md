@@ -403,4 +403,7 @@ single-camera limits (below).
 
 ## License
 
-[MIT](LICENSE).
+The code and documentation are [MIT](LICENSE). The model weights and the NBA footage are not: the shipped NBA detector
+(`courtvision/server/static/nba-student.onnx`) was trained partly on SportsMOT (CC BY-NC 4.0) and on NBA broadcasts,
+so it is for research and evaluation only, never a commercial product. The showcase clip and the README's broadcast
+screenshots belong to their rights holders. Details: [NOTICE](NOTICE).

@@ -1,0 +1,35 @@
+CourtVision
+Copyright (c) 2026 Aiden Guan
+
+The MIT License in LICENSE covers this repository's source code and documentation.
+It does not cover the model weights or the NBA footage described below.
+
+MODEL WEIGHTS: RESEARCH AND EVALUATION ONLY
+
+courtvision/server/static/nba-student.onnx (the NBA detector, main model v3), and
+the research weights kept in this repository's git history under models/research/,
+were trained on data that does not allow commercial use:
+
+  * SportsMOT (Cui et al., ICCV 2023), CC BY-NC 4.0: non-commercial use only,
+    with credit. https://github.com/MCG-NJU/SportsMOT
+  * BARD and E-BARD-detection (Giudici et al.), CC BY 4.0, on NBA footage.
+    https://github.com/GabrieleGiudic/BARD
+    https://huggingface.co/datasets/GabrieleGiudici/E-BARD-detection
+  * basketball-player-detection-2 (Roboflow Universe), CC BY 4.0, on NBA footage.
+    https://universe.roboflow.com/sameer-prasad-koppolu/basketball-player-detection-2-othh3
+  * NBA broadcast recordings.
+
+You may use these weights for research and evaluation, crediting the datasets
+above. Do not use them in a commercial product. To ship a model, train one on
+footage you have the rights to (see docs/TRAINING.md, section 1). Sources, hashes
+and details: models/research/README.md.
+
+NBA FOOTAGE
+
+The short annotated Lakers @ Warriors excerpt in showcase/media/ and the broadcast
+screenshots in assets/readme/ are shown for research and demonstration only. The
+footage belongs to its rights holders (the NBA and its broadcast partners) and is
+not licensed under the MIT License.
+
+Third-party files in courtvision/server/static/ (ONNX Runtime Web) keep their own
+licences.
