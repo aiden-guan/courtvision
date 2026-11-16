@@ -5,6 +5,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased] — README cover (2026-11-15)
+
+- **README cover.** A Lakers at Warriors frame sits beside a bold CourtVision title, with a gold ball trail drawn from saved tracking data.
+
+---
+
 ## [Unreleased] — The pipeline tells referees apart within each game
 
 - **The in-game referee check is the NBA pipeline's default** (`PerceiveConfig.referees`, `CachedDetector`,

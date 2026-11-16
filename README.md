@@ -13,7 +13,7 @@
 
 <br/>
 
-<img src="assets/readme/hero.png" alt="CourtVision: the Studio replaying its analysis of Lakers at Warriors with tracked players, the team with the ball and a missed three, beside the court lens and three held-out results" width="100%"/>
+<img src="assets/readme/hero.png" alt="CourtVision’s Basketball, tracked cover, with a Lakers at Warriors frame showing player track labels and the ball’s path toward the rim in gold." width="100%"/>
 
 </div>
 
